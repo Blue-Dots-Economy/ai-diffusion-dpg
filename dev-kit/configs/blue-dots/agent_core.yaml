@@ -1877,7 +1877,7 @@ agent_workflow:
       # Path A is one fixed sentence built from values already in session,
       # so it is spoken verbatim rather than generated. Measured: the model
       # asked a returning caller for their trade in 2 of 3 runs even with
-      # stored_trade in <known_profile> — the values arrive under the names
+      # stored_trade in <state> collected — the values arrive under the names
       # `stored_trade` / `stored_location`, and it did not connect them to the
       # question it was about to ask.
       #
@@ -1904,7 +1904,7 @@ agent_workflow:
         both are genuinely absent.
 
         ## The ONLY test for "do they have a usable profile"
-        `profile_item_id` in <known_profile> is non-empty ONLY when the
+        `profile_item_id` in <state> collected is non-empty ONLY when the
         caller has a LIVE profile. Draft and retired rows leave it empty,
         and a caller who has only those is treated exactly like a new one.
 
@@ -1930,7 +1930,7 @@ agent_workflow:
           ("I found your details — <trade> in <city>. Shall I search
            with these?")
 
-        <trade> and <city> are already in <known_profile> as
+        <trade> and <city> are already in <state> collected as
         `stored_trade` and `stored_location`, lifted from the live item by
         fetch_profile. Read them from there. The profile DOES carry a
         trade — an older instruction claiming otherwise was wrong, and it
@@ -1965,7 +1965,7 @@ agent_workflow:
           "ठीक है — <city> में <trade>। क्या मैं नौकरियाँ ढूंढूँ?"
 
         ## HARD RULES
-        1. NEVER re-ask a value you already have. If <known_profile>
+        1. NEVER re-ask a value you already have. If <state> collected
            shows a trade, you have the trade. Re-asking a caller
            something they just said is the single most common complaint
            about this flow.
@@ -2358,7 +2358,7 @@ agent_workflow:
         and the caller does not need to supply them by voice.
 
           name   KNOWN if any non-empty string for name appears in
-                 <known_profile> OR earlier in this conversation. It may
+                 <state> collected OR earlier in this conversation. It may
                  already be there from fetch_profile for a returning user.
 
         Decision tree — pick exactly ONE action:
@@ -2410,7 +2410,7 @@ agent_workflow:
            list jobs here, ask for the name instead, and STOP.
 
         2. NEVER re-ask a KNOWN field, and never ask for an optional
-           one at all. If <known_profile> carries a name — any name —
+           one at all. If <state> collected carries a name — any name —
            it is KNOWN, so call save_profile. If it shows no gender,
            that is FINE — send the call without gender.
 
@@ -2669,7 +2669,7 @@ agent_workflow:
         trade, the city, the word for "seeker" in any language: every one
         of these is a placeholder. A name comes from ONE place — the
         caller said it, in this call or a previous one, and it is in
-        <known_profile> or in your conversation history.
+        <state> collected or in your conversation history.
 
         Before any save_profile call, check: do I have a name a human
         actually gave me?

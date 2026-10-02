@@ -29,7 +29,7 @@ def test_contract_and_shaping_present():
 def test_removed_prompt_text_is_gone():
     for needle in ("नौकरियाँ मिली हैं।", "एक पल रुकिए", "Let me share what I found", "TWO-STEP FLOW",
                    "User Profile context", "onboard_prep", "Six phases", "Order the first batch",
-                   "Order what survives by", "see tts_rules below", "[salary]"):
+                   "Order what survives by", "see tts_rules below", "[salary]", "<known_profile>", "Last question asked"):
         assert needle not in TEXT, needle
     assert "[salary_spoken]" in TEXT and "never re-rank" in TEXT
 
