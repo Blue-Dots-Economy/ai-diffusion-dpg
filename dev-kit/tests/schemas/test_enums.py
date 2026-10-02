@@ -77,7 +77,7 @@ def test_reengagement_channel_values():
     assert {c.value for c in ReengagementChannel} == {"outbound_call", "whatsapp", "sms"}
 
 def test_routing_operator_values():
-    assert {o.value for o in RoutingOperator} == {"eq", "not_eq", "gt", "lt", "in"}
+    assert {o.value for o in RoutingOperator} == {"eq", "not_eq", "gt", "lt", "in", "contains"}
 
 def test_internal_route_values():
     assert {r.value for r in InternalRoute} == {"knowledge_engine"}

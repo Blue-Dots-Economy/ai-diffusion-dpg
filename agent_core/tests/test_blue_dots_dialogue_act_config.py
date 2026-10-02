@@ -370,3 +370,46 @@ async def test_second_blocked_close_after_a_deny_ends_over_stream_turn():
     _, ended = await turn("opening", "termination_blocked",
                           {"close_return_to": "opening", "subagent_entry_count": {"confirm_close": 1}})
     assert ended is True
+
+
+# ── #439: a yes to job_match's own submit question applies; a yes to "tell more?" does not ──
+
+_JOB_APPLY_Q = [
+    "फ्लिपकार्ट में वेल्डर, बेंगलुरु, सैलरी पंद्रह हज़ार। क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?",
+    "यह नौकरी आपके लिए अच्छी है। क्या मैं इसके लिए आवेदन कर दूँ?",
+    "टाइटन में वेल्डर की नौकरी है। क्या मैं इस नौकरी के लिए आवेदन करूँ?",
+    "क्या मैं इस नौकरी के लिए आपका आवेदन भेज दूँ?",
+    "क्या मैं इसी नौकरी के लिए आवेदन कर दूँ?",
+]
+_JOB_MORE_Q = "आपके लिए यह जॉब है — वेल्डर, फ्लिपकार्ट, बेंगलुरु, सैलरी पंद्रह हज़ार। इसके बारे में और बात करें?"
+_JOB_CALL = {**_CALL, "trade": "Welder", "location": "Bengaluru"}
+
+
+@pytest.mark.parametrize("question", _JOB_APPLY_Q)
+def test_job_match_apply_question_pends_submit_confirm(question):
+    _, wf = _load()
+    assert PendingResolver(wf).resolve("job_match", {**_JOB_CALL, "current_question": question}).id == "submit_confirm"
+
+
+@pytest.mark.parametrize("profile, expected_next", [("p1", "apply_confirm"), ("", "profile_setup")])
+def test_yes_to_job_match_apply_question_applies(profile, expected_next):
+    state = {**_JOB_CALL, "profile_item_id": profile, "current_question": _JOB_APPLY_Q[0]}
+    u = _understand_once("job_match", state, _act("affirm"))
+    assert u.pending_id == "submit_confirm"
+    intent, nxt, _, _ = _route("job_match", state, _act("affirm"))
+    assert (intent, nxt) == ("apply_now", expected_next)
+
+
+def test_yes_to_tell_more_question_does_not_apply():
+    state = {**_JOB_CALL, "profile_item_id": "p1", "current_question": _JOB_MORE_Q}
+    u = _understand_once("job_match", state, _act("affirm"))
+    assert u.pending_id == "select_job"
+    intent, nxt, _, _ = _route("job_match", state, _act("affirm"))
+    assert (intent, nxt) == ("any_input", "job_match")
+
+
+def test_no_to_job_match_apply_question_stays_in_job_match():
+    """decline has no job_match rule: the catch-all keeps the caller here, the call does not end."""
+    state = {**_JOB_CALL, "profile_item_id": "p1", "current_question": _JOB_APPLY_Q[0]}
+    intent, nxt, _, _ = _route("job_match", state, _act("deny"))
+    assert (intent, nxt) == ("decline", "job_match")

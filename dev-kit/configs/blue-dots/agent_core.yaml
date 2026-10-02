@@ -2309,6 +2309,18 @@ agent_workflow:
         old results.
 
       pending:
+        # #439: after describing one job this phase asks the submit question
+        # itself ("क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"). Under select_job a
+        # "हाँ, भेज दीजिए" maps to no act_intents row, derives any_input, stays
+        # here with no apply tool, and the model announces an application that
+        # was never made. Keyed on the bot's last reply so a bare yes to this
+        # phase's OTHER question ("इसके बारे में और बात करें?") stays select_job
+        # and never applies — apply_confirm submits on entry, irreversibly.
+        - id: submit_confirm
+          when: [{ field: current_question, operator: contains, value: ["आवेदन भेज दूँ", "आवेदन कर दूँ", "आवेदन करूँ", "आवेदन भेजूँ", "अप्लाई कर दूँ", "अप्लाई करूँ"] }]
+          expects: "इस नौकरी के लिए आवेदन भेजने की हाँ/ना, या कोई दूसरी नौकरी"
+          options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
+          resolves_to: selected_job_item_id
         - id: select_job
           expects: "offered jobs में से एक, या दूसरी search"
           options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }

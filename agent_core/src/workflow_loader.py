@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # No longer needs hardcoded built-in tools as they are now handled via ToolRegistry
 
 # Valid operators for RoutingCondition
-_VALID_OPERATORS = {"eq", "not_eq", "in", "lt", "gt"}
+_VALID_OPERATORS = {"eq", "not_eq", "in", "lt", "gt", "contains"}
 
 # Valid special_handler values (None is also valid)
 _VALID_SPECIAL_HANDLERS = {"hitl", "whatsapp_handoff"}
@@ -46,7 +46,8 @@ class RoutingCondition:
 
     Attributes:
         field:    Session field name to evaluate.
-        operator: Comparison operator — one of "eq", "not_eq", "in", "lt", "gt".
+        operator: Comparison operator — one of "eq", "not_eq", "in", "lt", "gt",
+                  "contains" (substring of str(field); value is a str or a list, any match).
         value:    Scalar value or list to compare the field value against.
     """
 

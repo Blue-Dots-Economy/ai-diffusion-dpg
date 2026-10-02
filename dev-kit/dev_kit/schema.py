@@ -388,7 +388,7 @@ class TerminationGateItem(BaseModel):
 
     pending: str | None = Field(default=None, description="Pending id that opens the gate")
     field: str | None = Field(default=None, description="Session field for a condition")
-    operator: Literal["eq", "not_eq", "in", "lt", "gt"] | None = Field(default=None, description="Condition operator")
+    operator: Literal["eq", "not_eq", "in", "lt", "gt", "contains"] | None = Field(default=None, description="Condition operator")
     value: Any = Field(default=None, description="Condition comparison value")
 
     @model_validator(mode="after")
@@ -473,9 +473,9 @@ class RoutingConditionSchema(BaseModel):
         ...,
         description="Session field name to evaluate, e.g. income_urgency or subagent_entry_count.commitment",
     )
-    operator: Literal["eq", "not_eq", "in", "lt", "gt"] = Field(
+    operator: Literal["eq", "not_eq", "in", "lt", "gt", "contains"] = Field(
         ...,
-        description="Comparison operator. One of: eq, not_eq, in, lt, gt",
+        description="Comparison operator. One of: eq, not_eq, in, lt, gt, contains",
     )
     value: Any = Field(..., description="Scalar or list value to compare the session field against")
 
