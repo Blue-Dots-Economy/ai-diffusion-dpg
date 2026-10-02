@@ -68,7 +68,7 @@ async def test_timeout_read_falls_back_write_injects_failure():
         await asyncio.sleep(1)
         return _res(tc)
     r = await run_async(READ, guard=_go, execute=slow, timeout_s=0.05)
-    assert (r.outcome, r.inject) == ("timeout", False)
+    assert (r.outcome, r.inject, r.remove_tool) == ("timeout", False, False)
     w = await run_async(WRITE, guard=_go, execute=slow, timeout_s=0.05)
     assert (w.outcome, w.inject, w.remove_tool, w.tool_result.success) == ("timeout", True, True, False)
 
@@ -81,8 +81,53 @@ async def test_internal_error_is_did_not_fire():
     assert (r.outcome, r.inject, r.remove_tool) == ("error", False, False)
 
 
+@pytest.mark.asyncio
+async def test_write_cache_hit_injects():
+    async def hit(tc):
+        return GuardVerdict("hit", _res(tc))
+    w = await run_async(WRITE, guard=hit, execute=None, timeout_s=1.5)
+    assert (w.outcome, w.inject, w.remove_tool) == ("cache_hit", True, True)
+
+
+@pytest.mark.asyncio
+async def test_read_execute_raises_falls_back():
+    async def boom(tc):
+        raise RuntimeError("upstream error")
+    r = await run_async(READ, guard=_go, execute=boom, timeout_s=1.5)
+    assert (r.outcome, r.inject, r.remove_tool) == ("error", False, False)
+
+
+@pytest.mark.asyncio
+async def test_write_execute_raises_injects_failure():
+    async def boom(tc):
+        raise RuntimeError("upstream error")
+    w = await run_async(WRITE, guard=_go, execute=boom, timeout_s=1.5)
+    assert (w.outcome, w.inject, w.remove_tool, w.tool_result.success) == ("error", True, True, False)
+
+
 def test_sync_mirrors_async():
     r = run_sync(READ, guard=lambda tc: GuardVerdict("go"), execute=lambda tc: _res(tc))
     assert (r.outcome, r.inject, r.remove_tool) == ("fired", True, True)
     w = run_sync(WRITE, guard=lambda tc: GuardVerdict("go"), execute=lambda tc: _res(tc, ok=False))
     assert (w.outcome, w.inject, w.remove_tool) == ("failed", True, True)
+
+
+def test_sync_guard_refusal():
+    def refuse(tc):
+        return GuardVerdict("refuse", _res(tc, ok=False))
+    r = run_sync(WRITE, guard=refuse, execute=None)
+    assert (r.outcome, r.inject, r.remove_tool) == ("refused_guard", False, False)
+
+
+def test_sync_cache_hit():
+    def hit(tc):
+        return GuardVerdict("hit", _res(tc))
+    r = run_sync(WRITE, guard=hit, execute=None)
+    assert (r.outcome, r.inject, r.remove_tool) == ("cache_hit", True, True)
+
+
+def test_sync_guard_exception():
+    def boom(tc):
+        raise RuntimeError("x")
+    r = run_sync(READ, guard=boom, execute=None)
+    assert (r.outcome, r.inject, r.remove_tool) == ("error", False, False)
