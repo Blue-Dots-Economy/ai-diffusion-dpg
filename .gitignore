@@ -171,3 +171,6 @@ experiments/realtime_voice_test/results/**/*.wav
 # PoC test reports — local run records with caller phone numbers, upstream ids
 # and raw transcripts. Useful while testing, not repo content.
 poc-reports/
+
+# voice-bench local config (machine-specific paths)
+agent_core/eval/voice_bench/voice_bench.local.yaml
