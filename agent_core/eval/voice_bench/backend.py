@@ -95,13 +95,17 @@ class Backend:
         """Start the stack with the location-unmasked network.json mounted, then wait for both /health.
 
         Raises:
-            RuntimeError: local-setup/.env or .env.search is missing, or compose fails.
+            RuntimeError: local-setup/.env or .env.search is missing, backend.network_json is missing, or
+                compose fails.
             TimeoutError: a /health endpoint did not answer 200 in time.
         """
         missing = [n for n in (".env", ".env.search") if not (self._local_setup / n).exists()]
         if missing:
             raise RuntimeError(f"missing {', '.join(missing)} in {self._local_setup}: create them per "
                                "Signals-DPG local-setup/LOCAL_SETUP.md (the harness never creates secrets files)")
+        if not Path(self.cfg.network_json).is_file():
+            raise RuntimeError(f"backend.network_json not found: {self.cfg.network_json} (relative paths resolve "
+                               "against the current directory; run from agent_core/ or set an absolute path)")
         self.dir.mkdir(parents=True, exist_ok=True)
         self._write_network_json()
         self._write_override()
@@ -118,9 +122,11 @@ class Backend:
         self._check(self._compose() + ["down"] + (["-v"] if volumes else []), "docker compose down")
 
     def _write_network_json(self) -> None:
-        src = Path(self.cfg.signals_dir) / "examples" / "schemas" / "blue_dot" / "network.json"
-        net = json.loads(src.read_text(encoding="utf-8"))
+        """Copy backend.network_json, flipping only provider job_posting_1.0 ``jobProviderLocation`` to public."""
+        net = json.loads(Path(self.cfg.network_json).read_text(encoding="utf-8"))
         for d in net.get("domains") or []:
+            if d.get("id") != "provider":
+                continue
             prop = (((d.get("item_schemas") or {}).get("job_posting_1.0") or {}).get("properties") or {}).get(
                 "jobProviderLocation")
             if prop is not None:

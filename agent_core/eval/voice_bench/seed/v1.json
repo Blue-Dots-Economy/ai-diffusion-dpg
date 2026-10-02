@@ -3,9 +3,9 @@
   "trades": [
     {"role": "Electrician", "hi": "इलेक्ट्रीशियन"}, {"role": "Plumber", "hi": "प्लंबर"},
     {"role": "Delivery Executive", "hi": "डिलीवरी"}, {"role": "Driver", "hi": "ड्राइवर"},
-    {"role": "Security Guard", "hi": "सिक्योरिटी गार्ड"}, {"role": "Welder", "hi": "वेल्डर"},
-    {"role": "Fitter", "hi": "फिटर"}, {"role": "Data Entry Operator", "hi": "डेटा एंट्री"},
-    {"role": "Sales Executive", "hi": "सेल्स"}, {"role": "Housekeeping", "hi": "हाउसकीपिंग"}
+    {"role": "Security Guard", "hi": "सिक्योरिटी गार्ड"}, {"role": "Welder", "hi": "वेल्डर", "job_category": "Manufacturing"},
+    {"role": "Fitter", "hi": "फिटर", "job_category": "Manufacturing"}, {"role": "Data Entry Operator", "hi": "डेटा एंट्री", "job_category": "Data Entry"},
+    {"role": "Sales Executive", "hi": "सेल्स", "job_category": "Field Sales"}, {"role": "Housekeeping", "hi": "हाउसकीपिंग"}
   ],
   "cities": ["Lucknow", "Ghaziabad", "Noida", "Kanpur", "Dharwad", "Bengaluru"],
   "employers": ["Shakti Electricals", "Ganga Services", "Metro Logistics", "Sunrise Facility", "Apex Manpower",

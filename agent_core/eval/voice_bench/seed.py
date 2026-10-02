@@ -16,7 +16,7 @@ SEED_VERSION = 1
 _SEED_FILE = Path(__file__).parent / "seed" / f"v{SEED_VERSION}.json"
 _ID_RE = re.compile(r"[A-Za-z0-9_-]+")
 
-# Enum values from Signals-DPG examples/schemas/blue_dot/network.json job_posting_1.0.
+# Enum values from bluedots-schemas blue_dot/up-gzb/network.json job_posting_1.0 (the backend's schema, U1).
 _EXPERIENCE_YEARS = "< 1 Year"
 _EXPERIENCE_TYPE = {True: "Fresher", False: "Worked before"}
 
@@ -31,7 +31,9 @@ def job_rows(seed: dict) -> list[dict]:
 
     Returns:
         Rows of ``{"phone", "name", "item_state"}``. ``phone`` is the poster's (reserved range, unique per job),
-        ``name`` the employer, ``item_state`` a job_posting_1.0 payload.
+        ``name`` the employer, ``item_state`` a job_posting_1.0 payload. up-gzb job_posting_1.0 has
+        ``additionalProperties: false`` and no ``title``; ``jobCategory`` is set only for trades whose category
+        enum value clearly fits (seed ``job_category``), and ``typeOfJob`` is omitted (no clean per-trade fit).
     """
     rows = []
     employers = seed["employers"]
@@ -46,7 +48,6 @@ def job_rows(seed: dict) -> list[dict]:
                     "jobProviderName": employer,
                     "jobProviderLocation": f"{city}",
                     "role": trade["role"],
-                    "title": f"{trade['role']} – {city}",
                     "positions": 1 + (i + j) % 4,
                     "natureOfJob": "Apprenticeship" if (i + j) % 5 == 0 else "Full-time",
                     "hiringManagerName": "HR Desk",
@@ -55,6 +56,7 @@ def job_rows(seed: dict) -> list[dict]:
                     "salaryMax": salary_min + 4000,
                     "workExperienceYears": _EXPERIENCE_YEARS,
                     "candidateExperienceType": _EXPERIENCE_TYPE[(i + j) % 2 == 0],
+                    **({"jobCategory": trade["job_category"]} if trade.get("job_category") else {}),
                 },
             })
     return rows

@@ -34,7 +34,7 @@ def test_job_rows_use_network_json_enum_values():
     r = rows[1 * 6 + 2]                                         # trade 1 (Plumber), city 2 (Noida)
     assert r["item_state"]["jobProviderName"] == load_seed()["employers"][(1 * 3 + 2) % 8]
     assert r["item_state"]["salaryMin"] == 9000 + 1000 * ((1 + 4) % 8) and r["item_state"]["salaryMax"] == 18000
-    assert r["item_state"]["title"] == "Plumber – Noida" and r["phone"] == "919900081200"
+    assert "title" not in r["item_state"] and r["phone"] == "919900081200"   # up-gzb job_posting_1.0 has no title
 
 
 def test_places_lexicon_has_aliases():
@@ -142,9 +142,10 @@ def _http(posts):
     return httpx.Client(transport=httpx.MockTransport(h))
 
 
-def _backend(tmp_path, run, http=None, signals_dir=None):
+def _backend(tmp_path, run, http=None, signals_dir=None, network_json=None):
     sd = signals_dir or tmp_path / "signals"
-    cfg = BackendCfg(signals_dir=sd, signals_url="http://signals", search_url="http://search")
+    cfg = BackendCfg(signals_dir=sd, signals_url="http://signals", search_url="http://search",
+                     network_json=network_json or tmp_path / "up-gzb" / "network.json")
     return Backend(cfg, tmp_path / "results", run=run, http=http, sleep=lambda s: None)
 
 
@@ -244,10 +245,13 @@ def _signals_tree(tmp_path):
     (sd / "local-setup").mkdir(parents=True)
     (sd / "local-setup" / ".env").write_text("")
     (sd / "local-setup" / ".env.search").write_text("")
-    net = {"domains": [{"id": "provider", "item_schemas": {"job_posting_1.0": {"properties": {
-        "jobProviderLocation": {"type": "string", "private": True}, "hiringManagerName": {"private": True}}}}}]}
-    (sd / "examples" / "schemas" / "blue_dot").mkdir(parents=True)
-    (sd / "examples" / "schemas" / "blue_dot" / "network.json").write_text(json.dumps(net))
+    net = {"id": "blue_dot", "domains": [
+        {"id": "seeker", "item_schemas": {"profile_1.0": {"properties": {
+            "location": {"type": "string", "private": True}}}}},
+        {"id": "provider", "item_schemas": {"job_posting_1.0": {"properties": {
+            "jobProviderLocation": {"type": "string", "private": True}, "hiringManagerName": {"private": True}}}}}]}
+    (tmp_path / "up-gzb").mkdir()
+    (tmp_path / "up-gzb" / "network.json").write_text(json.dumps(net))
     return sd
 
 
@@ -261,9 +265,14 @@ def test_up_unmasks_location_writes_override_and_waits_for_health(tmp_path):
     b = _backend(tmp_path, run, httpx.Client(transport=httpx.MockTransport(h)), signals_dir=sd)
     b.up()
     bd = tmp_path / "results" / "backend"
-    props = json.loads((bd / "network.json").read_text())["domains"][0]["item_schemas"]["job_posting_1.0"][
-        "properties"]
+    out = json.loads((bd / "network.json").read_text())
+    props = out["domains"][1]["item_schemas"]["job_posting_1.0"]["properties"]
     assert props["jobProviderLocation"]["private"] is False and props["hiringManagerName"]["private"] is True
+    # U1: built from backend.network_json; nothing but provider jobProviderLocation is touched
+    assert out["domains"][0]["item_schemas"]["profile_1.0"]["properties"]["location"]["private"] is True
+    src_net = json.loads((tmp_path / "up-gzb" / "network.json").read_text())
+    src_net["domains"][1]["item_schemas"]["job_posting_1.0"]["properties"]["jobProviderLocation"]["private"] = False
+    assert out == src_net
     ov = yaml.safe_load((bd / "compose.override.yml").read_text())["services"]
     src = str((bd / "network.json").resolve())
     assert ov["signals-api"]["volumes"] == [f"{src}:/app/examples/schemas/blue_dot/network.json:ro"]
@@ -317,3 +326,88 @@ def test_down_removes_volumes_only_on_request(tmp_path):
     (a1, _), (a2, _) = run.calls
     assert a1[:2] == ["docker", "compose"] and a1[-1] == "down" and "-v" not in a1
     assert a2[-2:] == ["down", "-v"]
+
+
+# ---- U1-U3: the Blue Dots UP-Ghaziabad schema ------------------------------------------------------------------
+from eval.voice_bench.config import DEFAULT_NETWORK_JSON  # noqa: E402
+
+_AGENT_CORE = Path(__file__).resolve().parents[3]
+
+
+def test_up_fails_clearly_when_network_json_is_missing(tmp_path):
+    sd, run = _signals_tree(tmp_path), FakeRun()
+    with pytest.raises(RuntimeError, match="backend.network_json not found"):
+        _backend(tmp_path, run, signals_dir=sd, network_json=tmp_path / "nope.json").up()
+    assert run.calls == []
+
+
+def _up_gzb() -> Path | None:
+    """DEFAULT_NETWORK_JSON resolved from agent_core/ (as the CLI runs), or from the main checkout's agent_core/
+    when this is a linked git worktree."""
+    cands = [_AGENT_CORE / DEFAULT_NETWORK_JSON]
+    r = subprocess.run(["git", "-C", str(_AGENT_CORE), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                       capture_output=True, text=True)
+    if r.returncode == 0 and r.stdout.strip():
+        cands.append(Path(r.stdout.strip()).parent / "agent_core" / DEFAULT_NETWORK_JSON)
+    return next((c.resolve() for c in cands if c.is_file()), None)
+
+
+_TYPES = {"string": lambda x: isinstance(x, str), "array": lambda x: isinstance(x, list),
+          "integer": lambda x: isinstance(x, int) and not isinstance(x, bool),
+          "number": lambda x: isinstance(x, (int, float)) and not isinstance(x, bool)}
+
+
+def _violations(state: dict, schema: dict) -> list[str]:
+    props, out = schema["properties"], []
+    out += [f"undeclared {k}" for k in state if k not in props]
+    out += [f"missing required {k}" for k in schema.get("required", []) if k not in state]
+    for k, v in state.items():
+        p = props.get(k)
+        if p is None:
+            continue
+        if not _TYPES[p["type"]](v):
+            out.append(f"{k}: {v!r} is not {p['type']}")
+            continue
+        if "enum" in p and v not in p["enum"]:
+            out.append(f"{k}: {v!r} not in enum")
+        if p["type"] == "array" and isinstance(p.get("items"), dict) and "enum" in p["items"]:
+            out += [f"{k}: {x!r} not in enum" for x in v if x not in p["items"]["enum"]]
+        if p["type"] == "string" and len(v) < p.get("minLength", 0):
+            out.append(f"{k}: shorter than minLength")
+        if p["type"] in ("integer", "number"):
+            if "minimum" in p and v < p["minimum"]:
+                out.append(f"{k}: below minimum")
+            if "maximum" in p and v > p["maximum"]:
+                out.append(f"{k}: above maximum")
+    return out
+
+
+def test_every_seeded_item_state_validates_against_up_gzb_network_json():
+    """U3: all 60 job postings and all seed profiles fit the up-gzb schemas (declared keys, enums, types, required)."""
+    path = _up_gzb()
+    if path is None:
+        pytest.skip(f"up-gzb network.json not found ({DEFAULT_NETWORK_JSON} from agent_core/)")
+    net = json.loads(path.read_text(encoding="utf-8"))
+    assert net["id"] == "blue_dot"
+    domains = {d["id"]: d for d in net["domains"]}
+    job_schema = domains["provider"]["item_schemas"]["job_posting_1.0"]
+    profile_schema = domains["seeker"]["item_schemas"]["profile_1.0"]
+    assert job_schema["additionalProperties"] is False and profile_schema["additionalProperties"] is False
+    seed = load_seed()
+    bad = {f"job {r['phone']}": _violations(r["item_state"], job_schema) for r in job_rows(seed)}
+    bad |= {f"profile {p['scenario']}": _violations(profile_item_state(p), profile_schema) for p in seed["profiles"]}
+    assert {k: v for k, v in bad.items() if v} == {}
+    # the POST bodies name the same network/domains/item types the schema declares
+    for row in job_rows(seed)[:1]:
+        b = participant_body("provider", row["phone"], row["name"], row["item_state"])
+        assert (b["network"], b["domain"], b["item_type"]) == ("blue_dot", "provider", "job_posting_1.0")
+    assert "job_posting_1.0" in domains[participant_body("provider", "1", "x", {})["domain"]]["item_schemas"]
+
+
+def test_job_category_only_on_trades_with_a_clean_fit():
+    rows = job_rows(load_seed())
+    cats = {r["item_state"]["role"]: r["item_state"].get("jobCategory") for r in rows}
+    assert cats == {"Electrician": None, "Plumber": None, "Delivery Executive": None, "Driver": None,
+                    "Security Guard": None, "Welder": "Manufacturing", "Fitter": "Manufacturing",
+                    "Data Entry Operator": "Data Entry", "Sales Executive": "Field Sales", "Housekeeping": None}
+    assert all("typeOfJob" not in r["item_state"] and "title" not in r["item_state"] for r in rows)
