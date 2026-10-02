@@ -2953,7 +2953,8 @@ class AgentCore(AgentCoreBase):
                                     result: dict | None, already: bool, latency_ms: int, *,
                                     turn_id: str, caller: str) -> str:
         """Choose the line, write the session fields and emit the ``handoff`` signal."""
-        line, outcome = choose_handoff_line(result, lines, already)
+        line, outcome = choose_handoff_line(
+            result, lines, already, disclosure=(self._config.get("identity") or {}).get("disclosure", ""))
         writes = self._handoff_writes(bundle, outcome, result, session_id=session_id, line=line, caller=caller)
         await asyncio.gather(*(self._async_memory.write(session_id, user_id, "session", k, v)
                                for k, v in writes.items()), return_exceptions=True)
@@ -2984,7 +2985,8 @@ class AgentCore(AgentCoreBase):
                 self._handoff_escalate_failed(session_id, exc)
                 result = None
             latency_ms = int((time.time() - t0) * 1000)
-        line, outcome = choose_handoff_line(result, lines, already)
+        line, outcome = choose_handoff_line(
+            result, lines, already, disclosure=(self._config.get("identity") or {}).get("disclosure", ""))
         for k, v in self._handoff_writes(bundle, outcome, result, session_id=session_id, line=line,
                                          caller=turn_input.user_message).items():
             self._write_memory_sync(session_id, user_id, "session", k, v)

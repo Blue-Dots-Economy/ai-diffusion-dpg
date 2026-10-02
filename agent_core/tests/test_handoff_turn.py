@@ -31,6 +31,8 @@ HANDOFF_LINES = {
 IDENTITY = {"name": "ब्लू डॉट्स सहायक", "kind": "ai_assistant", "operator": "Blue Dots",
             "disclosure": "जी, मैं ब्लू डॉट्स की AI सहायक हूँ।", "human_handoff": "request",
             "no_handoff_line": "अभी इस कॉल पर कोई इंसान उपलब्ध नहीं है।"}
+# A person-request turn speaks the AI disclosure first (spec §3.2); `already` carries none.
+SPOKEN = {k: f"{IDENTITY['disclosure']} {HANDOFF_LINES[k]}" for k in ("delivered", "failed")}
 HANDOFF = {"lines": HANDOFF_LINES, "summary_turns": 6}
 SHIPPED = load_merged_config(BLUE_DOTS)
 
@@ -133,7 +135,7 @@ class _Turn:
 async def test_human_request_delivered_speaks_line_and_routes():
     t = _Turn()
     text, done = await t.stream()
-    assert text == HANDOFF_LINES["delivered"] and done.session_ended is False
+    assert text == SPOKEN["delivered"] and done.session_ended is False
     call = t.escalate_calls[0]
     assert (call["session_id"], call["escalation_reason"], call["user_message"], call["workflow_step"]) == (
         "sess-1", "human_request", ASK, "job_match")
@@ -159,7 +161,7 @@ async def test_human_request_failed_when_trust_unreachable():
     t = _Turn()
     t.escalate_result = {"queued": False}                            # no 'delivered' key
     text, done = await t.stream()
-    assert text == HANDOFF_LINES["failed"] and t.writes["handoff_status"] == "failed"
+    assert text == SPOKEN["failed"] and t.writes["handoff_status"] == "failed"
     assert done.session_ended is False and t.writes["current_subagent_id"] == "handoff"
     assert t.writes["handoff_line"] == "failed"
 
@@ -170,7 +172,7 @@ async def test_human_request_exception_is_failed_not_error(caplog):
     t.escalate_raises = RuntimeError("secret-https://hooks.example/abc")
     with caplog.at_level(logging.DEBUG):
         text, done = await t.stream()
-    assert text == HANDOFF_LINES["failed"] and done.error_type in (None, "")
+    assert text == SPOKEN["failed"] and done.error_type in (None, "")
     assert t.writes["handoff_status"] == "failed"
     assert "hooks.example" not in caplog.text                        # exception type only
     failed = [r for r in caplog.records if r.getMessage() == "orchestrator.handoff_escalate_failed"]
@@ -196,7 +198,7 @@ async def test_second_request_after_failure_retries():
     t.session["handoff_status"] = "failed"
     t.escalate_result = {"queued": True, "delivered": True, "reason": "delivered", "ticket_id": "TKT-2"}
     text, _ = await t.stream()
-    assert text == HANDOFF_LINES["delivered"] and len(t.escalate_calls) == 1
+    assert text == SPOKEN["delivered"] and len(t.escalate_calls) == 1
     assert t.writes["handoff_status"] == "delivered" and t.writes["handoff_ticket_id"] == "TKT-2"
 
 
@@ -225,7 +227,7 @@ async def test_handoff_disabled_does_not_escalate(kwargs):
 async def test_non_default_language_speaks_configured_line_verbatim():
     t = _Turn(language="english")                                    # default_language is hindi
     text, _ = await t.stream()
-    assert text == HANDOFF_LINES["delivered"] and t.llm_calls == 0
+    assert text == SPOKEN["delivered"] and t.llm_calls == 0
 
 
 @pytest.mark.asyncio
@@ -233,7 +235,7 @@ async def test_request_from_confirm_close_keeps_the_real_return_phase():
     t = _Turn()
     t.session.update(current_subagent_id="confirm_close", close_return_to="job_match")
     text, _ = await t.stream()
-    assert text == HANDOFF_LINES["delivered"]
+    assert text == SPOKEN["delivered"]
     assert "close_return_to" not in t.writes                         # still job_match
     assert t.escalate_calls[0]["workflow_step"] == "job_match"
     assert t.escalate_calls[0]["handoff"]["context"]["step"] == "job_match"
@@ -274,7 +276,7 @@ async def test_handoff_signal_task_is_tracked_until_done():
 def test_sync_human_request_delivered_speaks_line_and_routes():
     t = _Turn()
     result = t.sync()
-    assert result.response_text == HANDOFF_LINES["delivered"] and result.session_ended is False
+    assert result.response_text == SPOKEN["delivered"] and result.session_ended is False
     assert t.escalate_calls[0]["handoff"]["reason"] == "human_request"
     assert t.escalate_calls[0]["workflow_step"] == "job_match"
     assert t.writes["handoff_status"] == "delivered" and t.writes["handoff_ticket_id"] == "TKT-1"
@@ -283,11 +285,20 @@ def test_sync_human_request_delivered_speaks_line_and_routes():
     assert t.agent._learning.emit_signal.call_args.args[0] == "handoff"
 
 
+def test_sync_spoken_delivered_and_failed_lines_start_with_disclosure():
+    assert SPOKEN["delivered"].startswith(IDENTITY["disclosure"])
+    t = _Turn()
+    assert t.sync().response_text.startswith(IDENTITY["disclosure"])
+    t = _Turn()
+    t.escalate_result = {"queued": False}
+    assert t.sync().response_text == SPOKEN["failed"]
+
+
 def test_sync_human_request_exception_is_failed():
     t = _Turn()
     t.escalate_raises = RuntimeError("boom")
     result = t.sync()
-    assert result.response_text == HANDOFF_LINES["failed"] and result.error_type in (None, "")
+    assert result.response_text == SPOKEN["failed"] and result.error_type in (None, "")
     assert t.writes["handoff_status"] == "failed"
 
 
@@ -295,7 +306,7 @@ def test_sync_human_request_failed_when_trust_unreachable():
     t = _Turn()
     t.escalate_result = {"queued": False}
     result = t.sync()
-    assert result.response_text == HANDOFF_LINES["failed"] and t.writes["handoff_status"] == "failed"
+    assert result.response_text == SPOKEN["failed"] and t.writes["handoff_status"] == "failed"
     assert t.writes["current_subagent_id"] == "handoff"
 
 
@@ -304,13 +315,13 @@ def test_sync_second_request_after_failure_retries():
     t.session["handoff_status"] = "failed"
     t.escalate_result = {"queued": True, "delivered": True, "reason": "delivered", "ticket_id": "TKT-2"}
     result = t.sync()
-    assert result.response_text == HANDOFF_LINES["delivered"] and len(t.escalate_calls) == 1
+    assert result.response_text == SPOKEN["delivered"] and len(t.escalate_calls) == 1
     assert t.writes["handoff_ticket_id"] == "TKT-2"
 
 
 def test_sync_non_default_language_speaks_configured_line_verbatim():
     t = _Turn(language="english")
-    assert t.sync().response_text == HANDOFF_LINES["delivered"] and t.llm_calls == 0
+    assert t.sync().response_text == SPOKEN["delivered"] and t.llm_calls == 0
 
 
 def test_sync_second_request_after_delivery_is_already():
@@ -398,13 +409,13 @@ async def test_stale_pending_retries():
     t = _Turn()
     t.session.update(handoff_status="pending", handoff_pending_at=str(_now_ms() - 30_000))
     text, _ = await t.stream()
-    assert text == HANDOFF_LINES["delivered"] and len(t.escalate_calls) == 1
+    assert text == SPOKEN["delivered"] and len(t.escalate_calls) == 1
 
 
 def test_sync_stale_pending_retries():
     t = _Turn()
     t.session.update(handoff_status="pending", handoff_pending_at=_now_ms() - 31_000)
-    assert t.sync().response_text == HANDOFF_LINES["delivered"] and len(t.escalate_calls) == 1
+    assert t.sync().response_text == SPOKEN["delivered"] and len(t.escalate_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -427,17 +438,17 @@ async def test_handoff_turn_lands_in_recent_turns_and_current_question():
     t.session["recent_turns"] = [{"caller": "नमस्ते", "bot": "जी, बताइए।", "interrupted": False}]
     await t.stream()
     turns = t.writes["recent_turns"]
-    assert turns[-1] == {"caller": ASK, "bot": HANDOFF_LINES["delivered"], "interrupted": False}
+    assert turns[-1] == {"caller": ASK, "bot": SPOKEN["delivered"], "interrupted": False}
     assert turns[0]["caller"] == "नमस्ते"
-    assert t.writes["current_question"] == HANDOFF_LINES["delivered"]
+    assert t.writes["current_question"] == SPOKEN["delivered"]
 
 
 def test_sync_handoff_turn_lands_in_recent_turns_and_current_question():
     t = _Turn()
     t.sync()
-    assert t.writes["recent_turns"][-1] == {"caller": ASK, "bot": HANDOFF_LINES["delivered"],
+    assert t.writes["recent_turns"][-1] == {"caller": ASK, "bot": SPOKEN["delivered"],
                                             "interrupted": False}
-    assert t.writes["current_question"] == HANDOFF_LINES["delivered"]
+    assert t.writes["current_question"] == SPOKEN["delivered"]
 
 
 @pytest.mark.asyncio

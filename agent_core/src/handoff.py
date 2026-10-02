@@ -42,10 +42,17 @@ def build_handoff_payload(*, ticket_hint: str, use_case: str, session: dict, pho
     }
 
 
-def choose_handoff_line(result: dict | None, lines: dict, already: bool) -> tuple[str, str]:
-    """(line, outcome) — outcome is delivered | failed | already."""
+def choose_handoff_line(result: dict | None, lines: dict, already: bool,
+                        *, disclosure: str = "") -> tuple[str, str]:
+    """(line, outcome) — outcome is delivered | failed | already.
+
+    A person request also gets the AI disclosure (spec §3.2): ``delivered`` and
+    ``failed`` lines are prefixed with it; ``already`` is not (it was said earlier).
+    """
     if already:
         return lines["already"], "already"
     if result and result.get("delivered") is True:
-        return lines["delivered"], "delivered"
-    return lines["failed"], "failed"
+        line, outcome = lines["delivered"], "delivered"
+    else:
+        line, outcome = lines["failed"], "failed"
+    return (f"{disclosure} {line}".strip() if disclosure else line), outcome

@@ -79,6 +79,21 @@ def test_choose_line():
     assert choose_handoff_line(None, LINES, already=True) == ("A", "already")
 
 
+def test_choose_line_prefixes_disclosure_for_delivered_and_failed_only():
+    d = "DISC."
+    assert choose_handoff_line({"delivered": True}, LINES, False, disclosure=d) == ("DISC. D", "delivered")
+    assert choose_handoff_line(None, LINES, False, disclosure=d) == ("DISC. F", "failed")
+    assert choose_handoff_line(None, LINES, True, disclosure=d) == ("A", "already")
+    assert choose_handoff_line(None, LINES, False, disclosure="") == ("F", "failed")
+
+
+def test_none_mode_person_rule_says_disclosure_then_no_handoff_line():
+    out = render_identity(IDENT)
+    person_rule = next(line for line in out.splitlines() if IDENT["no_handoff_line"] in line)
+    assert person_rule.startswith("Only when") and "speak to a person" in person_rule
+    assert person_rule.index(IDENT["disclosure"]) < person_rule.index(IDENT["no_handoff_line"])
+
+
 def test_payload_application_carries_application_and_job_ids():
     p = build_handoff_payload(ticket_hint="", use_case="u", phone="91", call_id="", last_caller_turn="",
                               session={"last_application_id": "a-1", "selected_job_item_id": "job-9"},

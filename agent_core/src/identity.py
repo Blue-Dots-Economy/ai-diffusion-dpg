@@ -17,7 +17,8 @@ def render_identity(identity: dict | None) -> str:
                      "speaks the line); do not answer it yourself.")
     else:
         lines.append("Only when the caller asks to speak to a person (a human, a counsellor, someone from "
-                     f"the team): say verbatim: {identity['no_handoff_line']} Then return to the open question.")
+                     f"the team): say verbatim, in one sentence: "
+                     f"{identity['disclosure']} {identity['no_handoff_line']} Then return to the open question.")
     lines.append("Never claim to be human. Never promise a callback, a counsellor or a person unless the "
                  "handoff step has reported success in this call.")
     return "\n".join(lines)
