@@ -60,6 +60,9 @@ def compose_override(bridge_host_port: int, env_file: Path) -> str:
         "action_gateway": {"env_file": [str(env_file)],
                            "extra_hosts": ["host.docker.internal:host-gateway"]},
         "agent_core": {"deploy": {"resources": {"limits": {"memory": "1g", "cpus": "1.0"}}}},
+        # Milestone refs before cf794ef use memgraph/memgraph:latest, whose newer binary fails the healthcheck.
+        # The repo itself pinned 2.17.0 at cf794ef.
+        "memgraph": {"image": "memgraph/memgraph:2.17.0"},
     }}, sort_keys=False)
 
 

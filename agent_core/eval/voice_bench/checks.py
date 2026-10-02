@@ -267,7 +267,7 @@ def _carries_value(caller: str, field: str, places: dict[str, list[str]]) -> boo
 
         # Check if line has an age indicator (1\u20132-digit run or age word token)
         has_age_indicator = False
-        if re.search(r"\d{1,2}", caller):  # 1\u20132-digit run (check original for actual digits)
+        if re.search(r"(?<!\d)\d{1,2}(?!\d)", caller):  # standalone 1\u20132-digit run (not inside longer numbers)
             has_age_indicator = True
         else:
             # Check for age word tokens in stripped text

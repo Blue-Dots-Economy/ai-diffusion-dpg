@@ -299,3 +299,14 @@ def test_tc09_carries_value_age_context_required():
                   T(1, "मेरी उम्र 24 साल है।", "ठीक है।", session=z),
                   T(2, "जी", "आपकी उम्र क्या है?", session=z)]
     assert v("TC09", rec((proper_age, "bot"))) == "fail"  # should fail, is re-ask
+
+
+def test_carries_value_age_regex_standalone_digits():
+    """Fix 5: _carries_value age regex must use standalone run to avoid matching inside long numbers."""
+    from eval.voice_bench.checks import _carries_value
+
+    # "9876500000" (one token, a phone number) does NOT carry age
+    assert not _carries_value("9876500000", "age", PLACES)
+
+    # "24" (standalone age) does carry age
+    assert _carries_value("24", "age", PLACES)

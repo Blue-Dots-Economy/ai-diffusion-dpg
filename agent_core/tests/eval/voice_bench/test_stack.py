@@ -42,6 +42,7 @@ def test_compose_override_shape(tmp_path):
     assert y["services"]["reach_layer_bridge"]["ports"] == ["127.0.0.1:18008:8008"]
     assert y["services"]["action_gateway"]["env_file"] == [str(tmp_path / "bd.env")]
     assert "host.docker.internal:host-gateway" in y["services"]["action_gateway"]["extra_hosts"]
+    assert y["services"]["memgraph"]["image"] == "memgraph/memgraph:2.17.0"
 
 
 def test_patch_applies_cleanly_to_every_milestone_ref():
