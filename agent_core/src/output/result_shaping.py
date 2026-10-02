@@ -154,4 +154,6 @@ class ResultShaper:
             logger.warning("result_shaping.error", extra={"operation": "result_shaping.shape",
                                                           "status": "failure", "tool": result.tool_name,
                                                           "error": type(e).__name__})
+            from src.chat_provider.metrics import record_result_shaping_error  # lazy: avoid import cycle
+            record_result_shaping_error(result.tool_name)
             return result

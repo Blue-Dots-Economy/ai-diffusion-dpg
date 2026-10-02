@@ -2535,3 +2535,63 @@ def test_sync_turn_resolves_and_persists_user_state():
     assert len(writes) == 1
     scope, payload = writes[0][2], writes[0][4]
     assert scope == "session" and payload["id"] == "aware" and payload["confidence"] == 0.9
+
+
+# ---------------------------------------------------------------------------
+# Spec D: <state> / <recent> in the prompt, shaper wiring
+# ---------------------------------------------------------------------------
+
+def test_prompt_gets_state_and_recent():
+    agent = _make_agent(session_data={
+        "current_subagent_id": "market_truth", "applications_submitted": 0,
+        "recent_turns": [{"caller": "हाँ", "bot": "आपकी उम्र?", "interrupted": False}]})
+    agent._state_fields = ["applications_submitted"]
+    agent._agent_history_turns = 2
+    agent.process_turn(_turn_input())
+    kw = agent._manager_agent.build_system_prompt.call_args.kwargs
+    assert kw["recent"] == "caller: हाँ\nbot: आपकी उम्र?"
+    assert kw["state"].startswith("phase: market_truth") and "status: applications_submitted=0" in kw["state"]
+
+
+def test_prompt_session_fields_reach_state():
+    agent = _make_agent(session_data={"current_subagent_id": "market_truth", "profile_item_id": "p1"})
+    agent._prompt_session_fields = ["profile_item_id"]
+    agent.process_turn(_turn_input())
+    assert "profile_item_id=p1" in agent._manager_agent.build_system_prompt.call_args.kwargs["state"]
+
+
+def test_recent_turns_retention_follows_agent_history_turns():
+    agent = _make_agent(session_data={
+        "current_subagent_id": "market_truth",
+        "recent_turns": [{"caller": f"c{i}", "bot": f"b{i}", "interrupted": False} for i in range(3)]})
+    agent._recent_keep = 4
+    agent.process_turn(_turn_input())
+    writes = [c.args[4] for c in agent._memory.write.call_args_list if c.args[3] == "recent_turns"]
+    assert len(writes) == 1 and len(writes[0]) == 4
+
+
+def test_agent_history_turns_config_sets_recent_keep():
+    cfg = {**VALID_CONFIG, "agent": {"history_turns": 4}}
+    agent = AgentCore(config=cfg, chat_provider=MagicMock(spec=ChatProviderBase), memory=MagicMock(),
+                      trust=MagicMock(), knowledge_engine=MagicMock(), tool_registry=MagicMock(),
+                      manager_agent=MagicMock(), learning=MagicMock(), workflow=_make_workflow(),
+                      nlu_chat_provider=_nlu_provider_mock())
+    assert agent._agent_history_turns == 4 and agent._recent_keep == 4
+
+
+def test_process_turn_hands_the_shaper_to_run_turn():
+    agent = _make_agent()
+    agent.process_turn(_turn_input())
+    assert agent._manager_agent.run_turn.call_args.kwargs["result_shaper"] == agent._result_shaper.shape
+
+
+def test_orchestrator_bootstrap_receives_the_shaper():
+    cfg = {**VALID_CONFIG,
+           "connectors": {"read": [{"name": "fetch_profile", "cache": {"scope": "session", "ttl_seconds": 60}}]},
+           "session_bootstrap": {"steps": [{"type": "tool", "tool": "fetch_profile"}]}}
+    agent = AgentCore(config=cfg, chat_provider=MagicMock(spec=ChatProviderBase), memory=MagicMock(),
+                      trust=MagicMock(), knowledge_engine=MagicMock(), tool_registry=MagicMock(),
+                      manager_agent=MagicMock(), learning=MagicMock(), workflow=_make_workflow(),
+                      nlu_chat_provider=_nlu_provider_mock())
+    assert agent._bootstrap is not None
+    assert agent._bootstrap._shape == agent._result_shaper.shape

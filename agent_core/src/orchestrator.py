@@ -82,6 +82,12 @@ from src.understanding.caller_turn import render_caller_turn
 from src.understanding.config import DialogueActConfig
 from src.understanding.dialogue_act_nlu import DialogueActNLU
 from src.understanding.history import RECENT_TURNS_KEY, append_recent_turn
+from src.context.state import render_recent, render_state
+from src.output.contract import contract_language
+from src.output.guard import OutputGuard
+from src.understanding.frame import offered_entry, offered_rows
+from src.understanding.pending import PendingResolver
+from src.chat_provider.metrics import record_output_guard
 from src.understanding.precedence import nlu_owned_values
 from src.understanding.understander import TurnContext, TurnUnderstander, TurnUnderstanderBase
 from src.tool_results import ToolResultPolicies, TurnToolCache, augment_tool_definitions
@@ -352,6 +358,12 @@ class AgentCore(AgentCoreBase):
         self._understander: TurnUnderstanderBase = TurnUnderstander(
             self._dialogue_cfg, self._workflow,
             DialogueActNLU(self._dialogue_cfg, nlu_chat_provider or self._build_dialogue_act_provider()))
+        agent_cfg = self._config.get("agent") or {}
+        self._agent_history_turns = int(agent_cfg.get("history_turns", 2))
+        self._state_fields = list(agent_cfg.get("state_fields") or [])
+        # recent_turns serves both the NLU frame and <recent>; keep enough for either.
+        self._recent_keep = max(self._dialogue_cfg.history_turns, self._agent_history_turns)
+        self._pending_resolver = PendingResolver(self._workflow)
 
         # User-state model (GH-139) — cached lookup for per-turn guidance injection.
         usm = (self._config or {}).get("conversation", {}).get("user_state_model", {}) or {}
@@ -395,7 +407,7 @@ class AgentCore(AgentCoreBase):
             ((config.get("agent") or {}).get("prompt_session_fields")) or [])
 
     def _build_profile_context(self, bundle, entity_map: dict) -> dict:
-        """Profile facts for <known_profile>: profile, NLU-mapped session fields, listed session fields.
+        """Profile facts for <state> collected: profile, NLU-mapped session fields, listed session fields.
 
         bundle.profile is the source of truth for declared profile fields;
         persistent NLU writes update it in-place earlier in the turn. Session
@@ -423,6 +435,46 @@ class AgentCore(AgentCoreBase):
                 profile_context[k] = v
         profile_context.update(nlu_owned_values(bundle.session))
         return profile_context
+
+    def _render_state(self, bundle, subagent_id: str, tool_cache, profile_context: dict) -> str:
+        """<state> for the subagent the prompt is built for (Spec D §6.3). Never raises."""
+        try:
+            pending = self._pending_resolver.resolve(subagent_id, self._routing_state(bundle))
+            offered: list[dict] = []
+            of = getattr(pending, "options_from", None) if pending is not None else None
+            if of is not None:
+                served = bundle.session.get(SERVED_TOOL_RESULTS_KEY)
+                offered = offered_rows(offered_entry(served, tool_cache, of.tool))
+            status = {k: bundle.session.get(k) for k in self._state_fields}
+            return render_state(phase=subagent_id, pending=pending, collected=profile_context,
+                                offered=offered, status=status)
+        except Exception as e:  # noqa: BLE001 — never raise into the turn
+            logger.warning("orchestrator.state_render_failed",
+                           extra={"operation": "orchestrator.render_state", "status": "failure",
+                                  "error": type(e).__name__})
+            return ""
+
+    @staticmethod
+    def _make_output_guard(channel_config, profile_context: dict, bundle):
+        """Build the per-turn output guard.
+
+        Returns:
+            ``(guarded, counts, language)``: ``guarded(text)`` applies the guard and
+            accumulates ``counts``; ``language`` is the contract language for the turn.
+        """
+        contract = (channel_config or {}).get("output_contract")
+        guard = OutputGuard(contract)
+        language = contract_language(contract, profile_context.get("language_preference")
+                                     or bundle.session.get("language_preference"))
+        counts = {"digits_rewritten": 0, "foreign_script_words": 0}
+
+        def guarded(text: str) -> str:
+            r = guard.apply(text, language)
+            counts["digits_rewritten"] += r.digits_rewritten
+            counts["foreign_script_words"] += r.foreign_script_words
+            return r.text
+
+        return guarded, counts, language
 
     def _session_grounded_values(self, bundle, spec: dict) -> dict[str, list[str]]:
         """Values for grounded params that session_mapping lifted from a tool.
@@ -1287,6 +1339,9 @@ class AgentCore(AgentCoreBase):
             next_subagent.id, next_subagent.name,
         )
         profile_context = self._build_profile_context(bundle, entity_map)
+        state_text = self._render_state(bundle, next_subagent_id, tool_cache, profile_context)
+        recent_text = render_recent(bundle.session.get(RECENT_TURNS_KEY), self._agent_history_turns)
+        _guarded, _guard_counts, _guard_lang = self._make_output_guard(channel_config, profile_context, bundle)
 
         # Ensure the prompt builder uses the most up-to-date language preference
         # (which might have been updated by NLU in Step 5).
@@ -1308,8 +1363,8 @@ class AgentCore(AgentCoreBase):
             ),
             known_facts=tool_cache.render_known_facts(),
             caller_turn=render_caller_turn(understanding),
-            state="",
-            recent="",
+            state=state_text,
+            recent=recent_text,
         )
 
         # Clear resumption flag in session so it only affects the first turn
@@ -1565,6 +1620,10 @@ class AgentCore(AgentCoreBase):
             trust_endpoint, session_id,
         )
         t10 = time.time()
+        if final_text:
+            final_text = _guarded(final_text)
+        record_output_guard(turn_input.channel, _guard_lang,
+                            _guard_counts["digits_rewritten"], _guard_counts["foreign_script_words"])
         trust_output = self._trust.check_output(session_id, final_text)
         logger.info(
             "  [STEP 10] Trust Output Check  ✓  action=%s  passed=%s  latency=%dms",
@@ -1593,7 +1652,7 @@ class AgentCore(AgentCoreBase):
         bundle.session["current_question"] = cq_value
         entries = append_recent_turn(bundle.session.get(RECENT_TURNS_KEY), caller=turn_input.user_message,
                                      bot=final_text, interrupted=False,
-                                     history_turns=self._dialogue_cfg.history_turns)
+                                     history_turns=self._recent_keep)
         self._write_memory_sync(session_id, user_id, "session", RECENT_TURNS_KEY, entries)
         bundle.session[RECENT_TURNS_KEY] = entries
 
@@ -3655,7 +3714,7 @@ class AgentCore(AgentCoreBase):
                     append_recent_turn(session_state.get(RECENT_TURNS_KEY),
                                        caller=" ".join(s for s in record.segments if s) or user_message,
                                        bot=heard, interrupted=True,
-                                       history_turns=self._dialogue_cfg.history_turns))
+                                       history_turns=self._recent_keep))
             logger.info(
                 "orchestrator.interrupted_persist",
                 extra={"operation": "orchestrator.persist_interrupted", "status": "success",
@@ -4606,6 +4665,10 @@ class AgentCore(AgentCoreBase):
             )
             next_subagent: SubAgent = self._workflow.subagents[next_subagent_id]
             profile_context = self._build_profile_context(bundle, entity_map)
+            state_text = self._render_state(bundle, next_subagent_id, tool_cache, profile_context)
+            recent_text = render_recent(bundle.session.get(RECENT_TURNS_KEY), self._agent_history_turns)
+            _guarded, _guard_counts, _guard_lang = self._make_output_guard(
+                channel_config, profile_context, bundle)
 
             final_language = profile_context.get("language_preference", detected_language)
             is_resumption = bundle.session.get("was_adopted", False)
@@ -4623,8 +4686,8 @@ class AgentCore(AgentCoreBase):
                 ),
                 known_facts=tool_cache.render_known_facts(),
                 caller_turn=render_caller_turn(understanding),
-                state="",
-                recent="",
+                state=state_text,
+                recent=recent_text,
             )
 
             if is_resumption:
@@ -4726,6 +4789,9 @@ class AgentCore(AgentCoreBase):
                             continue
                         pending_emit: list[str] = []
                         for sentence in sentences:
+                            sentence = _guarded(sentence)
+                            if not sentence:
+                                continue
                             released = await _trust_batcher.add(sentence)
                             if released:
                                 pending_emit.extend(released)
@@ -5103,6 +5169,9 @@ class AgentCore(AgentCoreBase):
                                 continue
                             pending_emit = []
                             for sentence in sentences:
+                                sentence = _guarded(sentence)
+                                if not sentence:
+                                    continue
                                 released = await _trust_batcher.add(sentence)
                                 if released:
                                     pending_emit.extend(released)
@@ -5309,8 +5378,9 @@ class AgentCore(AgentCoreBase):
             # The final add() can itself trigger a flush (size or time); its
             # release must be spoken ahead of whatever flush() returns, or a
             # reply whose length is a multiple of max_sentences loses its
-            # last batch.
-            remaining = token_buffer.strip()
+            # last batch. The tail is guarded (Spec D) before it reaches the
+            # batcher, so that release is guarded text too.
+            remaining = _guarded(token_buffer.strip())
             final_release: list[str] = []
             if remaining and not _trust_batcher.was_escalated:
                 final_release = await _trust_batcher.add(remaining)
@@ -5394,7 +5464,7 @@ class AgentCore(AgentCoreBase):
                 append_recent_turn(bundle.session.get(RECENT_TURNS_KEY),
                                    caller=" ".join(record.segments or [turn_input.user_message]),
                                    bot=full_response_text, interrupted=False,
-                                   history_turns=self._dialogue_cfg.history_turns)))
+                                   history_turns=self._recent_keep)))
 
             # #193: persist captured tool exchanges (capped) so the next
             # turn can replay them as real tool_use/tool_result messages.
@@ -5463,8 +5533,12 @@ class AgentCore(AgentCoreBase):
                     "intent": nlu_result.intent,
                     "next_subagent_id": next_subagent_id,
                     "sentences_emitted": sentence_index,
+                    "digits_rewritten": _guard_counts["digits_rewritten"],
+                    "foreign_script_words": _guard_counts["foreign_script_words"],
                 },
             )
+            record_output_guard(turn_input.channel, _guard_lang,
+                                _guard_counts["digits_rewritten"], _guard_counts["foreign_script_words"])
             logger.info(
                 "\n═══════════════════════════════════════════════════════════════\n"
                 "  STREAM TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"

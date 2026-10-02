@@ -616,3 +616,77 @@ def test_sync_nlu_log_prints_entity_keys_not_values(caplog):
     lines = [r.getMessage() for r in caplog.records if "[STEP 5] NLU  ✓" in r.getMessage()]
     assert lines and "name" in lines[0]
     assert "Ramesh" not in lines[0]
+
+
+# ── Spec D: the main-LLM prompt is assembled identically on both paths ──────
+
+def _pending_workflow():
+    from src.workflow_loader import OptionsFrom, PendingQuestion
+    sub = _sub("start", is_start=True)
+    sub.pending = [PendingQuestion(
+        id="job_choice", expects="which job to apply to",
+        options_from=OptionsFrom(tool="fetch_jobs", fields=("title",), id_field="job_id"))]
+    wf = MagicMock(spec=AgentWorkflow)
+    wf.start_subagent_id = "start"
+    wf.subagents = {"start": sub}
+    wf.tool_defs = {"start": []}
+    wf.global_routing = []
+    wf.default_fallback_subagent_id = "start"
+    wf.agent_system_prompt = "System prompt"
+    return wf
+
+
+def _parity_session():
+    return {"current_subagent_id": "start", "language_preference": "english",
+            "recent_turns": [{"caller": "yes", "bot": "Which job?", "interrupted": False}]}
+
+
+def _parity_entry():
+    from src.tool_results import args_hash
+    import time as _time
+    return {"tool": "fetch_jobs", "args_hash": args_hash({}),
+            "data": {"items": [{"job_id": "J-1", "title": "Cook"}, {"job_id": "J-2", "title": "Driver"}]},
+            "fetched_at": _time.time(), "expires_at": 9e12, "origin": "turn", "scope": "session"}
+
+
+def _real_prompt_manager():
+    """A manager that assembles prompts for real and never runs tools."""
+    real, *_ = _make_manager([_text_response()])
+    m = MagicMock(wraps=real)
+    m.run_turn.return_value = ("Ok.", [], [])
+    return m
+
+
+async def test_system_prompt_and_messages_parity():
+    # sync
+    s_agent = _make_agent(session_data=_parity_session(), workflow=_pending_workflow())
+    s_agent._manager_agent = _real_prompt_manager()
+    s_agent._tool_policies = ToolResultPolicies.from_config(_PARITY_CONFIG)
+    s_agent._memory.context_bundle.return_value = ContextBundle(
+        session=_parity_session(), profile={}, journey=None, tool_results=[_parity_entry()])
+    s_agent.process_turn(_turn_input())
+    s_req = s_agent._llm.call.call_args.args[0]
+
+    # stream
+    a_agent = _make_agent_core(workflow=_pending_workflow())
+    a_agent._manager_agent = _real_prompt_manager()
+    a_agent._tool_policies = ToolResultPolicies.from_config(_PARITY_CONFIG)
+    a_agent._async_memory.context_bundle.return_value = ContextBundle(
+        session=_parity_session(), profile={}, tool_results=[_parity_entry()])
+    a_agent._language_normaliser = MagicMock()
+    a_agent._language_normaliser.normalise.return_value = ("Hello", "english")
+    sent = []
+
+    async def mock_stream(request, *, abort_event=None):
+        sent.append(request)
+        yield "Ok. "
+
+    a_agent._llm.stream = mock_stream
+    await _collect_events(a_agent, _make_turn_input())
+
+    a_req = sent[0]
+    assert s_req.system == a_req.system
+    assert s_req.messages == a_req.messages
+    flat = "\n".join(b.text for b in a_req.system.blocks)
+    assert "waiting for: job_choice" in flat and "1. Cook; 2. Driver" in flat
+    assert "caller: yes\nbot: Which job?" in flat

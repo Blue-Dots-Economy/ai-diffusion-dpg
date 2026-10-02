@@ -609,9 +609,10 @@ def test_run_turn_resets_session_ended_flag_each_turn():
 # ── Layered tiers (GH-176) ────────────────────────────────────────────────
 # Contract:
 #   build_system_prompt returns list[dict] — Anthropic content blocks.
-#   Tier 1 (persona + channel_rules + session_end_policy) carries cache_control.
+#   Tier 1 (persona + channel_rules + output_contract + how_to_read_context + session_end_policy)
+#          carries cache_control.
 #   Tier 2 (subagent + user_state_guidance) carries cache_control.
-#   Tier 3 (channel_context + resumption + known_profile + active_guardrails) no cache_control.
+#   Tier 3 (channel_context + resumption + state + recent + known_facts + caller_turn) no cache_control.
 #   Each populated section is wrapped in a single XML tag; empty inputs elide sections.
 
 

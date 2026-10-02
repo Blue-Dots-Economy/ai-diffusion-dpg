@@ -1661,3 +1661,49 @@ class TestStreamUserState:
         writes = [c.args for c in agent._memory.write.call_args_list if c.args[3] == "user_state"]
         assert len(writes) == 1
         assert writes[0][2] == "session" and writes[0][4]["id"] == "aware"
+
+
+# ── Spec D: <state> / <recent> reach the prompt; recent_turns retention ─────
+
+async def _stream_prompt_kwargs(agent):
+    async def mock_stream(*args, **kwargs):
+        yield "Ok. "
+
+    agent._llm.stream = mock_stream
+    await _collect_events(agent, _make_turn_input())
+    return agent._manager_agent.build_system_prompt.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_prompt_gets_state_and_recent():
+    agent = _make_agent_core()
+    sess = agent._async_memory.context_bundle.return_value.session
+    sess["recent_turns"] = [{"caller": "हाँ", "bot": "आपकी उम्र?", "interrupted": False}]
+    sess["applications_submitted"] = 0
+    agent._state_fields = ["applications_submitted"]
+    agent._agent_history_turns = 2
+    kw = await _stream_prompt_kwargs(agent)
+    assert kw["recent"] == "caller: हाँ\nbot: आपकी उम्र?"
+    assert kw["state"].startswith("phase: start") and "status: applications_submitted=0" in kw["state"]
+
+
+@pytest.mark.asyncio
+async def test_prompt_session_fields_reach_state():
+    agent = _make_agent_core()
+    agent._async_memory.context_bundle.return_value.session["profile_item_id"] = "p1"
+    agent._prompt_session_fields = ["profile_item_id"]
+    kw = await _stream_prompt_kwargs(agent)
+    assert "profile_item_id=p1" in kw["state"]
+
+
+@pytest.mark.asyncio
+async def test_recent_retention_is_max_of_nlu_and_agent_history_turns():
+    base = _make_agent_core()
+    agent = _make_agent_core(config={**base._config, "agent": {**base._config["agent"], "history_turns": 4}})
+    assert agent._recent_keep == 4 and agent._agent_history_turns == 4
+    prior = [{"caller": f"c{i}", "bot": f"b{i}", "interrupted": False} for i in range(3)]
+    agent._async_memory.context_bundle.return_value.session["recent_turns"] = prior
+    await _stream_prompt_kwargs(agent)
+    await asyncio.sleep(0)   # let the fire-and-forget session write run
+    writes = [c.args[4] for c in agent._async_memory.write.await_args_list if c.args[3] == "recent_turns"]
+    assert len(writes) == 1 and len(writes[0]) == 4 and writes[0][-1]["bot"] == "Ok."

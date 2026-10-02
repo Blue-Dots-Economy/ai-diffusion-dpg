@@ -116,4 +116,6 @@ class OutputGuard:
         except Exception as e:  # noqa: BLE001 — never raise into the turn
             logger.warning("output_guard.error", extra={"operation": "output_guard.apply",
                                                         "status": "failure", "error": type(e).__name__})
+            from src.chat_provider.metrics import record_output_guard_error  # lazy: avoid import cycle
+            record_output_guard_error()
             return GuardResult(text=text)
