@@ -758,3 +758,29 @@ def test_subagent_rejects_valid_intents():
 def test_workflow_rejects_global_intents():
     with pytest.raises(ValidationError, match="global_intents"):
         AgentWorkflowSection(**_workflow_kwargs(global_intents=["help"]))
+
+
+# -- IdentitySection / HandoffSection ----------------------------------------
+
+_IDENT = {"name": "ब्लू डॉट्स सहायक", "operator": "Blue Dots",
+          "disclosure": "जी, मैं ब्लू डॉट्स की AI सहायक हूँ।", "no_handoff_line": "अभी कोई इंसान उपलब्ध नहीं है।"}
+_LINES = {"lines": {"delivered": "d", "failed": "f", "already": "a"}}
+
+
+def test_identity_section_accepts_valid_and_defaults():
+    from dev_kit.schemas.domain.agent_core import IdentitySection
+    s = IdentitySection(**_IDENT)
+    assert s.human_handoff == "none" and s.kind == "ai_assistant"
+
+
+def test_identity_section_rejects_empty_disclosure():
+    from dev_kit.schemas.domain.agent_core import IdentitySection
+    with pytest.raises(ValidationError):
+        IdentitySection(**{**_IDENT, "disclosure": ""})
+
+
+def test_handoff_section_accepts_valid_and_bounds():
+    from dev_kit.schemas.domain.agent_core import HandoffSection
+    assert HandoffSection(**_LINES).summary_turns == 6
+    with pytest.raises(ValidationError):
+        HandoffSection(**{**_LINES, "summary_turns": 21})

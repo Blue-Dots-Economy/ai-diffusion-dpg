@@ -504,6 +504,87 @@ FIELD_RULES: dict[str, FieldRule] = {
         pydantic_class="HitlSection",
     ),
 
+    "identity.name": FieldRule(
+        category="chat",
+        phase="language",
+        applies_if="has_hitl",
+        invalidated_by=["has_hitl", "default_language", "supported_languages"],
+        description="Name the agent gives when asked who it is.",
+        pydantic_class="IdentitySection",
+    ),
+
+    "identity.operator": FieldRule(
+        category="chat",
+        phase="language",
+        applies_if="has_hitl",
+        invalidated_by=["has_hitl", "default_language", "supported_languages"],
+        description="Organisation operating the agent.",
+        pydantic_class="IdentitySection",
+    ),
+
+    "identity.disclosure": FieldRule(
+        category="chat",
+        phase="language",
+        applies_if="has_hitl",
+        invalidated_by=["has_hitl", "default_language", "supported_languages"],
+        description="Spoken AI-disclosure line used when asked whether it is a bot.",
+        pydantic_class="IdentitySection",
+    ),
+
+    "identity.human_handoff": FieldRule(
+        category="chat",
+        phase="language",
+        applies_if="has_hitl",
+        invalidated_by=["has_hitl", "default_language", "supported_languages"],
+        description="'none' or 'request'; 'request' needs a handoff block and a 'handoff' subagent.",
+        pydantic_class="IdentitySection",
+    ),
+
+    "identity.no_handoff_line": FieldRule(
+        category="chat",
+        phase="language",
+        applies_if="has_hitl",
+        invalidated_by=["has_hitl", "default_language", "supported_languages"],
+        description="Spoken line when a human is requested but handoff is off.",
+        pydantic_class="IdentitySection",
+    ),
+
+    "handoff.lines.delivered": FieldRule(
+        category="chat",
+        phase="language",
+        applies_if="has_hitl",
+        invalidated_by=["has_hitl", "default_language", "supported_languages"],
+        description="Spoken line after a delivered human handoff.",
+        pydantic_class="HandoffSection",
+    ),
+
+    "handoff.lines.failed": FieldRule(
+        category="chat",
+        phase="language",
+        applies_if="has_hitl",
+        invalidated_by=["has_hitl", "default_language", "supported_languages"],
+        description="Spoken line when the handoff could not be delivered.",
+        pydantic_class="HandoffSection",
+    ),
+
+    "handoff.lines.already": FieldRule(
+        category="chat",
+        phase="language",
+        applies_if="has_hitl",
+        invalidated_by=["has_hitl", "default_language", "supported_languages"],
+        description="Spoken line when a handoff was already delivered this call.",
+        pydantic_class="HandoffSection",
+    ),
+
+    "handoff.summary_turns": FieldRule(
+        category="chat",
+        phase="language",
+        applies_if="has_hitl",
+        invalidated_by=["has_hitl", "default_language", "supported_languages"],
+        description="Number of recent exchanges included in the handoff summary (1-20, default 6).",
+        pydantic_class="HandoffSection",
+    ),
+
     # ── Derived: agent_workflow.workflow_id ──────────────────────────────────
 
     "agent_workflow.workflow_id": FieldRule(

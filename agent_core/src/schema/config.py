@@ -965,6 +965,38 @@ class SessionBootstrapConfig(BaseModel):
     steps: list[SessionBootstrapStep] = Field(min_length=1)
 
 
+class IdentityConfig(BaseModel):
+    """Who the agent is and whether callers may be handed to a human."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(min_length=1)
+    kind: Literal["ai_assistant"] = "ai_assistant"
+    operator: str = Field(min_length=1)
+    disclosure: str = Field(min_length=1)
+    human_handoff: Literal["none", "request"] = "none"
+    no_handoff_line: str = Field(min_length=1)
+
+
+class HandoffLines(BaseModel):
+    """Spoken lines for human handoff outcomes (never LLM-generated)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    delivered: str = Field(min_length=1)
+    failed: str = Field(min_length=1)
+    already: str = Field(min_length=1)
+
+
+class HandoffConfig(BaseModel):
+    """Human handoff settings: spoken lines and summary size."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    lines: HandoffLines
+    summary_turns: int = Field(default=6, ge=1, le=20)
+
+
 class MergedConfig(BaseModel):
     """Strict schema for the fully-merged agent_core config."""
 
@@ -1009,6 +1041,8 @@ class MergedConfig(BaseModel):
     tool_results: ToolResultsConfig = Field(default_factory=ToolResultsConfig)
     memory_tool: Optional[MemoryToolConfig] = None
     session_bootstrap: Optional[SessionBootstrapConfig] = None
+    identity: Optional[IdentityConfig] = None
+    handoff: Optional[HandoffConfig] = None
 
     @model_validator(mode="after")
     def _check_tool_result_rules(self) -> "MergedConfig":
@@ -1044,6 +1078,10 @@ class MergedConfig(BaseModel):
             for i, step in enumerate(self.session_bootstrap.steps):
                 if step.tool not in read_names:
                     raise ValueError(f"session_bootstrap.steps[{i}]: '{step.tool}' is not a read connector")
+        if self.identity and self.identity.human_handoff == "request":
+            if self.handoff is None or not any(s.id == "handoff" for s in self.agent_workflow.subagents):
+                raise ValueError(
+                    "identity.human_handoff=request needs a handoff block and a 'handoff' subagent")
         return self
 
     @model_validator(mode="after")

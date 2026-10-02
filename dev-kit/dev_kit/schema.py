@@ -785,6 +785,8 @@ class AgentCoreConfig(BaseModel):
         default=None, description="Framework `remember` tool config (name, fields)"
     )
     session_bootstrap: Optional[dict] = None
+    identity: Optional[dict] = None
+    handoff: Optional[dict] = None
     hitl: HitlConfig | None = Field(
         default=None,
         description="HITL config. Required if any subagent uses special_handler: hitl.",
