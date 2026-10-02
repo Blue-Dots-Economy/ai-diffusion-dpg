@@ -198,6 +198,59 @@ def test_is_empty_whitespace_only():
     assert not is_empty("x")
 
 
+def test_select_second_rule_when_first_fails(caplog):
+    """If first rule raises, loop continues and logs the error."""
+    import logging
+    caplog.set_level(logging.WARNING)
+    first_rule = {"tool": "fetch_jobs", "when": [{"field": None}], "args": "nonsense"}
+    second_rule = {"tool": "apply_job", "enabled": True,
+                   "args": {"profile_item_id": {"from": "session", "key": "p"},
+                            "job_item_id": {"from": "session", "key": "j"}}}
+    s = _sel([first_rule, second_rule], session={"p": "p1", "j": UUID})
+    assert (s.tool, s.outcome) == ("apply_job", "fired")
+    # Check that the error was logged
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert record.name == "src.predispatch.rules"
+    assert record.message == "predispatch.rule_error"
+    assert record.extra["rule_index"] == 0
+    assert record.extra["error"] == "TypeError"
+    assert record.extra["operation"] == "predispatch.select"
+    assert record.extra["status"] == "failure"
+
+
+def test_template_with_whitespace_fallback():
+    """Template with whitespace-only placeholder value falls through to next."""
+    rule = {"tool": "fetch_jobs", "args": {
+        "query_text": {"template": "{trade|stored_trade} jobs"}}}
+    # trade="  " (whitespace-only) should be treated as empty and fall through to stored_trade
+    args, _ = resolve_args(rule, {"trade": "  ", "stored_trade": "Welder"}, TABLES, JOBS_SCHEMA)
+    assert args == {"query_text": "Welder jobs"}
+
+
+import pytest
+
+@pytest.mark.parametrize("value,typ,valid", [
+    (True, "boolean", True),
+    (True, "integer", False),
+    (True, "number", False),
+    (2.5, "number", True),
+    ([1, 2], "array", True),
+    ({"a": 1}, "object", True),
+    ("text", "array", False),
+    (True, None, True),  # No type means no check
+])
+def test_type_validation_table(value, typ, valid):
+    """Type validation using explicit table."""
+    schema = {"properties": {"x": {"type": typ} if typ else {}}, "required": ["x"]}
+    rule = {"tool": "t", "args": {"x": {"from": "literal", "value": value}}}
+    args, why = resolve_args(rule, {}, TABLES, schema)
+    if valid:
+        assert args == {"x": value}, f"Expected {value} to be valid for type {typ}"
+    else:
+        assert args is None and why == "skipped_invalid_arg", f"Expected {value} to be invalid for type {typ}"
+
+
 def test_select_second_rule_when_first_fails():
     """If first rule raises, loop continues to later rules."""
     first_rule = {"tool": "fetch_jobs", "when": [{"field": None}], "args": "nonsense"}

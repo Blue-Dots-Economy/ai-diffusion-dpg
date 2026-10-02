@@ -7,6 +7,7 @@ the first eligible rule. Never raises. Belongs to the Agent Core DPG block.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -14,10 +15,20 @@ from typing import Any, Callable
 
 from src.conditions import evaluate_condition
 
+logger = logging.getLogger(__name__)
+
 _PLACEHOLDER = re.compile(r"\{([A-Za-z0-9_]+(?:\|[A-Za-z0-9_]+)*)\}")
 _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _MISSING = "skipped_missing_arg"
 _INVALID = "skipped_invalid_arg"
+_TYPE_OK = {
+    "string": lambda v: isinstance(v, str),
+    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+    "boolean": lambda v: isinstance(v, bool),
+    "array": lambda v: isinstance(v, list),
+    "object": lambda v: isinstance(v, dict),
+}
 
 
 class _Invalid(Exception):
@@ -100,17 +111,8 @@ def _validate(name: str, value: Any, prop: dict, arg: dict, tables: dict) -> Any
         else:
             raise _Invalid(name)
     # Type validation after coercion
-    if typ == "string" and not isinstance(value, str):
-        raise _Invalid(name)
-    if typ == "integer" and not isinstance(value, int):
-        raise _Invalid(name)
-    if typ == "number" and not isinstance(value, (int, float)) or isinstance(value, bool):
-        raise _Invalid(name)
-    if typ == "boolean" and not isinstance(value, bool):
-        raise _Invalid(name)
-    if typ == "array" and not isinstance(value, list):
-        raise _Invalid(name)
-    if typ == "object" and not isinstance(value, dict):
+    check = _TYPE_OK.get(typ)
+    if check is not None and not check(value):
         raise _Invalid(name)
     if "enum" in prop and value not in prop["enum"]:
         raise _Invalid(name)
@@ -194,7 +196,7 @@ def select(rules: list[dict], *, intent: str, state: dict, session: dict, tables
         Selection.
     """
     first_skip: str | None = None
-    for rule in rules or []:
+    for i, rule in enumerate(rules or []):
         try:
             if not _gates_hold(rule, intent, state):
                 continue
@@ -219,6 +221,7 @@ def select(rules: list[dict], *, intent: str, state: dict, session: dict, tables
                 first_skip = first_skip or why
                 continue
             return Selection(tool=tool, args=args, outcome="fired", is_write=is_write)
-        except Exception:  # noqa: BLE001 — never raise into the turn
+        except Exception as e:  # noqa: BLE001 — never raise into the turn
+            logger.warning("predispatch.rule_error", extra={"operation": "predispatch.select", "status": "failure", "rule_index": i, "error": type(e).__name__})
             first_skip = first_skip or "error"
     return Selection(tool=None, outcome=first_skip)
