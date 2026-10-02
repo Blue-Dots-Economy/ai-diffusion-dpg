@@ -58,16 +58,17 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
-def load_merged_config(domain_dir: str | Path) -> dict:
+def load_merged_config(domain_dir: str | Path, agent_core_root: str | Path | None = None) -> dict:
     """agent_core/config/dpg.yaml deep-merged with ``<domain_dir>/agent_core.yaml``.
 
     Args:
         domain_dir: Directory holding the domain's agent_core.yaml.
+        agent_core_root: agent_core checkout supplying config/dpg.yaml (default: this file's own tree).
 
     Returns:
         Merged config dict.
     """
-    root = Path(__file__).resolve().parents[2]
+    root = Path(agent_core_root) if agent_core_root else Path(__file__).resolve().parents[2]
     dpg = yaml.safe_load((root / "config" / "dpg.yaml").read_text(encoding="utf-8")) or {}
     domain = yaml.safe_load((Path(domain_dir) / "agent_core.yaml").read_text(encoding="utf-8")) or {}
     merged = _deep_merge(dpg, domain)
