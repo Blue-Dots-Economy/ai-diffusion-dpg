@@ -59,6 +59,8 @@ from src.http_clients.trust_layer import TrustLayerConstraintError
 from src.preprocessing.language_normalisation import LanguageNormaliser
 from src.manager_agent import ManagerAgent, zero_seed_fields
 from src.tool_guard import check_tool_call
+from src.predispatch.rules import Selection, select
+from src.predispatch.runner import PREDISPATCH_ID, PredispatchResult, run_async, run_sync
 from src.models import (
     DoneEvent,
     NLUResult,
@@ -83,7 +85,7 @@ from src.output.contract import contract_language, sentence_language
 from src.output.guard import OutputGuard
 from src.understanding.frame import offered_entry, offered_rows
 from src.understanding.pending import PendingResolver
-from src.chat_provider.metrics import record_output_guard
+from src.chat_provider.metrics import record_output_guard, record_predispatch
 from src.understanding.precedence import nlu_owned_values
 from src.understanding.understander import TurnContext, TurnUnderstander, TurnUnderstanderBase
 from src.tool_results import ToolResultPolicies, TurnToolCache, augment_tool_definitions
@@ -405,6 +407,42 @@ class AgentCore(AgentCoreBase):
         self._remember = RememberTool.from_config(config)
         self._prompt_session_fields: list[str] = list(
             ((config.get("agent") or {}).get("prompt_session_fields")) or [])
+        self._init_predispatch(config)
+
+    def _init_predispatch(self, config: dict) -> None:
+        """Read the pre-dispatch inputs and check rule args are agent params (Spec E §4, plan ruling 5).
+
+        Args:
+            config: The merged domain config dict.
+
+        Raises:
+            ValueError: A rule binds an argument key that is not a property of
+                the tool's input schema. Skipped when the gateway tool list is
+                empty (no schema to check against, e.g. in tests).
+        """
+        self._predispatch_tables: dict = dict(config.get("predispatch_tables") or {})
+        self._predispatch_timeout_s: float = int(
+            (config.get("agent") or {}).get("predispatch_timeout_ms", 1500)) / 1000
+        conns = config.get("connectors") or {}
+        self._write_tools: set[str] = {
+            c["name"] for g in ("write", "identity") for c in (conns.get(g) or [])
+            if isinstance(c, dict) and c.get("name")}
+        try:
+            defs = self._tool_registry.get_tool_definitions()
+        except Exception:  # noqa: BLE001 — a mocked/partial registry has no schemas
+            defs = []
+        self._tool_schemas: dict[str, dict] = {
+            d["name"]: d.get("input_schema") or {} for d in (defs if isinstance(defs, list) else [])
+            if isinstance(d, dict) and d.get("name")}
+        for sa in (getattr(self._workflow, "subagents", None) or {}).values():
+            rules = getattr(sa, "predispatch", None)
+            for i, rule in enumerate(rules if isinstance(rules, list) else []):
+                props = (self._tool_schemas.get(rule.get("tool")) or {}).get("properties") or {}
+                unknown = [k for k in (rule.get("args") or {}) if k not in props]
+                if props and unknown:
+                    raise ValueError(
+                        f"subagents[{sa.id}].predispatch[{i}]: args {unknown} are not agent "
+                        f"parameters of '{rule.get('tool')}'")
 
     def _build_profile_context(self, bundle, entity_map: dict) -> dict:
         """Profile facts for <state> collected: profile, NLU-mapped session fields, listed session fields.
@@ -603,6 +641,217 @@ class AgentCore(AgentCoreBase):
             logger.error("orchestrator.apply_tool_results_error", extra={
                 "operation": "orchestrator.stream_turn", "status": "failure",
                 "session_id": session_id, "error": type(e).__name__})
+
+    # ------------------------------------------------------------------
+    # Pre-dispatch (Spec E §5): determined tool calls before the main LLM
+    # ------------------------------------------------------------------
+
+    def _select_predispatch(self, bundle, subagent_id: str, intent: str, tool_cache) -> Selection:
+        """The turn's pre-dispatch selection for the post-routing subagent (Spec E §3.3).
+
+        Arguments bind from ``_tool_session_values``: session values with
+        seeded empties dropped, profile layered over them, and values the NLU
+        wrote this turn on top — so a correction made this turn wins.
+
+        Args:
+            bundle: This turn's context bundle, after this turn's writes.
+            subagent_id: The routed subagent.
+            intent: This turn's routing intent.
+            tool_cache: This turn's TurnToolCache.
+
+        Returns:
+            Selection (never raises).
+        """
+        sa = self._workflow.subagents.get(subagent_id)
+        rules = getattr(sa, "predispatch", None)
+        return select(rules if isinstance(rules, list) else [], intent=intent,
+                      state=self._routing_state(bundle), session=self._tool_session_values(bundle),
+                      tables=self._predispatch_tables, tool_schemas=self._tool_schemas,
+                      write_tools=self._write_tools,
+                      has_fresh=lambda t: tool_cache.latest_entry(t) is not None)
+
+    def _predispatch_guard(self, tc, bundle, tool_cache, counts: dict, consent_ok: bool | None):
+        """The shared guard (consent, cap, grounding, cache) for a pre-dispatch call.
+
+        Args:
+            tc: The pre-dispatch ToolCall.
+            bundle: This turn's context bundle.
+            tool_cache: This turn's TurnToolCache.
+            counts: The turn's per-tool live-call counts (shared with model calls).
+            consent_ok: The path's consent decision (None = not required).
+
+        Returns:
+            GuardVerdict.
+        """
+        grounded = getattr(self._manager_agent, "_grounded_params", None)
+        caps = getattr(self._manager_agent, "_tool_call_caps", None)
+        spec = (grounded if isinstance(grounded, dict) else {}).get(tc.tool_name) or {}
+        return check_tool_call(
+            tc, cap=(caps if isinstance(caps, dict) else {}).get(tc.tool_name),
+            used=counts.get(tc.tool_name, 0), grounded_spec=spec, messages=[],
+            stored_results=tool_cache.stored_results_by_tool(),
+            session_grounded=self._session_grounded_values(bundle, spec),
+            consent_ok=consent_ok, cache_lookup=tool_cache.lookup)
+
+    @staticmethod
+    def _predispatch_error(operation: str, session_id: str, e: Exception) -> PredispatchResult:
+        """Log an internal pre-dispatch failure (type only) and treat it as did-not-fire."""
+        logger.warning("orchestrator.predispatch_error", extra={
+            "operation": operation, "status": "failure", "session_id": session_id,
+            "error": type(e).__name__})
+        return PredispatchResult("error")
+
+    async def _predispatch_async(self, bundle, subagent_id: str, intent: str, tool_cache,
+                                 session_id: str, user_id: str, counts: dict) -> PredispatchResult:
+        """Stream path: select, guard and execute the turn's pre-dispatch under its budget.
+
+        The live execute mirrors the stream tool loop (gateway, shape, map
+        session values, cache, persist) and counts toward the per-turn cap
+        before the call leaves, so a timed-out write still uses it up.
+
+        Args:
+            bundle: This turn's context bundle.
+            subagent_id: The routed subagent.
+            intent: This turn's routing intent.
+            tool_cache: This turn's TurnToolCache.
+            session_id: Session id.
+            user_id: Caller identity.
+            counts: The turn's ``_turn_tool_counts``.
+
+        Returns:
+            PredispatchResult; never raises.
+        """
+        try:
+            if not self._async_gateway:
+                return PredispatchResult(None)
+            sel = self._select_predispatch(bundle, subagent_id, intent, tool_cache)
+
+            async def _guard(tc):
+                return self._predispatch_guard(tc, bundle, tool_cache, counts,
+                                               await self._stream_consent_ok(session_id, tc))
+
+            async def _execute(tc):
+                counts[tc.tool_name] = counts.get(tc.tool_name, 0) + 1
+                r = await self._async_gateway.execute(
+                    tool_cache.prepare(tc), session_id, user_id,
+                    session_values=self._tool_session_values(bundle))
+                r = self._result_shaper.shape(r)
+                await self._write_mapped_session_values(session_id, user_id, r, bundle)
+                tool_cache.after_call(tc, r)
+                await self._persist_tool_cache(session_id, user_id, tool_cache)
+                return r
+
+            return await run_async(sel, guard=_guard, execute=_execute,
+                                   timeout_s=self._predispatch_timeout_s)
+        except Exception as e:  # noqa: BLE001 — pre-dispatch never raises into the turn
+            return self._predispatch_error("orchestrator.stream_turn", session_id, e)
+
+    def _predispatch_sync(self, bundle, subagent_id: str, intent: str, tool_cache,
+                          session_id: str, user_id: str, counts: dict) -> PredispatchResult:
+        """Sync path twin of :meth:`_predispatch_async`; budget is the gateway's own timeout.
+
+        Consent is checked through ``trust.check_consent`` so a pre-dispatched
+        write is consent-gated as ``ManagerAgent._execute_tool`` would gate it.
+        Mapped session values are written at once, with the same helper the
+        sync path uses for run_turn's results.
+
+        Returns:
+            PredispatchResult; never raises.
+        """
+        try:
+            gateway = getattr(self._manager_agent, "_gateway", None)
+            if gateway is None:
+                return PredispatchResult(None)
+            sel = self._select_predispatch(bundle, subagent_id, intent, tool_cache)
+
+            def _guard(tc):
+                consent = None
+                if self._tool_registry.requires_consent(tc.tool_name):
+                    consent = bool(self._trust.check_consent(session_id, tc.tool_name))
+                return self._predispatch_guard(tc, bundle, tool_cache, counts, consent)
+
+            def _execute(tc):
+                counts[tc.tool_name] = counts.get(tc.tool_name, 0) + 1
+                r = gateway.execute(tool_cache.prepare(tc), session_id, user_id,
+                                    session_values=self._tool_session_values(bundle))
+                r = self._result_shaper.shape(r)
+                self._write_tool_session_values_sync(session_id, user_id, [r], bundle)
+                tool_cache.after_call(tc, r)
+                self._persist_tool_cache_sync(session_id, user_id, tool_cache)
+                return r
+
+            return run_sync(sel, guard=_guard, execute=_execute)
+        except Exception as e:  # noqa: BLE001 — pre-dispatch never raises into the turn
+            return self._predispatch_error("orchestrator.process_turn", session_id, e)
+
+    def _write_tool_session_values_sync(self, session_id: str, user_id: str,
+                                        tool_results, bundle) -> None:
+        """Persist ``session_values`` a connector's session_mapping lifted (sync path).
+
+        Args:
+            session_id: Session receiving the writes.
+            user_id: Owning user.
+            tool_results: ToolResults whose ``session_values`` to write.
+            bundle: Live context bundle, updated so the same turn sees them.
+        """
+        for tr in tool_results or []:
+            for key, val in (getattr(tr, "session_values", None) or {}).items():
+                self._write_memory_sync(session_id, user_id, "session", key, val)
+                bundle.session[key] = val
+
+    def _apply_predispatch(self, pd: PredispatchResult, messages: list, active_tools,
+                           tool_results: list, captured: list, max_chars: int, turn_id: str):
+        """Put a pre-dispatch into this turn's request: synthetic pair, bookkeeping, tool list.
+
+        The pair follows the utterance and ends the messages on a user
+        tool_result, the shape the model sees after calling the tool itself.
+        The exchange is persisted for replay under a turn-unique id, so a
+        replayed pre-dispatch never shares ``PREDISPATCH_ID`` with the next
+        turn's own.
+
+        Args:
+            pd: The runner's result.
+            messages: This turn's messages (mutated).
+            active_tools: This turn's tool definitions.
+            tool_results: The path's ToolResult list for post-tool hooks (mutated).
+            captured: This turn's captured exchanges (mutated).
+            max_chars: Per-result cap for the captured exchange.
+            turn_id: This turn's id.
+
+        Returns:
+            The tool list for every main-LLM call this turn.
+        """
+        if pd.inject and pd.tool_result is not None and pd.tool_call is not None:
+            r = pd.tool_result
+            content = r.result_text or (r.error if not r.success else "") or str(r.result)
+            messages.append(Message(role="assistant", content=[ToolUseBlock(
+                tool_use_id=PREDISPATCH_ID, tool_name=pd.tool,
+                input=dict(pd.tool_call.input_params or {}))]))
+            messages.append(Message(role="user", content=[ToolResultBlock(
+                tool_use_id=PREDISPATCH_ID, content=content, is_error=not r.success)]))
+            tool_results.append(r)
+            replay_id = f"{PREDISPATCH_ID}-{turn_id}"
+            ex = self._capture_tool_exchange(
+                [dataclasses.replace(pd.tool_call, tool_use_id=replay_id)],
+                [{"type": "tool_result", "tool_use_id": replay_id, "content": content}], max_chars)
+            if ex is not None:
+                captured.append(ex)
+        if pd.remove_tool and active_tools:
+            active_tools = [t for t in active_tools if t.get("name") != pd.tool]
+        return active_tools
+
+    @staticmethod
+    def _record_predispatch(pd: PredispatchResult, operation: str, session_id: str) -> None:
+        """Count and log a pre-dispatch outcome: tool, outcome, ms and arg keys only."""
+        if pd.outcome is None:
+            return
+        record_predispatch(pd.tool, pd.outcome)
+        status = ("success" if pd.outcome in ("fired", "cache_hit")
+                  else "failure" if pd.outcome in ("failed", "timeout", "error") else "skipped")
+        logger.info("orchestrator.predispatch", extra={
+            "operation": operation, "status": status, "session_id": session_id,
+            "tool": pd.tool, "outcome": pd.outcome, "ms": pd.ms,
+            "arg_keys": sorted((pd.tool_call.input_params or {}) if pd.tool_call else {})})
 
     # ------------------------------------------------------------------
     # Public interface — single entry point
@@ -1363,6 +1612,16 @@ class AgentCore(AgentCoreBase):
             subagent_entry_count[next_subagent_id],
         )
 
+        # ── Step 6c: pre-dispatch (Spec E §5) ────────────────────────
+        # A determined tool call runs now, after routing and before the
+        # prompt, so its result is in the turn cache when <known_facts> and
+        # <state> render. Per-TURN tool-call counts start here and are handed
+        # to run_turn, so the pre-dispatch counts toward the caps.
+        _turn_tool_counts: dict[str, int] = {}
+        _pd = self._predispatch_sync(bundle, next_subagent_id, nlu_result.intent, tool_cache,
+                                     session_id, user_id, _turn_tool_counts)
+        self._record_predispatch(_pd, "orchestrator.process_turn", session_id)
+
         # ── Step 7: Prompt assembly via ManagerAgent ──────────────────
         next_subagent: SubAgent = self._workflow.subagents[next_subagent_id]
         logger.info(
@@ -1446,9 +1705,10 @@ class AgentCore(AgentCoreBase):
             active_tools, self._tool_policies,
             self._remember.definition() if self._remember else None,
         )
-        # Per-TURN tool-call counts, created before LLM call 1 and handed to
-        # run_turn, so calls made ahead of the model count toward the caps.
-        _turn_tool_counts: dict[str, int] = {}
+        _pd_results: list = []
+        _pd_exchanges: list[dict] = []
+        active_tools = self._apply_predispatch(
+            _pd, messages, active_tools, _pd_results, _pd_exchanges, _max_chars, turn_id)
         output_format = next_subagent.output_format
         primary_model = self._llm.get_active_model()
         primary_provider = self._config.get("agent", {}).get("provider", "anthropic")
@@ -1580,11 +1840,9 @@ class AgentCore(AgentCoreBase):
         # holds no Memory Layer client, so the write lands here — the same
         # split the streaming path makes for its own tool loop. Without this
         # the mechanism silently does nothing on /process_turn, which is the
-        # path the bridge actually uses.
-        for _tr in tool_results or []:
-            for _k, _v in (getattr(_tr, "session_values", None) or {}).items():
-                self._write_memory_sync(session_id, user_id, "session", _k, _v)
-                bundle.session[_k] = _v
+        # path the bridge actually uses. (A pre-dispatch's values were
+        # written when it ran, so only run_turn's results are written here.)
+        self._write_tool_session_values_sync(session_id, user_id, tool_results, bundle)
 
         # #193: persist this turn's tool exchanges so the next turn can
         # replay them. run_turn returns ToolResult objects; _capture_tool_exchange
@@ -1602,8 +1860,13 @@ class AgentCore(AgentCoreBase):
             _max_chars,
         )
         _capped = self._merge_tool_exchanges(
-            _prior_exchanges, [_captured] if _captured else [], _max_items,
+            _prior_exchanges, _pd_exchanges + ([_captured] if _captured else []), _max_items,
         )
+        # From here on the pre-dispatch counts as a call the turn made (post-tool
+        # hooks, was_tool_used, audit), as if the model had called it.
+        if _pd_results:
+            tool_calls = [_pd.tool_call, *(tool_calls or [])]
+            tool_results = [*_pd_results, *(tool_results or [])]
         if _capped is not None:
             bundle.session["recent_tool_exchanges"] = _capped
             self._write_memory_sync(
@@ -1732,6 +1995,9 @@ class AgentCore(AgentCoreBase):
             error_message=llm_response.error_message,
         )
 
+        # Spec E §10: main-LLM calls = the initial call + run_turn's follow-ups.
+        _followups = getattr(self._manager_agent, "last_llm_calls", 0)
+        _llm_calls = 1 + (_followups if isinstance(_followups, int) else 0)
         logger.info(
             "orchestrator.turn_complete",
             extra={
@@ -1743,6 +2009,10 @@ class AgentCore(AgentCoreBase):
                 "tool_used": bool(tool_calls),
                 "intent": nlu_result.intent,
                 "next_subagent_id": next_subagent_id,
+                "llm_calls": _llm_calls,
+                "predispatch_tool": _pd.tool,
+                "predispatch_outcome": _pd.outcome,
+                "predispatch_ms": _pd.ms,
             },
         )
         logger.info(
@@ -4700,6 +4970,18 @@ class AgentCore(AgentCoreBase):
                     yield ev
                 return
 
+            # ── Step 6c: pre-dispatch (Spec E §5) ──────────────────────
+            # Runs after routing and before the prompt, so its result is in
+            # the turn cache when <known_facts> and <state> render. Per-TURN
+            # tool-call counts start here: a capped tool cannot slip through
+            # by being requested again in a later round, and the pre-dispatch
+            # itself counts toward the cap.
+            _turn_tool_counts: dict[str, int] = {}
+            _pd = await self._predispatch_async(
+                bundle, next_subagent_id, nlu_result.intent, tool_cache,
+                session_id, user_id, _turn_tool_counts)
+            self._record_predispatch(_pd, "orchestrator.stream_turn", session_id)
+
             # ── Step 7: Prompt assembly ────────────────────────────────
             logger.info(
                 "  [STEP 7] Prompt Assembly  →  subagent=%s  language=%s",
@@ -4767,6 +5049,17 @@ class AgentCore(AgentCoreBase):
                 active_tools, self._tool_policies,
                 self._remember.definition() if self._remember else None,
             )
+            # ToolResults of this turn, for the post-tool hook; a pre-dispatch
+            # counts as if the model had called the tool. The filtered tool
+            # list is the one every main-LLM call of this turn uses.
+            _stream_tool_results: list = []
+            active_tools = self._apply_predispatch(
+                _pd, messages, active_tools, _stream_tool_results,
+                _captured_exchanges_this_turn, _max_chars, turn_id)
+            _pd_tool_calls = [_pd.tool_call] if _stream_tool_results else []
+            if _pd_tool_calls:
+                was_tool_used = True
+            _llm_calls = 0
             sentence_index = 0
             token_buffer = ""
             primary_model = self._llm.get_active_model()
@@ -4792,11 +5085,6 @@ class AgentCore(AgentCoreBase):
             )
             t8 = time.time()
 
-            # Per-TURN tool-call counts, set before LLM call 1 so a capped tool
-            # cannot slip through by being requested again in a later round of
-            # the same turn (and so calls made ahead of the model count too).
-            _turn_tool_counts: dict[str, int] = {}
-
             # GH-194: per-channel response-length cap (None → wrapper default).
             channel_max_tokens = channel_config.get("max_tokens")
 
@@ -4821,6 +5109,7 @@ class AgentCore(AgentCoreBase):
                 # response. A tool call leaves via ToolUseRequested and never
                 # reaches the check.
                 for _empty_attempt in range(2):
+                    _llm_calls += 1
                     async for token in self._llm.stream(request, abort_event=abort_event):
                         if _aborted():
                             return
@@ -4910,7 +5199,6 @@ class AgentCore(AgentCoreBase):
                 yield _stamp(SignalEvent(stage="tool_start", status="start",
                                          tools=tool_names))
                 tool_results_for_llm = []
-                _stream_tool_results = []  # Collect ToolResult objects for post-tool hook
                 # Build ke_context for knowledge_retrieval tool (same as sync path)
                 _ke_context = {
                     "session_id": session_id,
@@ -5175,6 +5463,7 @@ class AgentCore(AgentCoreBase):
                             tools=_legacy_tools_to_neutral(active_tools) if active_tools else [],
                             max_tokens=channel_max_tokens or 4096,
                         )
+                        _llm_calls += 1
                         async for token in self._llm.stream(request, abort_event=abort_event):
                             if _aborted():
                                 return
@@ -5343,27 +5632,29 @@ class AgentCore(AgentCoreBase):
                     model_used, int((time.time() - t8b) * 1000),
                 )
 
-                # Post-tool hook: apply_job success → post_applied transition
-                # Mirror of the sync path hook. Guard ensures domain-agnosticism:
-                # workflows without a post_applied subagent get a no-op.
-                if _stream_tool_results and "post_applied" in self._workflow.subagents:
-                    for tr in _stream_tool_results:
-                        if getattr(tr, "tool_name", None) == "apply_job" and getattr(tr, "success", False):
-                            await self._async_memory.write(
-                                session_id, user_id, "session",
-                                "current_subagent_id", "post_applied",
-                            )
-                            bundle.session["current_subagent_id"] = "post_applied"
-                            logger.info(
-                                "orchestrator.post_applied_transition",
-                                extra={
-                                    "operation": "orchestrator.post_tool_hook",
-                                    "status": "success",
-                                    "session_id": session_id,
-                                    "trigger_tool": "apply_job",
-                                },
-                            )
-                            break
+            # Post-tool hook: apply_job success → post_applied transition
+            # Mirror of the sync path hook. Outside the tool-use branch so a
+            # pre-dispatched apply fires it even when the model answers in
+            # text. Guard ensures domain-agnosticism: workflows without a
+            # post_applied subagent get a no-op.
+            if _stream_tool_results and "post_applied" in self._workflow.subagents:
+                for tr in _stream_tool_results:
+                    if getattr(tr, "tool_name", None) == "apply_job" and getattr(tr, "success", False):
+                        await self._async_memory.write(
+                            session_id, user_id, "session",
+                            "current_subagent_id", "post_applied",
+                        )
+                        bundle.session["current_subagent_id"] = "post_applied"
+                        logger.info(
+                            "orchestrator.post_applied_transition",
+                            extra={
+                                "operation": "orchestrator.post_tool_hook",
+                                "status": "success",
+                                "session_id": session_id,
+                                "trigger_tool": "apply_job",
+                            },
+                        )
+                        break
 
             # Flush remaining token buffer as a final sentence into the batcher,
             # then drain the batcher in one final Trust call (turn-end flush).
@@ -5527,6 +5818,11 @@ class AgentCore(AgentCoreBase):
                     "sentences_emitted": sentence_index,
                     "digits_rewritten": _guard_counts["digits_rewritten"],
                     "foreign_script_words": _guard_counts["foreign_script_words"],
+                    # Spec E §10.
+                    "llm_calls": _llm_calls,
+                    "predispatch_tool": _pd.tool,
+                    "predispatch_outcome": _pd.outcome,
+                    "predispatch_ms": _pd.ms,
                 },
             )
             record_output_guard(turn_input.channel, _guard_lang,
@@ -5570,7 +5866,7 @@ class AgentCore(AgentCoreBase):
                     trust_output=trust_output,
                     model_used=model_used,
                     intent=nlu_result.intent,
-                    tool_calls=all_tool_calls,
+                    tool_calls=[*_pd_tool_calls, *all_tool_calls],
                     latency_ms=latency_ms,
                     timestamp_ms=turn_input.timestamp_ms,
                 )

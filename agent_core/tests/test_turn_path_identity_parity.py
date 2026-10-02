@@ -690,3 +690,30 @@ async def test_system_prompt_and_messages_parity():
     flat = "\n".join(b.text for b in a_req.system.blocks)
     assert "waiting for: job_choice" in flat and "1. Cook; 2. Driver" in flat
     assert "caller: yes\nbot: Which job?" in flat
+
+
+# ── Spec E: a pre-dispatched read reaches the main LLM identically on both paths ──
+
+async def test_predispatch_request_and_outcome_parity(caplog):
+    """Same session, same rule: same system, messages, tools and outcome on both paths."""
+    import logging
+    from tests.test_predispatch_wiring import (
+        JOBS_RULE, _agent, _complete_extras, _sync_agent, _sync_turn)
+
+    session = {"trade": "Welder", "location": "Bengaluru", "language_preference": "english"}
+    with caplog.at_level(logging.INFO, logger="src.orchestrator"):
+        s_agent, _gw = _sync_agent(session, [JOBS_RULE], manager=_real_prompt_manager())
+        _sync_turn(s_agent)
+        a_agent, requests = _agent(session, [JOBS_RULE], manager=_real_prompt_manager())
+        await _collect_events(a_agent, _make_turn_input())
+
+    s_req, a_req = s_agent._llm.call.call_args.args[0], requests[0]
+    assert s_req.system == a_req.system
+    assert s_req.messages == a_req.messages
+    assert s_req.tools == a_req.tools
+    assert "fetch_jobs" not in [t.name for t in a_req.tools]
+    s_log = _complete_extras(caplog, "orchestrator.turn_complete")
+    a_log = _complete_extras(caplog, "orchestrator.stream_turn_complete")
+    for key in ("llm_calls", "predispatch_tool", "predispatch_outcome"):
+        assert getattr(s_log, key) == getattr(a_log, key), key
+    assert a_log.predispatch_outcome == "fired" and a_log.llm_calls == 1

@@ -131,3 +131,27 @@ def test_sync_guard_exception():
         raise RuntimeError("x")
     r = run_sync(READ, guard=boom, execute=None)
     assert (r.outcome, r.inject, r.remove_tool) == ("error", False, False)
+
+
+def test_sync_write_execute_raises_injects_failure():
+    def boom(tc):
+        raise RuntimeError("upstream error")
+    w = run_sync(WRITE, guard=lambda tc: GuardVerdict("go"), execute=boom)
+    assert (w.outcome, w.inject, w.remove_tool, w.tool_result.success) == ("error", True, True, False)
+
+
+def test_sync_read_execute_raises_falls_back():
+    def boom(tc):
+        raise RuntimeError("upstream error")
+    r = run_sync(READ, guard=lambda tc: GuardVerdict("go"), execute=boom)
+    assert (r.outcome, r.inject, r.remove_tool, r.tool_result) == ("error", False, False, None)
+
+
+@pytest.mark.asyncio
+async def test_guard_hit_without_result_is_error_no_inject():
+    async def hit_none(tc):
+        return GuardVerdict("hit", None)
+    r = await run_async(READ, guard=hit_none, execute=None, timeout_s=1.5)
+    assert (r.outcome, r.inject, r.remove_tool, r.tool_result) == ("error", False, False, None)
+    s = run_sync(WRITE, guard=lambda tc: GuardVerdict("hit", None), execute=None)
+    assert (s.outcome, s.inject, s.remove_tool, s.tool_result) == ("error", False, False, None)
