@@ -2612,3 +2612,14 @@ def test_state_phase_is_the_post_routing_subagent():
     agent.process_turn(_turn_input())
     state = agent._manager_agent.build_system_prompt.call_args.kwargs["state"]
     assert state.startswith("phase: ended")
+
+
+def test_sync_turn_still_writes_current_question_after_spec_d():
+    """Spec D dropped the "[Last question asked: …]" prompt line, but
+    current_question must still reach the session each turn: job_match's
+    submit_confirm pending (#439) is keyed on it."""
+    agent = _make_agent(manager_text="क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?")
+    agent.process_turn(_turn_input())
+    writes = [c.args for c in agent._memory.write.call_args_list if c.args[3] == "current_question"]
+    assert writes and writes[-1][2] == "session"
+    assert writes[-1][4] == "क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"

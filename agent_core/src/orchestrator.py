@@ -62,6 +62,7 @@ from src.manager_agent import (
     over_call_cap,
     refusal_result,
     ungrounded_params,
+    zero_seed_fields,
 )
 from src.models import (
     DoneEvent,
@@ -361,6 +362,10 @@ class AgentCore(AgentCoreBase):
         agent_cfg = self._config.get("agent") or {}
         self._agent_history_turns = int(agent_cfg.get("history_turns", 2))
         self._state_fields = list(agent_cfg.get("state_fields") or [])
+        # Int fields whose string "0" is the unset seed (#436 D1): <state>
+        # must not list them as collected.
+        self._zero_seed_fields = zero_seed_fields(
+            ((self._config.get("preprocessing") or {}).get("nlu_processor") or {}).get("slots"))
         # recent_turns serves both the NLU frame and <recent>; keep enough for either.
         self._recent_keep = max(self._dialogue_cfg.history_turns, self._agent_history_turns)
         self._pending_resolver = PendingResolver(self._workflow)
@@ -447,7 +452,7 @@ class AgentCore(AgentCoreBase):
                 offered = offered_rows(offered_entry(served, tool_cache, of.tool))
             status = {k: bundle.session.get(k) for k in self._state_fields}
             return render_state(phase=subagent_id, pending=pending, collected=profile_context,
-                                offered=offered, status=status)
+                                offered=offered, status=status, zero_seeds=self._zero_seed_fields)
         except Exception as e:  # noqa: BLE001 — never raise into the turn
             logger.warning("orchestrator.state_render_failed",
                            extra={"operation": "orchestrator.render_state", "status": "failure",
@@ -1926,9 +1931,8 @@ class AgentCore(AgentCoreBase):
                 # field, age, as 0 — so a falsy value here means "the caller
                 # never told us", not "the caller said zero". Letting 0
                 # through would send it as a real age and be rejected as
-                # under-18. Same reasoning as manager_agent._is_collected,
-                # which keeps a seeded 0 out of the prompt's
-                # "already collected" block.
+                # under-18. Same reasoning as src.context.state.is_collected,
+                # which keeps a seeded 0 out of <state>'s "collected" line.
                 if val in (None, "", [], 0, "0"):
                     continue
                 values[key] = val

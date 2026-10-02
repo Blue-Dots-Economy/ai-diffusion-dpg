@@ -231,3 +231,21 @@ def test_sync_guard_is_per_sentence_by_script():
     text = agent.process_turn(_turn_input()).response_text
     assert "twenty-five thousand" in text and _WORDS in text
     assert not any(ch.isdigit() for ch in text)
+
+
+@pytest.mark.asyncio
+async def test_final_add_release_is_guarded():
+    """#436 D2 speaks what the turn-end ``add()`` releases; with Spec D that
+    release must be guarded text. Three sentences at max_sentences=3: the
+    third (unterminated tail) reaches the batcher via the final add, which
+    triggers the flush whose release is spoken."""
+    agent, checked = _agent_with_contract(["एक 5 है। ", "दो 6 है। ", "**तीन** 27620"])
+    agent._config = {**agent._config, "trust_client": {"check_output_batch": {
+        "enabled": True, "max_sentences": 3, "max_interval_ms": 10_000}}}
+    events = await _collect_events(agent, _make_turn_input(channel="cli"))
+    texts = [e.text for e in events if isinstance(e, SentenceEvent)]
+    assert len(texts) == 3, texts
+    spoken = " ".join(texts)
+    assert not any(ch.isdigit() for ch in spoken) and "**" not in spoken
+    assert _WORDS in texts[2]
+    assert checked and all(not any(ch.isdigit() for ch in t) for t in checked)

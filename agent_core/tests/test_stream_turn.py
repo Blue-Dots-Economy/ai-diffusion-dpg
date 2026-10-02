@@ -1707,3 +1707,38 @@ async def test_recent_retention_is_max_of_nlu_and_agent_history_turns():
     await asyncio.sleep(0)   # let the fire-and-forget session write run
     writes = [c.args[4] for c in agent._async_memory.write.await_args_list if c.args[3] == "recent_turns"]
     assert len(writes) == 1 and len(writes[0]) == 4 and writes[0][-1]["bot"] == "Ok."
+
+
+@pytest.mark.asyncio
+async def test_state_hides_seeded_string_zero_age_but_lists_zero_experience():
+    """#436 D1 survives Spec D's move of "collected" into <state>: a string "0"
+    for an int slot with a positive minimum (age) is the unset seed, while
+    experience_years accepts 0 as a real answer."""
+    base = _make_agent_core()
+    slots = {"age": {"type": "int", "min": 18, "max": 99},
+             "experience_years": {"type": "int", "min": 0, "max": 60}}
+    agent = _make_agent_core(config={**base._config, "preprocessing": {
+        **(base._config.get("preprocessing") or {}), "nlu_processor": {"slots": slots}}})
+    assert agent._zero_seed_fields == frozenset({"age"})
+    profile = agent._async_memory.context_bundle.return_value.profile
+    profile.update({"age": "0", "experience_years": "0"})
+    kw = await _stream_prompt_kwargs(agent)
+    assert "experience_years=0" in kw["state"]
+    assert "age=0" not in kw["state"]
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_still_writes_current_question_after_spec_d():
+    """See test_orchestrator's sync twin: #439 keys submit_confirm on it."""
+    agent = _make_agent_core()
+
+    async def mock_stream(*args, **kwargs):
+        yield "क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"
+
+    agent._llm.stream = mock_stream
+    await _collect_events(agent, _make_turn_input())
+    await asyncio.sleep(0)
+    sync = [c.args for c in agent._memory.write.call_args_list if c.args[3] == "current_question"]
+    asy = [c.args for c in agent._async_memory.write.await_args_list if c.args[3] == "current_question"]
+    writes = sync + asy
+    assert writes and writes[-1][4] == "क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"
