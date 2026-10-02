@@ -48,6 +48,7 @@ DOMAIN_SECTION_SCHEMAS: dict[tuple[str, str], type] = {
     ("agent_core", "session_bootstrap"): agent_core.SessionBootstrapSection,
     ("agent_core", "memory_tool"): agent_core.MemoryToolSection,
     ("agent_core", "agent_workflow"): agent_core.AgentWorkflowSection,
+    ("agent_core", "predispatch_tables"): agent_core.PredispatchTablesSection,
     ("agent_core", "entity_to_profile_field"): agent_core.EntityToProfileFieldSection,
     ("agent_core", "hitl"): agent_core.HitlSection,
     ("agent_core", "identity"): agent_core.IdentitySection,

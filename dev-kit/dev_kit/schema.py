@@ -212,6 +212,10 @@ class AgentConfig(BaseModel):
         default_factory=list,
         description="Session keys shown on the <state> status line (Spec D §6.3)",
     )
+    predispatch_timeout_ms: int = Field(
+        default=1500, gt=0,
+        description="Budget for a tool pre-dispatched before the main LLM (Spec E §5)",
+    )
     consent_prompt: str = Field(
         default="",
         description="Message shown to the user when requesting consent. Used when ask_for_consent is True.",
@@ -612,6 +616,20 @@ class SubAgentSchema(BaseModel):
         default_factory=list,
         description="Questions this subagent may be waiting on (dialogue-act NLU).",
     )
+    predispatch: Optional[list[dict]] = Field(
+        default=None,
+        description="Tool pre-dispatch rules (Spec E); validated by the agent_core domain schema",
+    )
+
+    @field_validator("predispatch")
+    @classmethod
+    def _validate_predispatch(cls, v: Optional[list[dict]]) -> Optional[list[dict]]:
+        """Reject rule shapes the runtime rejects; keep the plain dicts."""
+        if v is not None:
+            from dev_kit.schemas.domain.agent_core import PredispatchRule
+            for rule in v:
+                PredispatchRule.model_validate(rule)
+        return v
 
 
 class AgentWorkflowConfig(BaseModel):
@@ -814,6 +832,10 @@ class AgentCoreConfig(BaseModel):
     session_bootstrap: Optional[dict] = None
     identity: Optional[dict] = None
     handoff: Optional[dict] = None
+    predispatch_tables: dict = Field(
+        default_factory=dict,
+        description="Named lookup tables for pre-dispatch normalise/reject (Spec E §3.3)",
+    )
     hitl: HitlConfig | None = Field(
         default=None,
         description="HITL config. Required if any subagent uses special_handler: hitl.",

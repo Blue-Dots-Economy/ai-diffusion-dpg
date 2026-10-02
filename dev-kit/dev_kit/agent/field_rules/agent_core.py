@@ -484,6 +484,22 @@ FIELD_RULES: dict[str, FieldRule] = {
         default=[],
         auto_answer=True,
     ),
+    "agent.predispatch_timeout_ms": FieldRule(
+        category="framework_default_only",
+        description="Budget in ms for a tool pre-dispatched before the main LLM (Spec E).",
+    ),
+    "agent_workflow.subagents.predispatch": FieldRule(
+        category="chat",
+        phase="workflow",
+        description="Per-subagent tool pre-dispatch rules (Spec E). Optional; write rules ship enabled: false.",
+        auto_answer=True,
+    ),
+    "predispatch_tables": FieldRule(
+        category="chat",
+        phase="workflow",
+        description="Named lookup tables for pre-dispatch normalise/reject (Spec E).",
+        auto_answer=True,
+    ),
     "preprocessing.nlu_processor.history_turns": FieldRule(
         category="framework_default_only",
         description="Recent exchanges rendered into the NLU frame.",

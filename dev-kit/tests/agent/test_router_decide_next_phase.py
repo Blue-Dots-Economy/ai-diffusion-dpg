@@ -244,11 +244,17 @@ def test_spec_d_rules_do_not_stall_reach_and_tools_for_web_only():
     _, status = build_skeleton(state)
     spec_d = ("agent_core.agent.state_fields", "agent_core.connectors.read.result_shaping",
               "agent_core.channels.voice.output_contract")
-    for path in spec_d:
+    spec_e = ("agent_core.agent_workflow.subagents.predispatch", "agent_core.predispatch_tables")
+    for path in spec_e:
+        assert path in AGGREGATED_FIELD_RULES, path
+        assert AGGREGATED_FIELD_RULES[path].auto_answer, path
+    assert AGGREGATED_FIELD_RULES["agent_core.agent.predispatch_timeout_ms"].category == "framework_default_only"
+    for path in spec_d + spec_e:
         assert status.get(path) in ("answered", "not_applicable"), path
-    # Every other applicable chat field answered: the Spec D rules must not block.
+    # Every other applicable chat field answered: the Spec D/E rules must not block.
     for path, rule in AGGREGATED_FIELD_RULES.items():
-        if rule.category == "chat" and path not in spec_d:
+        if rule.category == "chat" and path not in spec_d + spec_e:
             status[path] = "answered"
     assert _is_phase_complete("reach", state, status)
     assert _is_phase_complete("tools", state, status)
+    assert _is_phase_complete("workflow", state, status)

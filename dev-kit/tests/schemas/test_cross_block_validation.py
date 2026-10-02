@@ -1,4 +1,6 @@
 """Tests for cross-block invariants used by set_phase and pre-deploy validate."""
+import pytest
+
 from dev_kit.schemas.cross_block_validation import validate_cross_block
 
 
@@ -587,3 +589,76 @@ def test_blue_dots_merged_config_passes_output_rules():
     assert _output_contract_rules(cfg) == []
     assert not [e for e in validate_cross_block(blocks, selected_channels=["bridge"])
                 if "output_contract" in e or "result_shaping" in e]
+
+
+# -- Spec E: tool pre-dispatch -------------------------------------------------
+
+def _pd_blocks(rule, *, tables=None, subagent_tools=("search_jobs", "save_profile"), acts=("job_search",)):
+    ac = {
+        "connectors": {"read": [{"name": "search_jobs"}], "write": [{"name": "save_profile"}]},
+        "predispatch_tables": tables if tables is not None else {"city": {"a": "b"}},
+        "preprocessing": {"nlu_processor": {"act_intents": [{"intent": i} for i in acts]}},
+        "agent_workflow": {"subagents": [{"id": "s", "tools": list(subagent_tools), "predispatch": [rule]}]},
+    }
+    ag = {"tools": [{"id": "search_jobs", "type": "rest_api", "endpoints": [
+        {"params": [{"name": "q", "source": "agent"}, {"name": "tok", "source": "config"}]}]}]}
+    blocks = _empty_blocks()
+    blocks["agent_core"] = ac
+    blocks["action_gateway"] = ag
+    return blocks
+
+
+def _pd_errs(blocks):
+    return [e for e in validate_cross_block(blocks, []) if "predispatch" in e]
+
+
+_PD_OK = {"tool": "search_jobs", "on_intent": ["job_search"],
+          "args": {"q": {"template": "{x} in {c}", "normalise": {"c": "city"}}}}
+
+
+def test_predispatch_cross_block_valid():
+    assert _pd_errs(_pd_blocks(_PD_OK)) == []
+
+
+@pytest.mark.parametrize("rule, kwargs, needle", [
+    ({"tool": "save_profile", "args": {}}, {}, "write tool; set 'enabled'"),
+    ({"tool": "ghost", "args": {}}, {}, "'ghost' is not a declared connector"),
+    ({**_PD_OK, "args": {"q": {"from": "session", "key": "k", "normalise": "nope"}}}, {}, "unknown table 'nope'"),
+    ({**_PD_OK, "args": {"q": {"from": "session", "key": "k", "reject": "nope"}}}, {}, "unknown table 'nope'"),
+    ({**_PD_OK, "args": {"q": {"template": "x", "normalise": "city"}}}, {}, "must be a dict"),
+    ({**_PD_OK, "on_intent": ["ghost_intent"]}, {}, "on_intent 'ghost_intent'"),
+    ({**_PD_OK, "args": {"tok": {"from": "session", "key": "k"}}}, {}, "not a source=agent param"),
+    (_PD_OK, {"subagent_tools": ("other",)}, "not in the subagent's tools"),
+])
+def test_predispatch_cross_block_rejects(rule, kwargs, needle):
+    errs = _pd_errs(_pd_blocks(rule, **kwargs))
+    assert any(needle in e for e in errs), errs
+
+
+def test_predispatch_write_rule_with_explicit_enabled_passes():
+    rule = {"tool": "save_profile", "enabled": False, "args": {}}
+    assert _pd_errs(_pd_blocks(rule)) == []
+
+
+def test_predispatch_framework_intent_and_builtin_normalise_pass():
+    rule = {**_PD_OK, "on_intent": ["language_switch_request"],
+            "args": {"q": {"from": "session", "key": "k", "normalise": "title"}}}
+    assert _pd_errs(_pd_blocks(rule)) == []
+
+
+def test_predispatch_gated_after_tools_phase():
+    blocks = _pd_blocks({"tool": "ghost", "args": {}})
+    assert [e for e in validate_cross_block(blocks, [], current_phase="trust") if "predispatch" in e] == []
+    assert [e for e in validate_cross_block(blocks, [], current_phase="tools") if "predispatch" in e]
+
+
+def test_blue_dots_merged_config_passes_predispatch_rules():
+    from pathlib import Path
+
+    import yaml
+
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[2] / "configs" / "blue-dots"
+                          / "agent_core.yaml").read_text(encoding="utf-8"))
+    blocks = _empty_blocks()
+    blocks["agent_core"] = cfg
+    assert _pd_errs(blocks) == []

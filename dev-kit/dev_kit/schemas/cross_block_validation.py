@@ -202,6 +202,89 @@ def _session_bootstrap_rules(ac: dict, ml: dict) -> list[str]:
     return errors
 
 
+_FRAMEWORK_HANDLED_INTENTS = frozenset({"language_switch_request"})  # mirrors runtime
+_PREDISPATCH_BUILTINS = frozenset({"title", "lower"})
+
+
+def _predispatch_rules(ac: dict, ag: dict) -> list[str]:
+    """Pre-dispatch rule checks, mirroring ``MergedConfig._check_predispatch_rules``.
+
+    Plus plan ruling 5: every rule arg key must be a ``source: agent`` param of
+    the matching ``action_gateway.tools[id]`` (checked when that tool exists).
+
+    Args:
+        ac: The merged agent_core config dict.
+        ag: The action_gateway block.
+
+    Returns:
+        List of human-readable error strings, empty when all rules pass.
+    """
+    errors: list[str] = []
+    conns = ac.get("connectors") or {}
+    groups = {
+        g: {c.get("name") for c in (conns.get(g) or []) if isinstance(c, dict)}
+        for g in ("read", "write", "identity")
+    }
+    known = set().union(*groups.values())
+    writes = groups["write"] | groups["identity"]
+    tables = set((ac.get("predispatch_tables") or {}))
+    nlu = (ac.get("preprocessing") or {}).get("nlu_processor") or {}
+    producible = {
+        r.get("intent") for r in (nlu.get("act_intents") or []) if isinstance(r, dict)
+    } | set(_FRAMEWORK_HANDLED_INTENTS)
+    wf = ac.get("agent_workflow") or {}
+    global_tools = set(wf.get("global_tools") or [])
+    gw_params: dict[str, set[str]] = {}
+    for t in (ag.get("tools") or []):
+        if isinstance(t, dict) and t.get("id"):
+            gw_params[t["id"]] = {
+                p["name"]
+                for ep in (t.get("endpoints") or []) if isinstance(ep, dict)
+                for p in (ep.get("params") or [])
+                if isinstance(p, dict) and p.get("source") == "agent" and p.get("name")
+            }
+    for sa in (wf.get("subagents") or []):
+        if not isinstance(sa, dict):
+            continue
+        sa_tools = set(sa.get("tools") or [])
+        for i, rule in enumerate(sa.get("predispatch") or []):
+            if not isinstance(rule, dict):
+                continue
+            where = f"agent_workflow.subagents[{sa.get('id')}].predispatch[{i}]"
+            tool = rule.get("tool")
+            if tool not in known:
+                errors.append(f"{where}: tool '{tool}' is not a declared connector")
+            if (sa_tools or global_tools) and tool not in sa_tools and tool not in global_tools:
+                errors.append(f"{where}: tool '{tool}' is not in the subagent's tools or global_tools")
+            if tool in writes and rule.get("enabled") is None:
+                errors.append(f"{where}: '{tool}' is a write tool; set 'enabled' explicitly")
+            for intent in rule.get("on_intent") or []:
+                if intent not in producible:
+                    errors.append(f"{where}: on_intent '{intent}' is not produced by any act_intents row")
+            for name, arg in (rule.get("args") or {}).items():
+                if not isinstance(arg, dict):
+                    continue
+                if tool in gw_params and name not in gw_params[tool]:
+                    errors.append(
+                        f"{where}.args.{name}: not a source=agent param of "
+                        f"action_gateway.tools[id={tool!r}] (have {sorted(gw_params[tool])})"
+                    )
+                norm = arg.get("normalise")
+                names: list = []
+                if arg.get("template") is not None:
+                    if norm is not None and not isinstance(norm, dict):
+                        errors.append(f"{where}.args.{name}: normalise on a template must be a dict")
+                    names += [v for v in (norm.values() if isinstance(norm, dict) else []) if isinstance(v, str)]
+                elif isinstance(norm, str):
+                    names.append(norm)
+                if arg.get("reject"):
+                    names.append(arg["reject"])
+                for n in names:
+                    if n not in tables and n not in _PREDISPATCH_BUILTINS:
+                        errors.append(f"{where}.args.{name}: unknown table '{n}'")
+    return errors
+
+
 def _tool_result_session_mapping_rules(ac: dict, ag: dict) -> list[str]:
     """Reject user-scope caching of a connector whose tool declares ``session_mapping``.
 
@@ -696,6 +779,8 @@ def validate_cross_block(
         errors.extend(_tool_result_session_mapping_rules(ac, blocks.get("action_gateway") or {}))
         # 13d. dialogue_act state keys must not collide with session_mapping targets.
         errors.extend(_dialogue_act_session_mapping_rules(ac, blocks.get("action_gateway") or {}))
+        # 13e. Tool pre-dispatch rules (runtime MergedConfig._check_predispatch_rules).
+        errors.extend(_predispatch_rules(ac, blocks.get("action_gateway") or {}))
 
     # 14. Connector input_schema property names MUST match the action_gateway
     # tool's agent-source param names. The REST adapter passes the LLM's

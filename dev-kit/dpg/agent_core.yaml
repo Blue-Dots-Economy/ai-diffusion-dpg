@@ -17,6 +17,7 @@ preprocessing:
 agent:
   history_turns: 2        # Spec D: exchanges shown to the main LLM in <recent>
   state_fields: []        # Spec D: session keys shown on the <state> status line
+  predispatch_timeout_ms: 1500  # Spec E: budget for a tool pre-dispatched before the main LLM
   ask_for_consent: false
   consent_prompt: ""
   timeout_ms: 10000
