@@ -38,6 +38,7 @@ class CheckOutputBatch(BaseModel):
 class TrustClientConfig(ClientConfig):
     """Trust Layer client config with extra batching controls for output checks."""
 
+    escalate_timeout_ms: int = Field(default=8000, gt=0, le=60000)
     check_output_batch: CheckOutputBatch = Field(default_factory=CheckOutputBatch)
 
 

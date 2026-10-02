@@ -106,6 +106,7 @@ class TrustClientConfig(ClientConfig):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    escalate_timeout_ms: int = Field(default=8000, gt=0)
     check_output_batch: CheckOutputBatchConfig = Field(
         default_factory=CheckOutputBatchConfig
     )

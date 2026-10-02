@@ -38,6 +38,10 @@ class ClientConfig(BaseModel):
     timeout_ms: int = 5000
 
 
+class TrustClientConfig(ClientConfig):
+    escalate_timeout_ms: int = 8000
+
+
 # ---------------------------------------------------------------------------
 # Agent Core
 # ---------------------------------------------------------------------------
@@ -762,7 +766,7 @@ class AgentCoreConfig(BaseModel):
     connectors: ConnectorsConfig = ConnectorsConfig()
     ke_client: ClientConfig
     memory_client: ClientConfig
-    trust_client: ClientConfig
+    trust_client: TrustClientConfig
     learning_client: ClientConfig
     action_gateway_client: ClientConfig
     preprocessing: PreprocessingConfig
