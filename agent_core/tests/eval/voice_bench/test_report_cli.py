@@ -1,0 +1,229 @@
+# agent_core/tests/eval/voice_bench/test_report_cli.py
+import json
+import os
+import re
+
+import pytest
+import yaml
+
+from eval.voice_bench.records import CallRecord, Leg, TapEntry, TurnRecord, Verdict
+from eval.voice_bench.report import comparable, pct, render_markdown, summarise
+
+
+def _rec(run, ms_list, verdicts, tool_turn=None):
+    tap = [TapEntry(1, "POST", "/v1/search", "", {}, 200, {}, "search")]
+    turns = [TurnRecord(i, "a", "ठीक", None, ms, ms, ms + 100, {}, tap if i == tool_turn else [], {"llm_calls": 1},
+                        False, None) for i, ms in enumerate(ms_list)]
+    return CallRecord("M3", "8b39427", "T01", run, "919900001000", 1, 1, "gpt-4.1", "gpt-4.1",
+                      [Leg("c", turns, "bot")], 1, False, None, verdicts={k: Verdict(*v) for k, v in verdicts.items()})
+
+
+def test_pct_nearest_rank():
+    assert pct([], 0.5) is None and pct([1, 2, 3, 4], 0.5) in (2, 3) and pct([5], 0.95) == 5
+
+
+def test_summarise_rates_exclude_na_and_count_unscored_as_not_pass():
+    recs = [_rec(0, [900, 1100, 6000], {"TC12": ("pass", "q"), "TC10": ("n/a",)}, tool_turn=2),
+            _rec(1, [800, 5200], {"TC12": ("unscored",), "TC10": ("fail", "q", "r", 1)})]
+    s = summarise(recs, {"name": "M3", "nlu": None})
+    assert s["tc"]["TC12"]["rate"] == 0.5 and s["tc"]["TC12"]["n"] == 2
+    assert s["tc"]["TC10"]["n"] == 1 and s["tc"]["TC10"]["rate"] == 0.0
+    assert s["latency"]["tool"]["n"] == 1 and s["latency"]["non_tool"]["n"] == 4
+    assert s["latency"]["non_tool"]["over5s"] == 1 and s["latency"]["all"]["max"] == 6000
+    assert s["failures"][0]["tc"] == "TC10" and s["failures"][0]["turn"] == 1
+
+
+def test_comparable_and_markdown():
+    a = summarise([_rec(0, [900], {"TC12": ("pass", "q")})], {"name": "M2"})
+    b = summarise([_rec(0, [700], {"TC12": ("fail", "q", "r", 0)})], {"name": "M3"})
+    assert comparable([a, b]) == []
+    b2 = dict(b, judge_model="other")
+    assert comparable([a, b2])
+    md = render_markdown([a, b])
+    assert "| TC12 |" in md and "100% (1/1)" in md and "-100" in md
+    assert "## Latency" in md and "## NLU (TC22)" in md and "statistical significance" in md
+
+
+# ---- CLI ------------------------------------------------------------------------------------------------------
+import eval.voice_bench.__main__ as cli  # noqa: E402
+from eval.voice_bench.stack import StackError  # noqa: E402
+from eval.voice_bench.store import ResultStore  # noqa: E402
+
+_DEVANAGARI = re.compile(r"[ऀ-ॿ]")
+
+
+class FakeTap:
+    instances = []
+
+    def __init__(self, port, signals_url, search_url):
+        self.started = self.stopped = False
+        FakeTap.instances.append(self)
+
+    @property
+    def url_for_containers(self):
+        return "http://host.docker.internal:1"
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+    def take(self, since_ms):
+        return []
+
+
+class FakeBackend:
+    calls = []
+
+    def __init__(self, cfg, results_dir):
+        self.state = {"watermark": "w", "seed_version": 1, "api_key_env_file": "/x/blue_dots.env",
+                      "instance_url": "http://signals-api:2742", "snapshot": {}, "seed_user_ids": [],
+                      "service_user_id": "s"}
+
+    def up(self):
+        FakeBackend.calls.append("up")
+
+    def down(self, volumes=False):
+        FakeBackend.calls.append(("down", volumes))
+
+    def seed(self):
+        FakeBackend.calls.append("seed")
+
+    def cleanup(self):
+        pass
+
+
+class FakeStack:
+    fail = set()
+    downs = []
+
+    def __init__(self, target, repo_root, work_root, tap_url, instance_url, env_file):
+        self.target = target
+
+    @property
+    def commit(self):
+        return f"c{self.target.name}"
+
+    @property
+    def worktree(self):
+        return f"/wt/{self.target.name}"
+
+    def up(self):
+        if self.target.name in FakeStack.fail:
+            raise StackError("patch does not apply: rule 0: expected 3, found 2")
+        return "http://127.0.0.1:18008"
+
+    def down(self):
+        FakeStack.downs.append(self.target.name)
+        return []
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    FakeTap.instances, FakeBackend.calls, FakeStack.fail, FakeStack.downs = [], [], set(), []
+    driven, nlu_calls = [], []
+
+    def fake_drive(deps, persona, run_idx, phone, max_turns, meta):
+        driven.append((meta["target"], persona.id, run_idx, phone))
+        turns = [TurnRecord(0, "नमस्ते", "नमस्ते जी", None, 900, 900, 1000, {}, [], {}, True, None)]
+        return CallRecord(meta["target"], meta["target_commit"], persona.id, run_idx, phone, meta["suite_version"],
+                          meta["seed_version"], meta["caller_model"], meta["judge_model"], [Leg("c", turns, "bot")],
+                          1, False, None)
+
+    def fake_score(rec, persona, judge_llm, places, no_idle_handling):
+        rec.verdicts = {"TC12": Verdict("fail", "नमस्ते जी", "कारण", 0)}
+        return rec.verdicts
+
+    def fake_nlu(worktree, cases, repeat, out):
+        nlu_calls.append((worktree, cases, repeat))
+        return {"adapter": "intent", "report": {"fields": {"intent": {"accuracy": 0.9, "n": 10}},
+                                                "termination_false_positives": 0,
+                                                "latency_ms": {"p50": 400, "p95": 900}}}
+
+    monkeypatch.setattr(cli, "Tap", FakeTap)
+    monkeypatch.setattr(cli, "Backend", FakeBackend)
+    monkeypatch.setattr(cli, "TargetStack", FakeStack)
+    monkeypatch.setattr(cli, "BridgeClient", lambda url, sp, tw: object())
+    monkeypatch.setattr(cli, "OpenAIJsonLLM", lambda model, temperature: object())
+    monkeypatch.setattr(cli, "LogScraper", lambda c: object())
+    monkeypatch.setattr(cli, "run_nlu", fake_nlu)
+    monkeypatch.setattr(cli, "drive_call", fake_drive)
+    monkeypatch.setattr(cli, "score_call", fake_score)
+    monkeypatch.setattr(cli, "_repo_root", lambda: tmp_path)
+    results = tmp_path / "results"
+    cfg = {"suite_version": 1, "targets": [{"name": "M0", "git_ref": "a"}, {"name": "M1", "git_ref": "b"}],
+           "models": {"caller": {"provider": "openai", "model": "gpt-4.1", "temperature": 0.3},
+                      "judge": {"provider": "openai", "model": "gpt-4.1", "temperature": 0}},
+           "backend": {"signals_dir": str(tmp_path)}, "runs": 1, "runs_per_scenario": {"T01": 3},
+           "results_dir": str(results)}
+    path = tmp_path / "vb.yaml"
+    path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+    return {"cfg": str(path), "results": results, "driven": driven, "nlu": nlu_calls, "tmp": tmp_path}
+
+
+def test_run_skips_cached_records(env):
+    argv = ["run", "--config", env["cfg"], "--targets", "M0", "--scenarios", "T01,T02"]
+    assert cli.main(argv) == 0
+    assert [(s, r) for _, s, r, _ in env["driven"]] == [("T01", 0), ("T01", 1), ("T01", 2), ("T02", 0)]
+    env["driven"].clear()
+    assert cli.main(argv) == 0
+    assert env["driven"] == []
+    assert FakeStack.downs == ["M0", "M0"] and all(t.stopped for t in FakeTap.instances)
+
+
+def test_run_records_unmeasurable_target_and_continues(env):
+    FakeStack.fail = {"M0"}
+    assert cli.main(["run", "--config", env["cfg"], "--scenarios", "T02"]) == 0
+    assert [t for t, *_ in env["driven"]] == ["M1"]
+    store = ResultStore(env["results"])
+    assert "patch does not apply" in store.read_meta("cM0")["unmeasurable"]
+    assert store.read_meta("cM0")["name"] == "M0"
+    assert store.read_meta("cM1")["nlu"]["adapter"] == "intent"
+    assert FakeStack.downs == ["M0", "M1"]
+    assert len(env["nlu"]) == 1 and env["nlu"][0][2] == 1
+    assert all(os.path.isabs(c) and str(c).endswith(".jsonl") for c in env["nlu"][0][1])
+
+
+def test_dry_run_is_first_target_t01_r0(env):
+    assert cli.main(["run", "--config", env["cfg"], "--dry-run"]) == 0
+    assert [(t, s, r) for t, s, r, _ in env["driven"]] == [("M0", "T01", 0)]
+    assert ResultStore(env["results"]).has("cM0", "T01", 0) and env["nlu"] == []
+
+
+def test_runs_flag_overrides_and_seeded_phone(env):
+    assert cli.main(["run", "--config", env["cfg"], "--targets", "M1", "--scenarios", "T01,T14", "--runs", "1"]) == 0
+    assert [(s, r, p) for _, s, r, p in env["driven"]] == [("T01", 0, "919900001000"), ("T14", 0, "919900014000")]
+
+
+def test_env_file_sets_unset_keys_only_and_is_never_printed(env, monkeypatch, capsys):
+    f = env["tmp"] / "secrets.env"
+    f.write_text("# comment\n\nVB_TEST_NEW='sk-secret-value'\nVB_TEST_SET=fromfile\n", encoding="utf-8")
+    monkeypatch.setenv("VB_TEST_SET", "already")
+    monkeypatch.delenv("VB_TEST_NEW", raising=False)
+    assert cli.main(["run", "--config", env["cfg"], "--dry-run", "--env-file", str(f)]) == 0
+    assert os.environ["VB_TEST_NEW"] == "sk-secret-value" and os.environ["VB_TEST_SET"] == "already"
+    monkeypatch.delenv("VB_TEST_NEW")
+    assert "sk-secret-value" not in capsys.readouterr().out
+
+
+def test_report_writes_md_and_json_and_stdout_has_no_devanagari(env, capsys):
+    FakeStack.fail = {"M1"}
+    assert cli.main(["run", "--config", env["cfg"], "--scenarios", "T01"]) == 0
+    out = env["tmp"] / "report.md"
+    assert cli.main(["report", "--config", env["cfg"], "--out", str(out)]) == 0
+    md = out.read_text(encoding="utf-8")
+    data = json.loads((env["tmp"] / "report.md.json").read_text(encoding="utf-8"))
+    assert [s["target"] for s in data["summaries"]] == ["M0", "M1"]
+    assert data["summaries"][0]["tc"]["TC12"]["n"] == 3 and data["summaries"][1]["unmeasurable"]
+    assert "नमस्ते जी" in md and "patch does not apply" in md
+    stdout = capsys.readouterr().out
+    assert "M0 T01 r0 ok 1 turns" in stdout
+    assert not _DEVANAGARI.search(stdout)
+
+
+def test_backend_subcommands_delegate(env):
+    assert cli.main(["backend", "up", "--config", env["cfg"]]) == 0
+    assert cli.main(["backend", "seed", "--config", env["cfg"]]) == 0
+    assert cli.main(["backend", "down", "-v", "--config", env["cfg"]]) == 0
+    assert FakeBackend.calls == ["up", "seed", ("down", True)]
