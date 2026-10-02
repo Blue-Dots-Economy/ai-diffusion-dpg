@@ -40,6 +40,7 @@ def test_apply_patch_rejects_no_or_two_hosts():
 def test_compose_override_shape(tmp_path):
     y = yaml.safe_load(compose_override(18008, tmp_path / "bd.env"))
     assert y["services"]["reach_layer_bridge"]["ports"] == ["127.0.0.1:18008:8008"]
+    assert y["services"]["reach_layer_bridge"]["volumes"] == ["../../dev-kit/dpg/reach_layer.yaml:/app/reach_layer/bridge/config/dpg.yaml:ro"]
     assert y["services"]["action_gateway"]["env_file"] == [str(tmp_path / "bd.env")]
     assert "host.docker.internal:host-gateway" in y["services"]["action_gateway"]["extra_hosts"]
     assert y["services"]["memgraph"]["image"] == "memgraph/memgraph:2.17.0"

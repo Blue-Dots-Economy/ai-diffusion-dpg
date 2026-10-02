@@ -56,7 +56,13 @@ def apply_patch(text: str, patch: dict, tap_url: str, instance_url: str) -> str:
 def compose_override(bridge_host_port: int, env_file: Path) -> str:
     """Compose override: publish the bridge, feed BLUE_DOTS_* env, cap agent_core."""
     return yaml.safe_dump({"services": {
-        "reach_layer_bridge": {"ports": [f"127.0.0.1:{bridge_host_port}:8008"]},
+        "reach_layer_bridge": {
+            "ports": [f"127.0.0.1:{bridge_host_port}:8008"],
+            # At refs before cf794ef the bridge's main.py resolves dpg.yaml relative to its workdir
+            # (/app/reach_layer/bridge/config/dpg.yaml) and the base compose only mounts
+            # /app/config/dpg.yaml, so the bridge crash-loops; the repo added this exact mount at cf794ef.
+            "volumes": ["../../dev-kit/dpg/reach_layer.yaml:/app/reach_layer/bridge/config/dpg.yaml:ro"]
+        },
         "action_gateway": {"env_file": [str(env_file)],
                            "extra_hosts": ["host.docker.internal:host-gateway"]},
         "agent_core": {"deploy": {"resources": {"limits": {"memory": "1g", "cpus": "1.0"}}}},
