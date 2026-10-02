@@ -18,8 +18,16 @@ def secret_values(env_file: Path | None) -> list[str]:
     return sorted({v for v in vals if v}, key=len, reverse=True)
 
 
-def redact(text: str, env_file: Path | None = None) -> str:
-    """Replace every secret value (see secret_values) in text with ``***``."""
-    for v in secret_values(env_file):
+def redact(text: str, env_file: Path | None = None, additional_secrets: list[str] | None = None) -> str:
+    """Replace every secret value (see secret_values) in text with ``***``.
+
+    additional_secrets: optional list of additional secret strings to redact (e.g., tool_result_secret).
+    """
+    secrets_to_redact = secret_values(env_file)
+    if additional_secrets:
+        # Add additional secrets and re-sort by length (longest first) to handle overlaps correctly.
+        all_secrets = secrets_to_redact + [s for s in additional_secrets if s]
+        secrets_to_redact = sorted({s for s in all_secrets if s}, key=len, reverse=True)
+    for v in secrets_to_redact:
         text = text.replace(v, "***")
     return text

@@ -38,12 +38,73 @@ def test_apply_patch_rejects_no_or_two_hosts():
 
 
 def test_compose_override_shape(tmp_path):
-    y = yaml.safe_load(compose_override(18008, tmp_path / "bd.env"))
+    y_str, secret = compose_override(18008, tmp_path / "bd.env")
+    y = yaml.safe_load(y_str)
     assert y["services"]["reach_layer_bridge"]["ports"] == ["127.0.0.1:18008:8008"]
     assert y["services"]["reach_layer_bridge"]["volumes"] == ["../../dev-kit/dpg/reach_layer.yaml:/app/reach_layer/bridge/config/dpg.yaml:ro"]
     assert y["services"]["action_gateway"]["env_file"] == [str(tmp_path / "bd.env")]
     assert "host.docker.internal:host-gateway" in y["services"]["action_gateway"]["extra_hosts"]
     assert y["services"]["memgraph"]["image"] == "memgraph/memgraph:2.17.0"
+
+
+def test_compose_override_includes_memory_layer_secret(tmp_path):
+    """Compose override must set TOOL_RESULT_KEY_SECRET on memory_layer."""
+    y_str, secret = compose_override(18008, tmp_path / "bd.env")
+    y = yaml.safe_load(y_str)
+    env = y["services"]["memory_layer"]["environment"]
+    assert any(e.startswith("TOOL_RESULT_KEY_SECRET=") for e in env)
+    secret_entry = next(e for e in env if e.startswith("TOOL_RESULT_KEY_SECRET="))
+    secret_from_yaml = secret_entry.split("=", 1)[1]
+    assert len(secret_from_yaml) == 64 and all(c in "0123456789abcdef" for c in secret_from_yaml)
+    assert secret_from_yaml == secret
+
+
+def test_compose_override_generates_different_secrets(tmp_path):
+    """Two calls to compose_override must generate different secrets."""
+    y_str1, secret1 = compose_override(18008, tmp_path / "bd.env")
+    y_str2, secret2 = compose_override(18008, tmp_path / "bd.env")
+    y1 = yaml.safe_load(y_str1)
+    y2 = yaml.safe_load(y_str2)
+    secret1_from_yaml = next(e.split("=", 1)[1] for e in y1["services"]["memory_layer"]["environment"]
+                   if e.startswith("TOOL_RESULT_KEY_SECRET="))
+    secret2_from_yaml = next(e.split("=", 1)[1] for e in y2["services"]["memory_layer"]["environment"]
+                   if e.startswith("TOOL_RESULT_KEY_SECRET="))
+    assert secret1 != secret2
+    assert secret1_from_yaml == secret1
+    assert secret2_from_yaml == secret2
+
+
+def test_tool_result_secret_redacted_in_compose_failure(tmp_path, monkeypatch):
+    """When docker compose fails, the tool_result_secret is redacted in the error."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-key-12345")
+    (tmp_path / "bd.env").write_text("BLUE_DOTS_API_KEY=blue-api-secret-xyz\n")
+
+    class FailOnComposeRun(FakeRun):
+        def __call__(self, argv, **kw):
+            if argv[:2] == ["git", "-C"] and "rev-parse" in argv:
+                return SimpleNamespace(returncode=0, stdout="abc1234\n", stderr="")
+            if "worktree" in argv and "add" in argv:
+                wt = Path(argv[argv.index("--detach") + 1])
+                (wt / "dev-kit/configs/blue-dots").mkdir(parents=True)
+                (wt / "dev-kit/configs/blue-dots/action_gateway.yaml").write_text(_ag("https://signals.bluedotseconomy.org"))
+                (wt / "automation/docker").mkdir(parents=True)
+            # Fail compose up with a message containing secrets from env
+            if argv[0] == "docker" and "compose" in argv and "up" in argv:
+                self.stderr = "docker error: auth failed with blue-api-secret-xyz and sk-secret-key-12345"
+                return SimpleNamespace(returncode=1, stdout="", stderr=self.stderr)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    run = FailOnComposeRun(tmp_path)
+    s = _stack(tmp_path, run)
+    with pytest.raises(StackError) as ei:
+        s.up()
+
+    msg = str(ei.value)
+    # The error message should redact secrets from OPENAI_API_KEY and env_file
+    assert "***" in msg
+    # The original secrets should not appear in the error message
+    assert "blue-api-secret-xyz" not in msg
+    assert "sk-secret-key-12345" not in msg
 
 
 def test_patch_applies_cleanly_to_every_milestone_ref():

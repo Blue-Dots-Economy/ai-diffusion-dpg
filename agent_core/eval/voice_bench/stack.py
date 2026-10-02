@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import secrets
 import subprocess
 import time
 from pathlib import Path
@@ -53,8 +54,16 @@ def apply_patch(text: str, patch: dict, tap_url: str, instance_url: str) -> str:
     return text
 
 
-def compose_override(bridge_host_port: int, env_file: Path) -> str:
-    """Compose override: publish the bridge, feed BLUE_DOTS_* env, cap agent_core."""
+def compose_override(bridge_host_port: int, env_file: Path, tool_result_secret: str | None = None) -> str:
+    """Compose override: publish the bridge, feed BLUE_DOTS_* env, cap agent_core, set tool_result_secret.
+
+    If tool_result_secret is None, generates a fresh secrets.token_hex(32) value.
+    The secret is included in StackError redaction and must NOT be logged.
+    Mirrors automation/deploy/shared-vm/docker-compose.yml memory_layer config.
+    """
+    if tool_result_secret is None:
+        tool_result_secret = secrets.token_hex(32)
+
     return yaml.safe_dump({"services": {
         "reach_layer_bridge": {
             "ports": [f"127.0.0.1:{bridge_host_port}:8008"],
@@ -69,7 +78,10 @@ def compose_override(bridge_host_port: int, env_file: Path) -> str:
         # Milestone refs before cf794ef use memgraph/memgraph:latest, whose newer binary fails the healthcheck.
         # The repo itself pinned 2.17.0 at cf794ef.
         "memgraph": {"image": "memgraph/memgraph:2.17.0"},
-    }}, sort_keys=False)
+        "memory_layer": {
+            "environment": [f"TOOL_RESULT_KEY_SECRET={tool_result_secret}"]
+        },
+    }}, sort_keys=False), tool_result_secret
 
 
 class TargetStack:
@@ -90,6 +102,7 @@ class TargetStack:
         self._interval = poll_interval_s
         self._sha: str | None = None
         self._up = False
+        self._tool_result_secret: str | None = None
 
     @property
     def commit(self) -> str:
@@ -126,7 +139,8 @@ class TargetStack:
         return r
 
     def _redact(self, text: str) -> str:
-        return redact(text, self.env_file)
+        additional_secrets = [self._tool_result_secret] if self._tool_result_secret else []
+        return redact(text, self.env_file, additional_secrets=additional_secrets)
 
     def _compose_argv(self, *tail: str) -> list[str]:
         compose = self.worktree / self.target.compose
@@ -157,8 +171,8 @@ class TargetStack:
             except PatchMismatch as e:
                 raise StackError(f"patch does not apply: {e}") from e
             compose = wt / self.target.compose
-            (compose.parent / OVERRIDE_NAME).write_text(
-                compose_override(BRIDGE_HOST_PORT, self.env_file), encoding="utf-8")
+            override_text, self._tool_result_secret = compose_override(BRIDGE_HOST_PORT, self.env_file)
+            (compose.parent / OVERRIDE_NAME).write_text(override_text, encoding="utf-8")
             self._exec(self._compose_argv("up", "-d", "--build", "reach_layer_bridge"),
                        "docker compose up", env=self._env())
             url = f"http://127.0.0.1:{BRIDGE_HOST_PORT}"
