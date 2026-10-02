@@ -138,11 +138,9 @@ There are async and sync variants. Behaviour for model-initiated calls is unchan
 
 ### 5.3 Budget
 
-A pre-dispatch gateway call has its own timeout: `min(tool timeout_ms, agent.predispatch_timeout_ms)`, where `agent.predispatch_timeout_ms` defaults to 1500.
-
-On timeout:
-- A **read** tool falls back (§5.5).
-- A **write** tool whose request may have reached the upstream is treated as a write failure (§5.5). It is never silently retried.
+- A **read** pre-dispatch on the stream path runs under `agent.predispatch_timeout_ms` (default 1500), enforced with `asyncio.wait_for`. On timeout it falls back (§5.5).
+- A **write** pre-dispatch gets **no** asyncio budget, on either path. It runs to the gateway's own per-tool timeout (`timeout_ms`), as on the sync path. Cancelling a write locally cannot stop an upstream that has already applied it, and the turn would then report a failure for a write that happened. A gateway timeout comes back as a failed result (`gateway_timeout: <tool>`), counted as outcome `timeout`, and is handled as a write failure (§5.5). It is never silently retried.
+- The sync path has no asyncio budget for reads either: Python cannot abort a blocking call, so the gateway's per-tool timeout applies.
 
 ### 5.4 Injection (success)
 
@@ -155,6 +153,7 @@ When the result is `success=True`:
   This is the same shape the model sees after calling the tool itself, so prompts that read "the tool result" (apply_confirm's three outcomes) keep working. Anthropic's tool_use → tool_result ordering is respected, and the list ends on a user turn.
 - **Cache.** The result is in the turn cache before Step 7, so `<known_facts>` and `<state>` (the offered list) render it.
 - **Tools.** The pre-dispatched tool is removed from `active_tools` for this turn's main-LLM calls. Other tools stay available, along with `end_session` and `remember`.
+- **Only tool offered.** When removing the tool would leave the list empty (every Blue Dots phase offers exactly one tool, e.g. job_match offers only `fetch_jobs`), the tool definitions stay in the request, because a request carrying tool_use/tool_result blocks must define the tools it names. Instead, every main-LLM call this turn, on both paths, sends `tool_choice="none"`. The providers send the definitions together with the "none" choice: OpenAI `"tool_choice": "none"`, Anthropic `{"type": "none"}`, Google function-calling mode `NONE`. This applies only when the provider's `capabilities.supports_force_tool_choice` is true. A provider without it (e.g. ollama) keeps the tool offered under `"auto"`; the per-turn cap and the turn cache are then the fallback against a repeat call.
 - **Bookkeeping.**
   - The exchange is captured (`_capture_tool_exchange`) and counted in `_stream_tool_results` / sync `tool_results`. So `recent_tool_exchanges`, `served_tool_results` and the post-tool hooks (e.g. `post_applied`) behave as if the model had called it.
 
@@ -164,7 +163,7 @@ When the result is `success=True`:
 |---|---|---|
 | Rule did not fire (missing or invalid argument, fresh cache, disabled) | Today's path | Today's path |
 | Guard refused (consent, cap, ungrounded) | Today's path | Today's path |
-| Gateway error, `success=False`, or timeout | Today's path (the model may call the tool) | Inject the failure as the tool result, and remove the tool from `active_tools`. The prompt's failure lines are spoken, and the model cannot retry the same write. |
+| Gateway error, `success=False`, or timeout | Today's path (the model may call the tool) | Inject the failure as the tool result, and remove the tool from `active_tools` (or keep it under `tool_choice="none"` when it is the only tool, §5.4). The prompt's failure lines are spoken, and the model cannot retry the same write. |
 
 "Today's path" means nothing is injected and the tool stays offered. The turn is exactly as before Spec E, plus the pre-dispatch time spent (bounded by §5.3).
 
@@ -223,10 +222,12 @@ predispatch:
 
 ## 8. Turning on a write rule
 
-A disabled write rule is enabled only in a separate config PR, and only when both of these hold:
+A disabled write rule is enabled only in a separate config PR, and only when all of these hold:
 
-1. **NLU precision.** The NLU eval shows precision ≥ 0.98, on at least 50 cases including real-call replays, for the (act, pending) pair that drives the rule. For `apply_job` that is `affirm|submit_confirm`; for `save_profile`, `provide_info|name`.
-2. **Scenario run.** A scenario-runner run with the rule enabled shows no duplicate and no wrong writes: one application per apply, and the job applied to equals the job confirmed.
+1. **Consent source unified.** Blue Dots records consent in the session (NLU and routing `session_writes`), not in the Trust Layer ConsentStore. Pre-dispatch checks `trust.check_consent`, so until the two are one source every pre-dispatched Blue Dots write ends as `refused_guard`.
+2. **Upstream idempotency confirmed.** A write's only budget is the gateway timeout (§5.3), and a timed-out write may still have been applied upstream. The upstream (`apply_job`, `save_profile`) must be confirmed idempotent, or deduplicating, for the same arguments, so a model or next-turn retry after an ambiguous failure cannot create a duplicate.
+3. **NLU precision.** The NLU eval shows precision ≥ 0.98, on at least 50 cases including real-call replays, for the (act, pending) pair that drives the rule. For `apply_job` that is `affirm|submit_confirm`; for `save_profile`, `provide_info|name`.
+4. **Scenario run.** A scenario-runner run with the rule enabled shows no duplicate and no wrong writes: one application per apply, and the job applied to equals the job confirmed.
 
 ## 9. Runtime ↔ dev-kit sync
 
@@ -247,7 +248,19 @@ The `predispatch` FIELD_RULES are `auto_answer`, because the wizard does not aut
 
 ## 10. Observability
 
-- **Metric.** `agent_core.predispatch.outcomes_total{tool, outcome}`, where `outcome` is one of `fired`, `cache_hit`, `skipped_missing_arg`, `skipped_invalid_arg`, `skipped_fresh`, `disabled`, `refused_guard`, `failed`, `timeout` or `error`.
+- **Metric.** `agent_core.predispatch.outcomes_total{tool, outcome}`, where `outcome` is one of:
+  - `fired` — the call ran and succeeded; the pair is injected;
+  - `cache_hit` — served from the turn cache; the pair is injected;
+  - `skipped_missing_arg` — a required argument is missing or empty;
+  - `skipped_invalid_arg` — an argument fails the schema or a `reject` table;
+  - `skipped_fresh` — `unless_fresh` and a fresh cached result exists;
+  - `disabled` — the matching rule has `enabled: false`;
+  - `refused_guard` — consent (including no trust client), cap or grounding refused;
+  - `failed` — the gateway returned `success=False`;
+  - `timeout` — the read budget ran out, or the gateway timed out (`gateway_timeout`);
+  - `error` — an internal error; treated as did-not-fire.
+
+  There is no `skipped_only_tool`. An earlier draft skipped a pre-dispatch whose tool was the only one offered; that made the Blue Dots `fetch_jobs` rule never fire, and it was replaced by `tool_choice="none"` (§5.4).
 - **Per-turn log extras** on `stream_turn_complete` and the sync equivalent:
   - `predispatch_tool`;
   - `predispatch_outcome`;
@@ -299,5 +312,5 @@ The `predispatch` FIELD_RULES are `auto_answer`, because the wizard does not aut
 
 - **The pre-dispatched query differs from what the model would have sent,** e.g. trade wording. Mitigation: the template uses the NLU's English `trade` slot (title-cased) and the canonical city. Results are checked by the runner's job-order and relevance review.
 - **Stale session values.** Pre-dispatch uses values after this turn's NLU writes, so a correction in this turn ("इलेक्ट्रीशियन नहीं, वेल्डर") is already applied.
-- **Prompt drift.** A prompt still telling the model to call the tool is covered by the tool's removal from `active_tools` and the §6 line.
+- **Prompt drift.** A prompt still telling the model to call the tool is covered by the tool's removal from `active_tools` (or `tool_choice="none"` when it is the only tool) and the §6 line.
 - **Write misfire,** once enabled. Mitigated by the per-turn cap, grounding, the `on_intent` gate, the §8 evidence bar, and the `applications_submitted == 0` condition on `apply_job`.
