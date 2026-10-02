@@ -12,7 +12,7 @@ from eval.voice_bench.suite import Persona
 
 APPLIED_RE = re.compile(r"आवेदन (भेज|कर|जमा कर) (दिया|दी)|अप्लाई कर (दिया|दी)|आवेदन हो गया|application (sent|submitted)", re.I)
 ALREADY_RE = re.compile(r"पहले (ही|से)")
-GOODBYE_RE = re.compile(r"(धन्यवाद|शुक्रिया|अलविदा|Thank you)[^?]*$")
+GOODBYE_RE = re.compile(r"(धन्यवाद|शुक्रिया|अलविदा|Thank you)[^?]*$", re.I)
 
 LEAK_RE = re.compile(r"fetch_jobs|fetch_profile|save_profile|apply_job|end_conversation|end_session|item_id|_id\b|[{}]|JSON|json|[0-9a-f]{8}-[0-9a-f]{4}-")
 GENDER_RE = re.compile(
@@ -109,12 +109,20 @@ def _tc04(ctx: CheckCtx) -> Verdict:
     return Verdict("pass")
 
 
+def _letter_words(text: str) -> list[str]:
+    """Whitespace tokens with at least one letter (Latin or Devanagari); punctuation-only tokens drop out."""
+    return [w for w in text.split() if any(c.isalpha() or "\u0900" <= c <= "\u097f" for c in w)]
+
+
 def _is_goodbye(reply: str) -> bool:
-    """GOODBYE_RE on the last sentence only, so a mid-call thank-you is not a goodbye."""
+    """GOODBYE_RE on the last sentence (last two if it is a bare 1-2 word closer), so a mid-call thanks is not a goodbye."""
     pieces = [p for p in re.split(r"[।?!.]", reply) if p.strip()]
-    m = GOODBYE_RE.search(pieces[-1]) if pieces else None
+    if not pieces:
+        return False
+    tail = pieces[-1] if len(_letter_words(pieces[-1])) > 2 else ". ".join(pieces[-2:])
+    m = GOODBYE_RE.search(tail)
     # a thank-you followed by a long clause is a mid-call thanks, not a farewell
-    return bool(m and len(pieces[-1][m.end(1):].split()) <= MAX_WORDS_AFTER_THANKS)
+    return bool(m and len(_letter_words(tail[m.end(1):])) <= MAX_WORDS_AFTER_THANKS)
 
 
 def _tc05_leg(lg: Leg) -> Verdict | None:
@@ -187,7 +195,7 @@ def _tc08(ctx: CheckCtx) -> Verdict:
     def bad(t: TurnRecord) -> str | None:
         if DIGIT_RE.search(t.reply):
             return "digit in reply"
-        words = [w for w in t.reply.split() if any(c.isalpha() or "\u0900" <= c <= "\u097f" for c in w)]
+        words = _letter_words(t.reply)
         latin = sum(bool(re.search(r"[A-Za-z]", w)) for w in words)
         if words and not ctx.persona.english_mode and latin / len(words) > 0.5:
             return "reply mostly Latin script"

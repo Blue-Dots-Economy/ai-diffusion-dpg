@@ -143,3 +143,11 @@ def test_tc07_latin_alias_boundaries_and_tap_only():
 def test_tc21_last_apply_entry_decides():
     turns = [T(0, "हाँ", "आपका आवेदन भेज दिया है।", tap=[apply_tap(500, {"error": "x"}), apply_tap()])]
     assert v("TC21", rec((turns, "bot"))) == "pass"
+
+
+def test_goodbye_detection():
+    from eval.voice_bench.checks import _is_goodbye
+    for yes in ("धन्यवाद, आपका दिन शुभ हो।", "धन्यवाद, आपका दिन शुभ रहे।", "धन्यवाद। नमस्ते।",
+                "आपका दिन शुभ हो, धन्यवाद।", "thank you"):
+        assert _is_goodbye(yes), yes
+    assert not _is_goodbye("धन्यवाद, अब मैं आपके लिए नौकरी खोजती हूँ।")
