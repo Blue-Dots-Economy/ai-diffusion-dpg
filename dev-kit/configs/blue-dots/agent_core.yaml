@@ -699,6 +699,10 @@ preprocessing:
     examples:
       - { pending: closing_offer, caller: "ठीक है धन्यवाद", out: { acts: [acknowledge], relation: answers_pending } }
       - { pending: close_confirm, caller: "हाँ जी", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: close_confirm, caller: "ठीक है", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: close_confirm, caller: "ठीक है धन्यवाद", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: close_confirm, caller: "हाँ ठीक है", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: close_confirm, caller: "नहीं, अभी बात करनी है", out: { acts: [deny], relation: answers_pending } }
       - { pending: submit_confirm, caller: "ठीक है धन्यवाद", out: { acts: [affirm], relation: answers_pending } }
       - { pending: submit_confirm, caller: "धन्यवाद", out: { acts: [acknowledge], relation: unclear } }
       - { pending: submit_confirm, caller: "नहीं नहीं, दूसरा वाला", out: { acts: [correct, select], relation: answers_pending, reference: { option: 2, spoken: "दूसरा वाला" } } }
@@ -730,7 +734,7 @@ preprocessing:
       # above and lands here, so routing can ask confirm_close's one question
       # instead of letting the phase write a goodbye that never hangs up.
       - { acts: [close], intent: termination_blocked }
-      - { acts: [affirm], pending: close_confirm, relation: answers_pending, intent: termination_intent, gated: true }
+      - { acts: [affirm], pending: close_confirm, intent: termination_intent, gated: true }
       - { acts: [deny], pending: closing_offer, intent: termination_intent, gated: true }
     termination_gate:
       any_of:

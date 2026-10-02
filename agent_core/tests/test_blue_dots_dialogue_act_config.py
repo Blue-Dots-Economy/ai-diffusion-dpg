@@ -316,3 +316,44 @@ async def test_confirm_then_end_over_stream_turn():
     spoken, ended = await turn("confirm_close", "termination_intent",
                                {"close_return_to": "opening", "subagent_entry_count": {"confirm_close": 1}})
     assert ended is True
+
+
+@pytest.mark.parametrize("relation", ["answers_pending", "answers_other", "unclear", "new_topic"])
+def test_affirm_on_close_confirm_ends_whatever_the_relation(relation):
+    """A bare 'ठीक है' may be labelled with any relation; on the pending close question it still confirms."""
+    from src.understanding.models import DialogueActResult
+    _, _, _, state = _route("opening", _CALL, _close())
+    intent, nxt, _, _ = _route("confirm_close", state, DialogueActResult(acts=("affirm",), relation=relation))
+    assert (intent, nxt) == ("termination_intent", "ended")
+
+
+@pytest.mark.asyncio
+async def test_second_blocked_close_after_a_deny_ends_over_stream_turn():
+    """Stream path: close -> question -> deny (back to the phase) -> close again ends with session_ended."""
+    from unittest.mock import MagicMock
+
+    from src.models import ContextBundle, DoneEvent, NLUResult, SentenceEvent
+    from tests.fakes import fake_understander
+    from tests.test_stream_turn import _collect_events, _make_agent_core, _make_turn_input
+
+    async def must_not_run(*a, **k):
+        raise AssertionError("the model must not be called")
+        yield  # pragma: no cover
+
+    async def turn(current, intent, extra):
+        _, wf = _load()
+        agent = _make_agent_core(workflow=wf)
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("x", "hindi")
+        agent._understander = fake_understander(NLUResult(intent=intent, entities={}, confidence=1.0))
+        agent._llm.stream = must_not_run
+        agent._async_memory.context_bundle.return_value = ContextBundle(
+            session={**_CALL, "current_subagent_id": current, **extra}, profile={})
+        events = await _collect_events(agent, _make_turn_input(channel="voice"))
+        return (" ".join(e.text for e in events if isinstance(e, SentenceEvent)),
+                [e for e in events if isinstance(e, DoneEvent)][-1].session_ended)
+
+    # After the deny the caller is back in `opening`, confirm_close already entered once.
+    _, ended = await turn("opening", "termination_blocked",
+                          {"close_return_to": "opening", "subagent_entry_count": {"confirm_close": 1}})
+    assert ended is True
