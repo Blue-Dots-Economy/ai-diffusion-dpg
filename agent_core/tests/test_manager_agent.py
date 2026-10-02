@@ -1287,3 +1287,53 @@ def test_run_turn_does_not_shape_cache_hits():
 def test_tier1_says_new_tool_result_replaces_offered():
     t1 = _prompt().blocks[0].text
     assert "a tool result returned\n  in this turn replaces it" in t1
+
+
+def test_run_turn_seeded_turn_tool_counts_enforce_the_cap():
+    """A call made before run_turn (pre-dispatch) counts toward the per-turn cap."""
+    tc = ToolCall(tool_name="apply_job", tool_use_id="tu_apply", input_params={})
+    initial = _tool_response(tc)
+    followup = _text_response("Already applied.")
+    agent, llm, registry, gateway, _ = _make_manager(llm_responses=[initial, followup])
+    agent._tool_call_caps = {"apply_job": 1}
+
+    counts = {"apply_job": 1}
+    _, _, results = agent.run_turn(list(MESSAGES), SESSION_ID, initial, turn_tool_counts=counts)
+
+    gateway.execute.assert_not_called()
+    assert results[0].error == "REFUSED"
+    assert results[0].result_text.startswith("Refused: apply_job has already run this turn")
+    assert counts == {"apply_job": 1}
+
+
+def test_run_turn_counts_live_calls_in_the_passed_dict():
+    tc = ToolCall(tool_name="fetch_jobs", tool_use_id="tu_1", input_params={})
+    initial = _tool_response(tc)
+    agent, *_ = _make_manager(llm_responses=[initial, _text_response("ok")])
+    counts: dict[str, int] = {}
+    agent.run_turn(list(MESSAGES), SESSION_ID, initial, turn_tool_counts=counts)
+    assert counts == {"fetch_jobs": 1}
+
+
+def test_run_turn_session_grounded_grounds_the_call():
+    tc = ToolCall(tool_name="apply_job", tool_use_id="tu_apply",
+                  input_params={"profile_item_id": "from-session"})
+    initial = _tool_response(tc)
+    agent, llm, registry, gateway, _ = _make_manager(llm_responses=[initial, _text_response("ok")])
+    agent._grounded_params = {"apply_job": {"profile_item_id": ["fetch_profile"]}}
+    agent.run_turn(list(MESSAGES), SESSION_ID, initial,
+                   session_grounded={"profile_item_id": ["from-session"]})
+    gateway.execute.assert_called_once()
+
+
+def test_run_turn_reports_last_llm_calls():
+    tc = ToolCall(tool_name="fetch_jobs", tool_use_id="tu_1", input_params={})
+    initial = _tool_response(tc)
+    agent, *_ = _make_manager(llm_responses=[initial, _text_response("ok")])
+    agent.run_turn(list(MESSAGES), SESSION_ID, initial)
+    assert agent.last_llm_calls == 1
+
+    plain = _text_response("hello")
+    agent2, *_ = _make_manager(llm_responses=[plain])
+    agent2.run_turn(list(MESSAGES), SESSION_ID, plain)
+    assert agent2.last_llm_calls == 0

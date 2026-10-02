@@ -57,13 +57,8 @@ from src.interfaces.reach_layer import ReachLayerBase
 from src.interfaces.trust_layer import TrustLayerBase
 from src.http_clients.trust_layer import TrustLayerConstraintError
 from src.preprocessing.language_normalisation import LanguageNormaliser
-from src.manager_agent import (
-    ManagerAgent,
-    over_call_cap,
-    refusal_result,
-    ungrounded_params,
-    zero_seed_fields,
-)
+from src.manager_agent import ManagerAgent, zero_seed_fields
+from src.tool_guard import check_tool_call
 from src.models import (
     DoneEvent,
     NLUResult,
@@ -488,6 +483,23 @@ class AgentCore(AgentCoreBase):
             return r.text
 
         return guarded, counts, language
+
+    async def _stream_consent_ok(self, session_id: str, tc) -> bool | None:
+        """Consent decision for a streaming tool call.
+
+        Args:
+            session_id: Session identifier.
+            tc: The pending ToolCall.
+
+        Returns:
+            None when the tool needs no consent, else whether it is granted
+            (False when no trust client is available).
+        """
+        if not self._tool_registry.requires_consent(tc.tool_name):
+            return None
+        if not self._async_trust:
+            return False
+        return bool(await self._async_trust.check_consent(session_id, tc.tool_name))
 
     def _session_grounded_values(self, bundle, spec: dict) -> dict[str, list[str]]:
         """Values for grounded params that session_mapping lifted from a tool.
@@ -1428,6 +1440,9 @@ class AgentCore(AgentCoreBase):
             active_tools, self._tool_policies,
             self._remember.definition() if self._remember else None,
         )
+        # Per-TURN tool-call counts, created before LLM call 1 and handed to
+        # run_turn, so calls made ahead of the model count toward the caps.
+        _turn_tool_counts: dict[str, int] = {}
         output_format = next_subagent.output_format
         primary_model = self._llm.get_active_model()
         primary_provider = self._config.get("agent", {}).get("provider", "anthropic")
@@ -1528,6 +1543,15 @@ class AgentCore(AgentCoreBase):
                 # the framework supplies what it already knows rather than asking
                 # the model to reproduce it.
                 session_values=self._tool_session_values(bundle),
+                turn_tool_counts=_turn_tool_counts,
+                session_grounded=self._session_grounded_values(
+                    bundle,
+                    {
+                        _p: None
+                        for _spec in (getattr(self._manager_agent, "_grounded_params", {}) or {}).values()
+                        for _p in (_spec or {})
+                    },
+                ),
                 tool_cache=tool_cache,
                 remember_name=self._remember.name if self._remember else "",
                 remember_handler=(
@@ -4762,6 +4786,11 @@ class AgentCore(AgentCoreBase):
             )
             t8 = time.time()
 
+            # Per-TURN tool-call counts, set before LLM call 1 so a capped tool
+            # cannot slip through by being requested again in a later round of
+            # the same turn (and so calls made ahead of the model count too).
+            _turn_tool_counts: dict[str, int] = {}
+
             # GH-194: per-channel response-length cap (None → wrapper default).
             channel_max_tokens = channel_config.get("max_tokens")
 
@@ -4854,11 +4883,6 @@ class AgentCore(AgentCoreBase):
                 )
 
             except ToolUseRequested as e:
-                # Per-TURN tool-call counts. Declared here, outside the tool
-                # rounds below, so a capped tool cannot slip through by being
-                # requested again in a later round of the same turn.
-                _turn_tool_counts: dict[str, int] = {}
-
                 # ── Step 9: Tool use ───────────────────────────────────
                 was_tool_used = True
                 all_tool_calls = [
@@ -4926,12 +4950,13 @@ class AgentCore(AgentCoreBase):
                             tc, _ke_context,
                         )
                     elif self._async_gateway:
-                        # Two guards, one decision. Both refuse BEFORE the call
-                        # leaves us, because both protect writes that cannot be
-                        # taken back.
-                        #   cap        — the model acted on every row of a list
+                        # One decision (tool_guard.check_tool_call): consent, then
+                        # the per-turn cap, then grounding, then the stored-result
+                        # cache. All refuse BEFORE the call leaves us, because
+                        # they protect writes that cannot be taken back.
+                        #   cap        - the model acted on every row of a list
                         #                it was shown (5 applies from one pick)
-                        #   grounding  — it supplied an id no tool returned
+                        #   grounding  - it supplied an id no tool returned
                         # stream_turn has its own tool loop and never calls
                         # ManagerAgent.run_turn, so the sync path's guards do
                         # not cover the path a voice client actually uses.
@@ -4941,41 +4966,6 @@ class AgentCore(AgentCoreBase):
                         # remember is never capped nor grounding-checked.
                         _is_remember = (self._remember is not None
                                         and tc.tool_name == self._remember.name)
-                        _refusal = ""
-                        if not _is_remember and over_call_cap(_caps.get(tc.tool_name), _used):
-                            logger.warning(
-                                "orchestrator.stream_tool_call_cap tool=%s used=%s",
-                                tc.tool_name, _used,
-                            )
-                            _refusal = (
-                                f"Refused: {tc.tool_name} has already run this turn and its "
-                                f"effect cannot be undone. One per turn. If the caller meant "
-                                f"a different one, ask which, and call it on the next turn."
-                            )
-                        elif not _is_remember:
-                            _spec = (
-                                getattr(self._manager_agent, "_grounded_params", {}) or {}
-                            ).get(tc.tool_name) or {}
-                            _ung = ungrounded_params(
-                                _spec, tc, messages,
-                                stored_results=tool_cache.stored_results_by_tool(),
-                                session_grounded=self._session_grounded_values(
-                                    bundle, _spec,
-                                ),
-                            )
-                            if _ung:
-                                logger.warning(
-                                    "orchestrator.stream_ungrounded_param tool=%s params=%s",
-                                    tc.tool_name, sorted(_ung),
-                                )
-                                _refusal = (
-                                    f"Refused: {', '.join(sorted(_ung))} did not come from "
-                                    f"any tool result in this conversation, so the value was "
-                                    f"invented. Do not guess an identifier. Re-read the most "
-                                    f"recent tool result, copy the exact value for the item "
-                                    f"the user chose, and call this tool again."
-                                )
-
                         if _is_remember:
                             # Framework tool: validated state write, never
                             # capped, grounding-refused or sent to the gateway.
@@ -4985,26 +4975,37 @@ class AgentCore(AgentCoreBase):
                                     session_id, user_id, scope, key, value),
                                 self._remember_on_saved(bundle),
                             )
-                        elif _refusal:
-                            tool_result = refusal_result(
-                                tc.tool_name, tc.tool_use_id, _refusal,
-                            )
-                        elif (_hit := tool_cache.lookup(tc)) is not None:
-                            tool_result = _hit
                         else:
-                            _turn_tool_counts[tc.tool_name] = _used + 1
-                            tool_result = await self._async_gateway.execute(
-                                tool_cache.prepare(tc), session_id, user_id,
-                                session_values=self._tool_session_values(bundle),
+                            _spec = (
+                                getattr(self._manager_agent, "_grounded_params", {}) or {}
+                            ).get(tc.tool_name) or {}
+                            _verdict = check_tool_call(
+                                tc,
+                                cap=_caps.get(tc.tool_name),
+                                used=_used,
+                                grounded_spec=_spec,
+                                messages=messages,
+                                stored_results=tool_cache.stored_results_by_tool(),
+                                session_grounded=self._session_grounded_values(bundle, _spec),
+                                consent_ok=await self._stream_consent_ok(session_id, tc),
+                                cache_lookup=tool_cache.lookup,
                             )
-                            tool_result = self._result_shaper.shape(tool_result)
-                            await self._write_mapped_session_values(
-                                session_id, user_id, tool_result, bundle,
-                            )
-                            tool_cache.after_call(tc, tool_result)
-                            # Persist now: a streaming turn may be stopped
-                            # before it completes.
-                            await self._persist_tool_cache(session_id, user_id, tool_cache)
+                            if _verdict.kind != "go":
+                                tool_result = _verdict.result
+                            else:
+                                _turn_tool_counts[tc.tool_name] = _used + 1
+                                tool_result = await self._async_gateway.execute(
+                                    tool_cache.prepare(tc), session_id, user_id,
+                                    session_values=self._tool_session_values(bundle),
+                                )
+                                tool_result = self._result_shaper.shape(tool_result)
+                                await self._write_mapped_session_values(
+                                    session_id, user_id, tool_result, bundle,
+                                )
+                                tool_cache.after_call(tc, tool_result)
+                                # Persist now: a streaming turn may be stopped
+                                # before it completes.
+                                await self._persist_tool_cache(session_id, user_id, tool_cache)
                     else:
                         # Fallback: no async gateway — cannot execute tools in streaming mode
                         logger.error(
@@ -5258,8 +5259,8 @@ class AgentCore(AgentCoreBase):
                                 )
                             elif self._async_gateway:
                                 # Second streaming execution site (nested tool
-                                # rounds). Both guards, same as the first, and
-                                # the cap shares _turn_tool_counts with it —
+                                # rounds). Same decision as the first, and
+                                # the cap shares _turn_tool_counts with it -
                                 # counted per TURN precisely so a capped tool
                                 # cannot slip through by being requested again
                                 # in a later round of the same turn.
@@ -5268,45 +5269,6 @@ class AgentCore(AgentCoreBase):
                                 _used2 = _turn_tool_counts.get(tc.tool_name, 0)
                                 _is_remember2 = (self._remember is not None
                                                  and tc.tool_name == self._remember.name)
-                                _refusal2 = ""
-                                if not _is_remember2 and over_call_cap(
-                                    _caps2.get(tc.tool_name), _used2,
-                                ):
-                                    logger.warning(
-                                        "orchestrator.stream_tool_call_cap tool=%s used=%s",
-                                        tc.tool_name, _used2,
-                                    )
-                                    _refusal2 = (
-                                        f"Refused: {tc.tool_name} has already run this turn and "
-                                        f"its effect cannot be undone. One per turn. If the "
-                                        f"caller meant a different one, ask which, and call it "
-                                        f"on the next turn."
-                                    )
-                                elif not _is_remember2:
-                                    _spec2 = (
-                                        getattr(self._manager_agent, "_grounded_params", {}) or {}
-                                    ).get(tc.tool_name) or {}
-                                    _ung2 = ungrounded_params(
-                                        _spec2, tc, messages,
-                                        stored_results=tool_cache.stored_results_by_tool(),
-                                        session_grounded=self._session_grounded_values(
-                                            bundle, _spec2,
-                                        ),
-                                    )
-                                    if _ung2:
-                                        logger.warning(
-                                            "orchestrator.stream_ungrounded_param tool=%s params=%s",
-                                            tc.tool_name, sorted(_ung2),
-                                        )
-                                        _refusal2 = (
-                                            f"Refused: {', '.join(sorted(_ung2))} did not come "
-                                            f"from any tool result in this conversation, so the "
-                                            f"value was invented. Do not guess an identifier. "
-                                            f"Re-read the most recent tool result, copy the exact "
-                                            f"value for the item the user chose, and call this "
-                                            f"tool again."
-                                        )
-
                                 if _is_remember2:
                                     tool_result = await self._remember.handle_async(
                                         tc, messages, tool_cache.stored_results_by_tool(),
@@ -5314,26 +5276,38 @@ class AgentCore(AgentCoreBase):
                                             session_id, user_id, scope, key, value),
                                         self._remember_on_saved(bundle),
                                     )
-                                elif _refusal2:
-                                    tool_result = refusal_result(
-                                        tc.tool_name, tc.tool_use_id, _refusal2,
-                                    )
-                                elif (_hit2 := tool_cache.lookup(tc)) is not None:
-                                    tool_result = _hit2
                                 else:
-                                    _turn_tool_counts[tc.tool_name] = _used2 + 1
-                                    tool_result = await self._async_gateway.execute(
-                                        tool_cache.prepare(tc), session_id, user_id,
-                                        session_values=self._tool_session_values(bundle),
+                                    _spec2 = (
+                                        getattr(self._manager_agent, "_grounded_params", {}) or {}
+                                    ).get(tc.tool_name) or {}
+                                    _verdict2 = check_tool_call(
+                                        tc,
+                                        cap=_caps2.get(tc.tool_name),
+                                        used=_used2,
+                                        grounded_spec=_spec2,
+                                        messages=messages,
+                                        stored_results=tool_cache.stored_results_by_tool(),
+                                        session_grounded=self._session_grounded_values(
+                                            bundle, _spec2),
+                                        consent_ok=await self._stream_consent_ok(session_id, tc),
+                                        cache_lookup=tool_cache.lookup,
                                     )
-                                    tool_result = self._result_shaper.shape(tool_result)
-                                    await self._write_mapped_session_values(
-                                        session_id, user_id, tool_result, bundle,
-                                    )
-                                    tool_cache.after_call(tc, tool_result)
-                                    await self._persist_tool_cache(
-                                        session_id, user_id, tool_cache,
-                                    )
+                                    if _verdict2.kind != "go":
+                                        tool_result = _verdict2.result
+                                    else:
+                                        _turn_tool_counts[tc.tool_name] = _used2 + 1
+                                        tool_result = await self._async_gateway.execute(
+                                            tool_cache.prepare(tc), session_id, user_id,
+                                            session_values=self._tool_session_values(bundle),
+                                        )
+                                        tool_result = self._result_shaper.shape(tool_result)
+                                        await self._write_mapped_session_values(
+                                            session_id, user_id, tool_result, bundle,
+                                        )
+                                        tool_cache.after_call(tc, tool_result)
+                                        await self._persist_tool_cache(
+                                            session_id, user_id, tool_cache,
+                                        )
                             else:
                                 break
                             _nested_results.append({
