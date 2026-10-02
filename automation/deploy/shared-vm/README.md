@@ -92,6 +92,10 @@ customer-managed key rather than `alias/aws/ssm`.
 
 ## Deploy
 
+> **Updating a VM that is already running?** See [DEPLOY.md](DEPLOY.md) — which
+> change needs a new image, how to move keys and clusters, verification and
+> rollback. This section covers first-time setup only.
+
 ```bash
 git clone https://github.com/Blue-Dots-Economy/ai-diffusion-dpg.git
 cd ai-diffusion-dpg/automation/deploy/shared-vm
