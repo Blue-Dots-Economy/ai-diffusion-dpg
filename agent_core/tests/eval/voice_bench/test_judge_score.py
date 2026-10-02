@@ -1,3 +1,5 @@
+import json
+
 from eval.voice_bench.judge import judge_tc, parse_judgement
 from eval.voice_bench.records import CallRecord, Leg, TurnRecord
 from eval.voice_bench.score import score_call
@@ -16,10 +18,11 @@ def _rec(error=None, void_reason=None):
 
 class LLM:
     def __init__(self, out=None, exc=None):
-        self.out, self.exc, self.systems = out, exc, []
+        self.out, self.exc, self.systems, self.users = out, exc, [], []
 
     def complete_json(self, system, user, seed):
         self.systems.append(system)
+        self.users.append(user)
         if self.exc:
             raise self.exc
         return self.out
@@ -49,3 +52,46 @@ def test_score_call_mixes_det_and_judge_and_handles_error_void():
     assert v["TC08"].status == "pass"            # "AI" is Latin but the ratio is < 0.5 and there are no digits
     assert all(x.status == "error" for x in score_call(_rec(error="http_502"), P["T05"], llm, {}, False).values())
     assert all(x.status == "unscored" for x in score_call(_rec(void_reason="broken_twice"), P["T05"], llm, {}, False).values())
+
+
+def test_parse_judgement_rejects_short_or_non_string_quotes():
+    assert parse_judgement({"verdict": "pass", "quote": "है", "reason": "x"}, ["यह काम अच्छा है"]).status == "unscored"
+    assert parse_judgement({"verdict": "fail", "quote": "काम है", "reason": "x"}, ["यह काम है"]).reason == "quote too short"
+    assert parse_judgement({"verdict": "pass", "quote": 5, "reason": "x"}, REPLIES).status == "unscored"
+    assert parse_judgement({"verdict": "pass", "quote": "इंसान नहीं", "reason": "x"}, REPLIES).status == "pass"
+
+
+def test_judge_error_reason_is_class_name_only():
+    v = judge_tc(LLM(exc=RuntimeError("secret")), "TC12", _rec(), P["T05"], 1)
+    assert v.reason == "judge: RuntimeError"
+
+
+def test_rerun_ok_scores_normally():
+    llm = LLM({"verdict": "pass", "quote": "इंसान नहीं", "reason": "ok"})
+    v = score_call(_rec(void_reason="rerun_ok"), P["T05"], llm, {}, False)
+    assert v["TC12"].status == "pass"
+
+
+def test_unknown_tc_unscored_and_raising_check_isolated(monkeypatch):
+    from eval.voice_bench import checks, score
+    monkeypatch.setattr(score, "applicable_tcs", lambda p: ["TC02", "TC03", "TC99"])
+    def boom(ctx):
+        raise ValueError("secret")
+    monkeypatch.setitem(checks.DETERMINISTIC, "TC02", boom)
+    v = score_call(_rec(), P["T05"], LLM({}), {}, False)
+    assert v["TC99"].status == "unscored" and v["TC99"].reason == "no checker"
+    assert v["TC02"].status == "error" and v["TC02"].reason == "check: ValueError"
+    assert v["TC03"].status != "error"
+
+
+def test_user_message_multi_leg_and_truncated_tool_log():
+    from eval.voice_bench.records import TapEntry
+    rec = _rec()
+    entry = TapEntry(1, "GET", "/x", "", None, 200, {"a": "x" * 3000}, "signals")
+    t = TurnRecord(0, "नमस्ते", "जी", None, 1, 1, 1, {}, [entry], {}, False, None)
+    rec.legs.append(Leg("c2", [t], "bot"))
+    llm = LLM({"verdict": "n/a", "reason": "r"})
+    judge_tc(llm, "TC16", rec, P["T05"], 1)
+    assert "[L1 t0] आप: नमस्ते" in llm.users[0]
+    log = json.loads(llm.users[0].split("Tool log:\n")[1])
+    assert len(log) == 1 and len(log[0]["resp_body"]) == 1500

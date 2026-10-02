@@ -6,6 +6,7 @@ from pathlib import Path
 
 import yaml
 
+from eval.voice_bench.checks import _letter_words
 from eval.voice_bench.drive import _seed
 from eval.voice_bench.llm import JsonLLM
 from eval.voice_bench.records import CallRecord, Verdict, bot_replies
@@ -13,6 +14,7 @@ from eval.voice_bench.suite import Persona
 
 _RUBRICS: dict[str, str] | None = None
 _BODY_MAX = 1500
+_QUOTE_MIN_WORDS, _QUOTE_MIN_CHARS = 2, 8
 _VERDICTS = ("pass", "fail", "n/a")
 
 
@@ -40,6 +42,8 @@ def parse_judgement(raw: dict, replies: list[str]) -> Verdict:
     if not isinstance(quote, str) or not _norm(quote):
         return Verdict("unscored", reason="missing quote")
     q = _norm(quote)
+    if len(_letter_words(q)) < _QUOTE_MIN_WORDS or len(q.replace(" ", "")) < _QUOTE_MIN_CHARS:
+        return Verdict("unscored", quote=quote, reason="quote too short")
     if not any(q in _norm(r) for r in replies):
         return Verdict("unscored", quote=quote, reason="quote not found")
     return Verdict(verdict, quote=quote, reason=reason)

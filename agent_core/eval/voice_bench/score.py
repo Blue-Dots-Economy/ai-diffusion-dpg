@@ -22,8 +22,13 @@ def score_call(rec: CallRecord, persona: Persona, judge_llm, places: dict, no_id
         out = {}
         for tc in tcs:
             if tc in DETERMINISTIC:
-                out[tc] = DETERMINISTIC[tc](ctx)
+                try:
+                    out[tc] = DETERMINISTIC[tc](ctx)
+                except Exception as e:  # noqa: BLE001 - class name only
+                    out[tc] = Verdict("error", reason=f"check: {type(e).__name__}")
             elif tc in JUDGED:
                 out[tc] = judge_tc(judge_llm, tc, rec, persona, _seed(rec.target_commit, rec.scenario, rec.run, tc))
+            else:
+                out[tc] = Verdict("unscored", reason="no checker")
     rec.verdicts = out
     return out
