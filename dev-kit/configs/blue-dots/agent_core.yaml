@@ -2135,13 +2135,16 @@ agent_workflow:
         the search returns rows whatever you ask, so this is your
         judgement.
 
-        Use canonical city names (the system normalises them for the search).
+        Use canonical city names: Bengaluru (not Bangalore), Mumbai (not
+        Bombay), Chennai (not Madras), Kolkata (not Calcutta), Hubballi
+        (not Hubli), Mysuru (not Mysore), Thiruvananthapuram (not
+        Trivandrum), Kochi (not Cochin), Puducherry (not Pondicherry),
+        Gurugram (not Gurgaon). Any other city: the caller's spelling,
+        first letter capitalised.
 
         ## If fetch_jobs returns zero results
-        Before declaring no jobs, try ONE alternate spelling of the
-        location if there is one (e.g. if you tried "Bengaluru" and
-        got nothing, also try "Bangalore"; if you tried "Mumbai",
-        try "Bombay"; same for any pair above). Only after BOTH
+        Before declaring no jobs, try ONE alternate common spelling of
+        the city (e.g. Bengaluru/Bangalore, Mumbai/Bombay). Only after BOTH
         spellings return empty do you say "I don't see any open
         <trade> jobs in <location> right now".
 
@@ -2343,13 +2346,13 @@ agent_workflow:
             job_nature:       { from: session, key: job_nature }
 
       system_prompt: |
-        If a result for this step's tool is already in the conversation, speak from it;
-        do not call the tool again.
-
         You are in **profile_setup**. You are here for ONE reason: the
         caller has no live profile, so one must be created before they
         can apply. There is no update path and no choice to present —
         the phase that asked "use / create / update" was removed.
+
+        If a result for this step's tool is already in the conversation, speak from it;
+        do not call the tool again.
 
         ## You cannot send an application from this phase
         Your only tool here is `save_profile`. There is no apply tool in

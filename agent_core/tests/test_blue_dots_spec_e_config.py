@@ -9,7 +9,6 @@ from src.schema.config import MergedConfig
 BD = Path(__file__).resolve().parents[2] / "dev-kit" / "configs" / "blue-dots"
 CFG = yaml.safe_load((BD / "agent_core.yaml").read_text(encoding="utf-8"))
 SUB = {s["id"]: s for s in CFG["agent_workflow"]["subagents"]}
-UUID = "3f2b8c1e-9a4d-4e2f-8b1a-0c9d8e7f6a5b"
 
 
 def test_validates():
@@ -32,7 +31,27 @@ def test_fetch_jobs_query_from_session():
 
 
 def test_prompts_updated():
+    for sid in ("job_match", "apply_confirm", "profile_setup"):
+        assert "do not call the tool again" in SUB[sid]["system_prompt"], sid
     text = (BD / "agent_core.yaml").read_text(encoding="utf-8")
-    assert "do not call the tool again" in text
     for gone in ("re-fetch it, do not recall it", "an ordinal such as"):
         assert gone not in text, gone
+
+
+def test_predispatch_tables_complete():
+    tables = CFG["predispatch_tables"]
+    assert tables["city_canonical"] == {
+        "Bangalore": "Bengaluru", "Bombay": "Mumbai", "Madras": "Chennai",
+        "Calcutta": "Kolkata", "Hubli": "Hubballi", "Mysore": "Mysuru",
+        "Trivandrum": "Thiruvananthapuram", "Cochin": "Kochi",
+        "Pondicherry": "Puducherry", "Gurgaon": "Gurugram",
+    }
+    assert tables["name_placeholders"]
+
+
+def test_job_match_prompt_has_no_dangling_pair_reference():
+    prompt = SUB["job_match"]["system_prompt"]
+    assert "any pair above" not in prompt
+    # the model still re-fetches on its own, so the canonical names stay in the prompt
+    for canonical in CFG["predispatch_tables"]["city_canonical"].values():
+        assert canonical in prompt, canonical
