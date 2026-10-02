@@ -791,3 +791,36 @@ def test_handoff_section_accepts_valid_and_bounds():
     assert HandoffSection(**_LINES).summary_turns == 6
     with pytest.raises(ValidationError):
         HandoffSection(**{**_LINES, "summary_turns": 21})
+
+
+# -- Spec D: output_contract / result_shaping / history_turns ------------------
+
+_CONTRACT = {"default_language": "hindi",
+             "languages": {"hindi": {"script": "devanagari", "numbers": "words", "rules": ["x"]}},
+             "guard": {"rewrite_digits": True}}
+
+
+def test_channel_output_contract_accepted_and_tts_rules_rejected():
+    from dev_kit.schemas.domain.agent_core import ChannelEntry
+    ChannelEntry(output_contract=_CONTRACT)
+    with pytest.raises(ValidationError):
+        ChannelEntry(tts_rules={"numbers": "words"})
+    with pytest.raises(ValidationError, match="default_language"):
+        ChannelEntry(output_contract={**_CONTRACT, "default_language": "english"})
+
+
+def test_connector_result_shaping_mirrors_runtime():
+    ConnectorDef(name="fetch_jobs", result_shaping={
+        "drop_when": [{"field": "role", "operator": "contains", "value": "|"}],
+        "sort": [{"field": "match_score", "order": "desc"}],
+        "spoken": {"salary_spoken": {"format": "range_thousands", "from": ["salary_min", "salary_max"]}},
+        "strip_numbers_in": ["location"]})
+    with pytest.raises(ValidationError):
+        ConnectorDef(name="x", result_shaping={"sort": [{"field": "a", "order": "sideways"}]})
+
+
+def test_agent_history_turns_and_state_fields():
+    kw = dict(primary_model=_ANTHROPIC_PRIMARY, fallback_model=_ANTHROPIC_FALLBACK)
+    AgentSection(history_turns=2, state_fields=["applications_submitted"], **kw)
+    with pytest.raises(ValidationError):
+        AgentSection(history_turns=-1, **kw)

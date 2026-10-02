@@ -73,7 +73,7 @@ def test_reach_voice_section_present_when_voice_selected():
     assert "voice_id" in result
 
 
-def test_reach_prompt_covers_voice_tts_rules_terminal_word_and_filler() -> None:
+def test_reach_prompt_covers_voice_output_contract_terminal_word_and_filler() -> None:
     """Voice TTS / terminal_word / filler_phrase live in the reach phase
     per FIELD_RULES. The reach prompt must cover all three explicitly with
     the correct paths — they were previously buried in the language
@@ -82,14 +82,11 @@ def test_reach_prompt_covers_voice_tts_rules_terminal_word_and_filler() -> None:
     """
     result = build([], "", "", _intake(selected_channels=["web", "voice"]))
 
-    # TTS rules — at least one rule key plus the correct config path.
-    assert "tts_rules" in result
-    assert "agent_core, section=channels.voice.tts_rules" in result
-    # Each canonical TTS rule key is named so the LLM knows what to propose.
-    for key in (
-        "numbers", "money", "dates", "time", "phone",
-        "abbreviations", "output_script", "english_loanwords",
-    ):
+    # Output contract — config path plus the canonical keys.
+    assert "tts_rules" not in result
+    assert "agent_core, section=channels.voice.output_contract" in result
+    for key in ("default_language", "script", "numbers", "rules",
+                "rewrite_digits", "strip_markdown"):
         assert key in result
 
     # Terminal word + filler phrase

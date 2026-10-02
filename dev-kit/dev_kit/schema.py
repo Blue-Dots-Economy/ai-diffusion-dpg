@@ -122,6 +122,10 @@ class ConnectorDef(BaseModel):
         default_factory=list,
         description="Read connector names whose cached results this write connector invalidates",
     )
+    result_shaping: Optional[dict] = Field(
+        default=None,
+        description="Per-connector result shaping (Spec D §4); validated by the agent_core domain schema",
+    )
 
 
 class InternalConnectorDef(BaseModel):
@@ -190,6 +194,14 @@ class AgentConfig(BaseModel):
     prompt_session_fields: list[str] = Field(
         default_factory=list,
         description="Session fields rendered into the system prompt when non-empty",
+    )
+    history_turns: int = Field(
+        default=2, ge=0,
+        description="Exchanges shown to the main LLM in <recent>; 0 omits it (Spec D §6.2)",
+    )
+    state_fields: list[str] = Field(
+        default_factory=list,
+        description="Session keys shown on the <state> status line (Spec D §6.3)",
     )
     consent_prompt: str = Field(
         default="",
@@ -678,6 +690,8 @@ class ChannelConfig(BaseModel):
     keeps voice delivery configuration in one block.
     """
 
+    model_config = {"extra": "forbid"}
+
     system_prompt_suffix: str = Field(
         default="",
         description="Appended to the main system prompt for this channel",
@@ -685,6 +699,14 @@ class ChannelConfig(BaseModel):
     output_contract: dict | None = Field(
         default=None,
         description="Spoken-output contract (Spec D); validated by the agent_core domain schema",
+    )
+    max_tokens: Optional[int] = Field(
+        default=None, gt=0,
+        description="Per-channel max output tokens",
+    )
+    terminal_word: Optional[str] = Field(
+        default=None,
+        description="Word that ends the call/session on this channel",
     )
     turn_assembler: ChannelTurnAssemblerConfig = Field(
         default_factory=ChannelTurnAssemblerConfig,

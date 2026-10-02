@@ -130,7 +130,7 @@ def test_language_prompt_delegates_voice_tts_to_reach_phase() -> None:
     GoGuide regression: the language prompt used to propose a full TTS
     config (numbers, money, dates, phone, etc.) plus terminal_word and
     filler_phrase. The LLM did the work and the user confirmed, but the
-    writes failed (`validation_unknown_section` on `tts_rules` written
+    writes failed (`validation_unknown_section` on a TTS block written
     at the wrong path) and the reach phase would have re-asked the same
     questions anyway.
     """
@@ -140,7 +140,7 @@ def test_language_prompt_delegates_voice_tts_to_reach_phase() -> None:
     assert "Do NOT propose" in result_voice
     # The four reach-owned paths are listed verbatim so the LLM can
     # cross-check what NOT to write here.
-    assert "`agent_core.channels.voice.tts_rules.*`" in result_voice
+    assert "`agent_core.channels.voice.output_contract`" in result_voice
     assert "`reach_layer.channels.voice.terminal_word`" in result_voice
     assert "`reach_layer.channels.voice.filler_phrase`" in result_voice
 

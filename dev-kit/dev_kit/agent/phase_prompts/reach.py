@@ -132,32 +132,29 @@ rejects any UUID not in the Raya allowlist above. If you write an
 invented ID (e.g. a Google Cloud or AWS Polly voice name) the write
 fails and the wizard stalls — the user has no way to fix it.
 
-**Voice — TTS rendering rules (`agent_core.channels.voice.tts_rules`):**
+**Voice — spoken-output contract (`agent_core.channels.<channel>.output_contract`):**
 
-These rules tell the TTS engine how to speak structured data types
-naturally. Propose a sensible default block in the project's
-`default_language` and let the user confirm:
+The output contract tells the runtime how replies must be written so the
+TTS engine can speak them. Propose a sensible default in the project's
+`default_language` and let the user confirm. For EACH supported language
+collect:
 
-- `numbers` — how to speak digits (e.g. "Speak as words: 123 → one
-  hundred twenty-three")
-- `money` — currency rendering (e.g. "Include currency symbol: ₹500 →
-  five hundred rupees")
-- `dates` — date format (e.g. "Expand to full date: 2025-03-15 → March
-  fifteenth, twenty twenty-five")
-- `time` — time format (e.g. "Speak in twelve-hour format with AM/PM")
-- `phone` — phone-number rendering (e.g. "Spell out digit by digit")
-- `abbreviations` — abbreviation expansion (e.g. "Expand common
-  abbreviations: USD → US dollar")
-- `output_script` — preferred script for non-English text (e.g.
-  `Devanagari` for Hindi)
-- `english_loanwords` — loanword pronunciation (e.g. "Pronounce naturally
-  without transliteration")
+- `script` — `devanagari`, `latin` or `any` (e.g. `devanagari` for Hindi)
+- `numbers` — `words` (spell numbers out) or `digits`
+- `rules` — up to six short spoken-style rules (e.g. "Keep sentences
+  short", "Say rupees, not the symbol")
 
-Configure via ONE call:
-`update_config(block=agent_core, section=channels.voice.tts_rules,
-values={{numbers: "...", money: "...", dates: "...", time: "...",
-phone: "...", abbreviations: "...", output_script: "...",
-english_loanwords: "..."}})`
+Also set `default_language` (must be one of the declared languages) and
+the `guard` switches. For voice-like channels (voice, bridge) turn on
+`guard.rewrite_digits` and `guard.strip_markdown`.
+
+Configure via ONE call per channel:
+`update_config(block=agent_core, section=channels.voice.output_contract,
+values={{default_language: "hindi", languages: {{hindi: {{script:
+"devanagari", numbers: "words", rules: ["..."]}}}}, guard:
+{{rewrite_digits: true, strip_markdown: true}}}})`
+
+Use `section=channels.bridge.output_contract` for the bridge channel.
 
 **Voice — terminal word + filler phrase
 (`reach_layer.channels.voice.*`):**

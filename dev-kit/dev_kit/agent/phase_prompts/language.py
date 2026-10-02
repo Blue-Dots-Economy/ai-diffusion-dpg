@@ -96,7 +96,7 @@ def build(
 
     # Voice TTS / terminal_word / filler_phrase live in the REACH phase per
     # FIELD_RULES (`phase="reach"` on every entry under
-    # `channels.voice.tts_rules.*`, `terminal_word`, `filler_phrase`,
+    # `channels.voice.output_contract`, `terminal_word`, `filler_phrase`,
     # `filler_threshold_ms`). The language phase MUST NOT propose or write
     # them — the runtime cascade would still accept the writes, but the
     # router won't mark them answered for the *reach* phase, so the wizard
@@ -111,7 +111,7 @@ ask about, or call `update_config` for any of the following in the
 language phase — they are scheduled for the reach phase and will be
 re-asked there, wasting turns if you write them now:
 
-- `agent_core.channels.voice.tts_rules.*`
+- `agent_core.channels.voice.output_contract` (do not write output_contract in the language phase; the reach phase authors it)
 - `reach_layer.channels.voice.terminal_word`
 - `reach_layer.channels.voice.filler_phrase`
 - `reach_layer.channels.voice.filler_threshold_ms`

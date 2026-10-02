@@ -82,6 +82,8 @@ class AgentSection(BaseModel):
     ask_for_consent: bool = False
     consent_prompt: str = ""
     prompt_session_fields: list[str] = Field(default_factory=list)
+    history_turns: int = Field(default=2, ge=0)
+    state_fields: list[str] = Field(default_factory=list)
 
     # Optional sub-blocks mirrored from runtime AgentConfig. Blue Dots declares
     # termination_short_circuit; current_question and recent_tool_exchanges
@@ -433,6 +435,39 @@ class OutputContractConfig(BaseModel):
         return self
 
 
+class ShapingCondition(BaseModel):
+    """Mirrors runtime ShapingCondition 1:1 (Spec D §4.1)."""
+    model_config = ConfigDict(extra="forbid")
+    field: str = Field(min_length=1)
+    operator: Literal["eq", "not_eq", "in", "lt", "gt", "contains"]
+    value: Any = None
+
+
+class ShapingSort(BaseModel):
+    """Mirrors runtime ShapingSort 1:1."""
+    model_config = ConfigDict(extra="forbid")
+    field: str = Field(min_length=1)
+    order: Literal["asc", "desc"] = "asc"
+
+
+class SpokenFieldConfig(BaseModel):
+    """Mirrors runtime SpokenFieldConfig 1:1."""
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    format: Literal["range_thousands", "amount"]
+    from_: List[str] = Field(alias="from", min_length=1, max_length=2)
+    unit: Literal["none", "per_month", "per_task", "per_day"] = "none"
+
+
+class ResultShapingConfig(BaseModel):
+    """Mirrors runtime ResultShapingConfig 1:1 (Spec D §4)."""
+    model_config = ConfigDict(extra="forbid")
+    list_key: str = ""
+    drop_when: List[ShapingCondition] = Field(default_factory=list)
+    sort: List[ShapingSort] = Field(default_factory=list)
+    spoken: Dict[str, SpokenFieldConfig] = Field(default_factory=dict)
+    strip_numbers_in: List[str] = Field(default_factory=list)
+
+
 class SilenceTriggerConfig(BaseModel):
     """Mirrors runtime SilenceTriggerConfig 1:1."""
     model_config = ConfigDict(extra="forbid")
@@ -585,6 +620,7 @@ class ConnectorDef(BaseModel):
     input_schema: InputSchema = Field(default_factory=InputSchema)
     invocation_rules: InvocationRules = Field(default_factory=InvocationRules)
     cache: Optional[ToolCacheConfig] = None
+    result_shaping: Optional[ResultShapingConfig] = None
     invalidates: list[str] = Field(default_factory=list)
 
 

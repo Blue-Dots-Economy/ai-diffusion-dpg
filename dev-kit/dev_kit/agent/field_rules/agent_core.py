@@ -208,6 +208,14 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="List of read connectors exposed to the LLM.",
         pydantic_class="ConnectorsSection",
     ),
+    "connectors.read.result_shaping": FieldRule(
+        category="chat",
+        phase="tools",
+        applies_if="has_external_tools",
+        invalidated_by=["has_external_tools", "default_language"],
+        description="Per-connector result shaping: drop, sort, spoken fields (Spec D §4).",
+        pydantic_class="ResultShapingConfig",
+    ),
     "connectors.write": FieldRule(
         category="chat",
         phase="tools",
@@ -464,6 +472,15 @@ FIELD_RULES: dict[str, FieldRule] = {
         category="framework_default_only",
         description="Dialogue-act NLU total attempts.",
     ),
+    "agent.history_turns": FieldRule(
+        category="framework_default_only",
+        description="Exchanges shown to the main LLM in <recent>; 0 omits it.",
+    ),
+    "agent.state_fields": FieldRule(
+        category="chat",
+        phase="reach",
+        description="Session keys shown on the <state> status line.",
+    ),
     "preprocessing.nlu_processor.history_turns": FieldRule(
         category="framework_default_only",
         description="Recent exchanges rendered into the NLU frame.",
@@ -598,6 +615,21 @@ FIELD_RULES: dict[str, FieldRule] = {
         invalidated_by=["selected_channels", "default_language"],
         description="System prompt suffix for voice channel.",
         pydantic_class="ChannelsSection",
+    ),
+    "channels.voice.output_contract": FieldRule(
+        category="chat",
+        phase="reach",
+        applies_if='"voice" in selected_channels',
+        invalidated_by=["selected_channels", "default_language"],
+        description="Spoken-output contract: per-language script, numbers, short rules, guard switches.",
+        pydantic_class="OutputContractConfig",
+    ),
+    "channels.bridge.output_contract": FieldRule(
+        category="chat",
+        phase="reach",
+        invalidated_by=["selected_channels", "default_language"],
+        description="Spoken-output contract: per-language script, numbers, short rules, guard switches.",
+        pydantic_class="OutputContractConfig",
     ),
     "channels.voice.terminal_word": FieldRule(
         category="chat",

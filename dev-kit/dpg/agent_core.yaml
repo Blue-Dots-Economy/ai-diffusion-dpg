@@ -15,6 +15,8 @@ preprocessing:
       intent: off_track
 
 agent:
+  history_turns: 2        # Spec D: exchanges shown to the main LLM in <recent>
+  state_fields: []        # Spec D: session keys shown on the <state> status line
   ask_for_consent: false
   consent_prompt: ""
   timeout_ms: 10000
