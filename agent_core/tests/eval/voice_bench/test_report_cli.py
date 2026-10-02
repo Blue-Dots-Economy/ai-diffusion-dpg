@@ -435,3 +435,15 @@ def test_example_config_loads_with_plan_target_names_and_up_gzb_schema():
     assert [t.name for t in cfg.targets] == ["M0-baseline", "M1", "M2", "M3-head"]
     assert cfg.backend.network_json == DEFAULT_NETWORK_JSON
     assert str(cfg.backend.network_json).endswith("bluedots-schemas/blue_dot/up-gzb/network.json")
+
+
+def test_silent_replies_counted_and_rendered():
+    def T(i, reply, error=None, tw=None):
+        return TurnRecord(i, "a", reply, None, 100, 100, 200, {}, [], {}, False, error, tw)
+    turns = [T(0, "ठीक"), T(1, "  "), T(2, "", tw="धन्यवाद"), T(3, "", error="boom"), T(4, "")]
+    r = CallRecord("M3", "c", "T01", 0, "919900001000", 1, 1, "m", "m", [Leg("c", turns, "bot")], 1, False, None)
+    h = CallRecord("M3", "c", "T01", 1, "919900001000", 1, 1, "m", "m", [Leg("c", [T(0, "")], "bot")], 1, False, "x")
+    h.harness_error = True
+    s = summarise([r, h], {"name": "M3"})
+    assert s["silent_replies"] == {"n_turns": 4, "silent": 2}
+    assert "silent replies: 2 of 4 turns" in render_markdown([s])

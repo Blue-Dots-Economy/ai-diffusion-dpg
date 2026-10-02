@@ -125,3 +125,20 @@ def test_openai_client_has_explicit_timeout_and_retries(monkeypatch):
     monkeypatch.setattr(openai, "OpenAI", Fake)
     OpenAIJsonLLM("gpt-4.1", 0)
     assert seen == {"timeout": 60.0, "max_retries": 2}
+
+
+def test_user_message_summarises_search_and_apply_before_truncating():
+    from eval.voice_bench.judge import _user_message
+    from eval.voice_bench.records import TapEntry
+    items = [{"item_id": f"i{n}", "item_state": {"jobProviderName": f"Employer{n:02d}", "jobProviderLocation": "Lucknow",
+                                                 "role": "Electrician", "natureOfJob": "Full time", "salaryMin": 1, "salaryMax": 2,
+                                                 "padding": "x" * 300}} for n in range(20)]
+    search = TapEntry(1, "POST", "/v1/search", "", {}, 200, {"message": {"items": items}}, "search")
+    apply = TapEntry(2, "POST", "/api/v1/action/perform", "", {"target_item": {"item_id": "i7"}}, 200, {"ok": "y" * 500}, "signals")
+    r = _rec()
+    r.legs[0].turns[0].tap = [search, apply]
+    msg = _user_message(r)
+    for n in range(20):
+        assert f"Employer{n:02d}" in msg
+    assert 'target_item_id' in msg and 'i7' in msg
+    assert "padding" not in msg

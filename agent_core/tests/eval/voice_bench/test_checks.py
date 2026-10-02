@@ -310,3 +310,11 @@ def test_carries_value_age_regex_standalone_digits():
 
     # "24" (standalone age) does carry age
     assert _carries_value("24", "age", PLACES)
+
+
+def test_applied_re_matches_english_success_not_future_question():
+    from eval.voice_bench.checks import APPLIED_RE
+    assert APPLIED_RE.search("Your application to Ganga Services for the Electrician role has been submitted. They'll be in touch.")
+    for s in ("It was submitted", "I submitted your application", "You applied for it", "You applied to Ganga"):
+        assert APPLIED_RE.search(s), s
+    assert not APPLIED_RE.search("Profile saved — shall I submit the application?")

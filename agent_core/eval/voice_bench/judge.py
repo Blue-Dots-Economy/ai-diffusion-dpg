@@ -49,6 +49,36 @@ def parse_judgement(raw: dict, replies: list[str]) -> Verdict:
     return Verdict(verdict, quote=quote, reason=reason)
 
 
+_SUMMARY_JOB_KEYS = ("jobProviderName", "jobProviderLocation", "role", "natureOfJob", "salaryMin", "salaryMax")
+_APPLY_RESP_MAX = 300
+
+
+def _summarise_search(resp_body) -> list[dict] | None:
+    items = ((resp_body or {}).get("message") or {}).get("items") if isinstance(resp_body, dict) else None
+    if not isinstance(items, list):
+        return None
+    rows = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        state = it.get("item_state") if isinstance(it.get("item_state"), dict) else it
+        rows.append({"item_id": it.get("item_id", state.get("item_id")), **{k: state.get(k) for k in _SUMMARY_JOB_KEYS}})
+    return rows
+
+
+def _summarise_tool(e) -> str | None:
+    """Compact JSON for the tools the judge must read in full; None = fall back to truncation."""
+    if e.path.endswith("/v1/search"):
+        rows = _summarise_search(e.resp_body)
+        return None if rows is None else json.dumps(rows, ensure_ascii=False, default=str)
+    if e.path.endswith("/api/v1/action/perform"):
+        target = ((e.req_body or {}).get("target_item") or {}) if isinstance(e.req_body, dict) else {}
+        resp = json.dumps(e.resp_body, ensure_ascii=False, default=str)[:_APPLY_RESP_MAX]
+        return json.dumps({"target_item_id": target.get("item_id") if isinstance(target, dict) else None,
+                           "status": e.status, "response": resp}, ensure_ascii=False, default=str)
+    return None
+
+
 def _user_message(rec: CallRecord) -> str:
     multi = len(rec.legs) > 1
     lines, tools = [], []
@@ -58,7 +88,9 @@ def _user_message(rec: CallRecord) -> str:
             lines.append(f"[{tag}] आप: {t.caller}")
             lines.append(f"[{tag}] बॉट: {t.reply}")
             for e in t.tap:
-                body = json.dumps(e.resp_body, ensure_ascii=False, default=str)[:_BODY_MAX]
+                body = _summarise_tool(e)
+                if body is None:
+                    body = json.dumps(e.resp_body, ensure_ascii=False, default=str)[:_BODY_MAX]
                 tools.append({"turn": tag, "tool": e.tool, "status": e.status, "resp_body": body})
     return "\n".join(lines) + "\n\nTool log:\n" + json.dumps(tools, ensure_ascii=False)
 

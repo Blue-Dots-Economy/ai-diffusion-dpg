@@ -48,6 +48,18 @@ def _latency(records: list[CallRecord], which: int) -> dict:
     return {k: _lat(v) for k, v in split.items()}
 
 
+def _silent_replies(records: list[CallRecord]) -> dict:
+    n = silent = 0
+    for rec in records:
+        for lg in rec.legs:
+            for t in lg.turns:
+                if t.error is not None:
+                    continue
+                n += 1
+                silent += not (t.reply or "").strip() and not t.terminal_word
+    return {"n_turns": n, "silent": silent}
+
+
 def _one(records: list[CallRecord], attr: str):
     vals = {getattr(r, attr) for r in records}
     return vals.pop() if len(vals) == 1 else (sorted(map(str, vals)) if vals else None)
@@ -91,6 +103,7 @@ def summarise(records: list[CallRecord], meta: dict) -> dict:
         "suite_version": _one(records, "suite_version") if records else SUITE_VERSION,
         "seed_version": _one(records, "seed_version"), "judge_model": _one(records, "judge_model"),
         "tc": tc, "latency": _latency(records, 0), "latency_reply": _latency(records, 1),
+        "silent_replies": _silent_replies(records),
         "llm_calls_mean": round(sum(llm_calls) / len(llm_calls), 2) if llm_calls else None,
         "llm_calls_n": len(llm_calls),
         "failures": failures, "nlu": meta.get("nlu"), "unmeasurable": meta.get("unmeasurable"),
@@ -208,6 +221,8 @@ def render_markdown(summaries: list[dict]) -> str:
     out += [f"Mean LLM calls per turn: {llm}", ""]
     out += _latency_section(summaries, "latency", "time to first content")
     out += _latency_section(summaries, "latency_reply", "time to first reply")
+    out += [f"- **{s['target']}** silent replies: {s['silent_replies']['silent']} of {s['silent_replies']['n_turns']} turns"
+            for s in summaries] + [""]
     out += ["## NLU (TC22)", ""] + [_nlu_line(s) for s in summaries] + [""]
     out += _failures_section(summaries)
     out += ["## Notes", "",

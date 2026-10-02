@@ -10,7 +10,7 @@ from typing import Callable, Iterator
 from eval.voice_bench.records import CallRecord, Leg, TurnRecord, Verdict
 from eval.voice_bench.suite import Persona
 
-APPLIED_RE = re.compile(r"आवेदन (भेज|कर|जमा कर) (दिया|दी)|अप्लाई कर (दिया|दी)|आवेदन हो गया|application (sent|submitted)", re.I)
+APPLIED_RE = re.compile(r"आवेदन (भेज|कर|जमा कर) (दिया|दी)|अप्लाई कर (दिया|दी)|आवेदन हो गया|application (sent|submitted)|has been submitted|was submitted|submitted your application|applied (for|to)", re.I)
 ALREADY_RE = re.compile(r"पहले (ही|से)")
 GOODBYE_RE = re.compile(r"(धन्यवाद|शुक्रिया|अलविदा|Thank you)[^?]*$", re.I)
 
