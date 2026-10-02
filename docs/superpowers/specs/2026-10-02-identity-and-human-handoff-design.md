@@ -1,7 +1,7 @@
 # Configurable identity and human handoff for the voice agent
 
 **Status:** Draft for review, 2026-10-02.
-**Branch:** `spec/identity-handoff`. Implementation lands after `fix/voice-turn-defects`, because it reuses that branch's D3 `closing_offer` confirm-then-end path.
+**Branch:** `spec/identity-handoff`. Implementation lands after `fix/voice-turn-defects`, because it reuses that branch's D3 confirm-then-end path: the `close_confirm` pending and `close_return_to`. The existing `closing_offer` pending has the opposite polarity: there, "नहीं" ends the call.
 **Why now:** voice-bench (PR #435) found two problems:
 - TC12 (AI disclosure) fails whenever the caller asks for a human.
 - Blue Dots has no honest path for "let me talk to a person".
@@ -84,7 +84,7 @@ This is a deterministic, non-terminal phase: a fixed line chosen by code and no 
    - `delivered`: "मैंने आपकी बात टीम तक पहुँचा दी है, वे आपसे संपर्क करेंगे। क्या मैं और कुछ मदद करूँ, या कॉल यहीं ख़त्म करूँ?"
    - `failed`: "अभी मैं आपकी बात आगे नहीं भेज पाई — मैं ही आपकी मदद कर सकती हूँ। आप क्या जानना चाहते हैं?"
    - `already`, on a second request in the same call: "आपकी बात पहले ही टीम तक पहुँच चुकी है।" No second escalation is sent.
-3. **The `delivered` line declares `pending: closing_offer`,** reusing D3's confirm-then-end path:
+3. **The `delivered` line declares `pending: close_confirm`,** reusing D3's confirm-then-end path. On entry the phase also records `close_return_to`, which is the same as `handoff_return_to`:
    - "हाँ, ख़त्म करो" ends the call through the existing termination path.
    - Anything else returns the caller to the phase they were in before the handoff (`handoff_return_to`, stored on entry).
 4. **`failed` and `already`** return to the previous phase on the next turn, with no pending.
@@ -174,7 +174,7 @@ The env vars are documented in the deploy env examples. The default `trust_layer
   - `human_request` routes to `handoff` only when the use case allows it;
   - `delivered`, `failed` and `already` lines;
   - one escalation per call;
-  - the `closing_offer` follow-up ends the call on yes and returns to `handoff_return_to` otherwise;
+  - the `close_confirm` follow-up ends the call on yes and returns to `handoff_return_to` otherwise;
   - `<identity>` renders, and is absent when there is no block;
   - the disclosure rule is present.
 - **NLU eval:** cases for "इंसान से बात कराओ", "किसी आदमी से बात करनी है", "क्या आप कंप्यूटर हैं?" and "आप कौन हैं?".
