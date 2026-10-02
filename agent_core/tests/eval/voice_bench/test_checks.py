@@ -318,3 +318,15 @@ def test_applied_re_matches_english_success_not_future_question():
     for s in ("It was submitted", "I submitted your application", "You applied for it", "You applied to Ganga"):
         assert APPLIED_RE.search(s), s
     assert not APPLIED_RE.search("Profile saved — shall I submit the application?")
+
+
+def test_applied_re_matches_hindi_success_forms():
+    """TC13/TC21: APPLIED_RE must match real Hindi success lines but not questions/future forms."""
+    from eval.voice_bench.checks import APPLIED_RE
+    # Positive: real success claims with submission done
+    assert APPLIED_RE.search("आपका आवेदन शक्ति इलेक्ट्रिकल्स के लिए Electrician पद पर सबमिट हो गया है। वे आपसे संपर्क करेंगे।")
+    assert APPLIED_RE.search("आपका आवेदन Apex Manpower में Electrician पद के लिए जमा हो गया है।")
+    # Negative: question form (not a claim of success)
+    assert not APPLIED_RE.search("क्या मैं आपका आवेदन भेज दूँ?")
+    # Negative: future/purpose form (not a claim of success)
+    assert not APPLIED_RE.search("आवेदन भेजने के लिए नाम बताइए")
