@@ -112,3 +112,34 @@ def test_tc19_tc20_regex():
     assert v("TC19", rec(([T(0, "a", "मैं देखती हूँ")], "bot"))) == "pass"
     assert v("TC20", rec(([T(0, "a", "मैं आपकी मदद कर सकता हूँ")], "bot"))) == "fail"
     assert v("TC20", rec(([T(0, "a", "मैं आपकी मदद कर सकती हूँ")], "bot"))) == "pass"
+
+
+def test_tc08_hindi_with_loanword_passes():
+    assert v("TC08", rec(([T(0, "a", "आपका profile update हो गया है")], "bot"))) == "pass"
+
+
+def test_tc20_third_person_and_future():
+    assert v("TC20", rec(([T(0, "a", "मैं बताऊँगा।")], "bot"))) == "fail"
+    for ok in ("मैं बताती हूँ, यह काम आपको मिल सकता है", "मैं देखती हूँ कि आवेदन भेजा गया है",
+               "मैं देखती हूँ, यहाँ काम चल रहा है"):
+        assert v("TC20", rec(([T(0, "a", ok)], "bot"))) == "pass"
+
+
+def test_tc05_midcall_thanks_and_no_goodbye():
+    turns = [T(0, "a", "धन्यवाद, अब मैं आपके लिए नौकरी खोजती हूँ।"), T(1, "b", "धन्यवाद, नमस्ते।", ended=True)]
+    assert v("TC05", rec((turns, "bot"))) == "pass"
+    assert v("TC05", rec(([T(0, "a", "ठीक है", ended=True)], "bot"))) == "pass"
+
+
+def test_tc07_latin_alias_boundaries_and_tap_only():
+    tap_only = [T(0, "काम", "Meerut में एक काम है।", tap=[jobs_tap("ABC", city="Meerut")])]
+    assert v("TC07", rec((tap_only, "bot"))) == "pass"
+    places = {**PLACES, "Agra": ["आगरा", "agra"]}
+    t = [T(0, "काम", "agra में काम है", tap=[jobs_tap("Agrawal Logistics", city="Kanpur")])]
+    ctx = CheckCtx(rec((t, "bot")), P["T01"], places, False)
+    assert DETERMINISTIC["TC07"](ctx).status == "fail"
+
+
+def test_tc21_last_apply_entry_decides():
+    turns = [T(0, "हाँ", "आपका आवेदन भेज दिया है।", tap=[apply_tap(500, {"error": "x"}), apply_tap()])]
+    assert v("TC21", rec((turns, "bot"))) == "pass"

@@ -15,7 +15,9 @@ ALREADY_RE = re.compile(r"पहले (ही|से)")
 GOODBYE_RE = re.compile(r"(धन्यवाद|शुक्रिया|अलविदा|Thank you)[^?]*$")
 
 LEAK_RE = re.compile(r"fetch_jobs|fetch_profile|save_profile|apply_job|end_conversation|end_session|item_id|_id\b|[{}]|JSON|json|[0-9a-f]{8}-[0-9a-f]{4}-")
-GENDER_RE = re.compile(r"मैं[^।?!.]{0,40}?(सकता|रहा|करूँगा|करूंगा|दूँगा|दूंगा|बताऊँगा|बताऊंगा|चाहता|गया|पाऊँगा|पाऊंगा)(?=\s|[।?!.,]|$)")
+GENDER_RE = re.compile(
+    r"मैं[^।?!.,]{0,40}?(सकता|रहा|चाहता|गया|पाया)\s*(हूँ|हूं)"
+    r"|(करूँगा|करूंगा|दूँगा|दूंगा|बताऊँगा|बताऊंगा|पाऊँगा|पाऊंगा|देखूँगा|देखूंगा)")
 DIGIT_RE = re.compile(r"[0-9०-९]")
 REPEAT_REQUEST_RE = re.compile(r"फिर से|दोबारा|repeat|सुनाई नहीं|आवाज़ नहीं")
 CORRECTION_MARKERS = ("नहीं", "गलत", "actually", "असल में")
@@ -32,6 +34,7 @@ SESSION_KEYS = {
     "trade": ["trade", "stored_trade"],
 }
 SLOW_MS = 5000
+MAX_WORDS_AFTER_THANKS = 4
 
 
 @dataclass(frozen=True)
@@ -106,13 +109,21 @@ def _tc04(ctx: CheckCtx) -> Verdict:
     return Verdict("pass")
 
 
+def _is_goodbye(reply: str) -> bool:
+    """GOODBYE_RE on the last sentence only, so a mid-call thank-you is not a goodbye."""
+    pieces = [p for p in re.split(r"[।?!.]", reply) if p.strip()]
+    m = GOODBYE_RE.search(pieces[-1]) if pieces else None
+    # a thank-you followed by a long clause is a mid-call thanks, not a farewell
+    return bool(m and len(pieces[-1][m.end(1):].split()) <= MAX_WORDS_AFTER_THANKS)
+
+
 def _tc05_leg(lg: Leg) -> Verdict | None:
     if lg.ended_by not in ("bot", "caller"):
         return None
     replies = [t for t in lg.turns if t.reply]
-    goodbyes = [t for t in replies if GOODBYE_RE.search(t.reply)]
+    goodbyes = [t for t in replies if _is_goodbye(t.reply)]
     if lg.ended_by == "caller":
-        if replies and GOODBYE_RE.search(replies[-1].reply):
+        if replies and _is_goodbye(replies[-1].reply):
             return _fail(replies[-1], "caller had to hang up after goodbye; bot never released the line")
         return _fail(replies[-1], "bot did not close") if replies else Verdict("fail", reason="bot did not close")
     if len(goodbyes) > 1:
@@ -143,8 +154,15 @@ def _tc06(ctx: CheckCtx) -> Verdict:
 
 
 def _names_place(text: str, aliases: list[str]) -> bool:
+    """Latin aliases match on word boundaries, Devanagari ones as substrings."""
     folded = text.casefold()
-    return any(a.casefold() in folded for a in aliases)
+    for a in aliases:
+        if a.isascii():
+            if re.search(rf"\b{re.escape(a)}\b", text, re.I):
+                return True
+        elif a.casefold() in folded:
+            return True
+    return False
 
 
 def _tc07_leg(lg: Leg, places: dict[str, list[str]]) -> Verdict:
@@ -169,9 +187,9 @@ def _tc08(ctx: CheckCtx) -> Verdict:
     def bad(t: TurnRecord) -> str | None:
         if DIGIT_RE.search(t.reply):
             return "digit in reply"
-        letters = sum(ch.isalpha() for ch in t.reply)
-        latin = len(re.findall(r"[A-Za-z]", t.reply))
-        if letters and not ctx.persona.english_mode and latin / letters > 0.5:
+        words = [w for w in t.reply.split() if any(c.isalpha() or "\u0900" <= c <= "\u097f" for c in w)]
+        latin = sum(bool(re.search(r"[A-Za-z]", w)) for w in words)
+        if words and not ctx.persona.english_mode and latin / len(words) > 0.5:
             return "reply mostly Latin script"
         return None
     return _first_fail(ctx, bad)
@@ -309,16 +327,19 @@ def _apply_outcome(status: int, body) -> str:
 
 def _tc21_leg(lg: Leg) -> Verdict | None:
     for i, t in enumerate(lg.turns):
-        for e in _taps(t, "apply_job"):
-            outcome = _apply_outcome(e.status, e.resp_body)
-            r = t if t.reply or i + 1 >= len(lg.turns) else lg.turns[i + 1]
-            applied = bool(APPLIED_RE.search(r.reply))
-            if outcome == "success" and not applied:
-                return _fail(r, "apply succeeded but reply does not confirm it")
-            if outcome == "already" and not ALREADY_RE.search(r.reply):
-                return _fail(r, "already applied but reply does not say so")
-            if outcome == "error" and applied:
-                return _fail(r, "apply failed but reply claims success")
+        applies = _taps(t, "apply_job")
+        if not applies:
+            continue
+        e = applies[-1]  # the last attempt in a turn decides what the bot should say
+        outcome = _apply_outcome(e.status, e.resp_body)
+        r = t if t.reply or i + 1 >= len(lg.turns) else lg.turns[i + 1]
+        applied = bool(APPLIED_RE.search(r.reply))
+        if outcome == "success" and not applied:
+            return _fail(r, "apply succeeded but reply does not confirm it")
+        if outcome == "already" and not ALREADY_RE.search(r.reply):
+            return _fail(r, "already applied but reply does not say so")
+        if outcome == "error" and applied:
+            return _fail(r, "apply failed but reply claims success")
     return None
 
 
