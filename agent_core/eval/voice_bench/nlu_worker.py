@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         from src.preprocessing.nlu_processor import NLUProcessor
         nlu = NLUProcessor(config, chat_provider=build_chat_provider(provider_cfg))
-        rules = [r for s in workflow.subagents.values() for r in s.routing] + list(workflow.global_routing)
+        rules = [r for s in workflow.subagents.values() for r in getattr(s, "routing", []) or []] + list(getattr(workflow, "global_routing", []) or [])
         routed = {r.intent for r in rules if r.intent != "*"}
         resolves_to = next((p.resolves_to for s in workflow.subagents.values()
                             for p in getattr(s, "pending", []) or [] if getattr(p, "resolves_to", None)),

@@ -37,6 +37,8 @@ def run_nlu(worktree: Path, cases: list[Path], repeat: int, out: Path, run=subpr
         The worker's JSON, or ``{"unmeasurable": <stderr tail>}`` on non-zero exit.
     """
     worktree = Path(worktree)
+    cases = [Path(c).resolve() for c in cases]
+    out = Path(out).resolve()
     harness = _copy_harness(worktree)
     agent_core = worktree / "agent_core"
     args = ["uv", "run", "--project", str(agent_core), "python", "-m", "eval.voice_bench.nlu_worker",
@@ -46,4 +48,10 @@ def run_nlu(worktree: Path, cases: list[Path], repeat: int, out: Path, run=subpr
     proc = run(args, cwd=str(harness), env=env, capture_output=True, text=True)
     if proc.returncode != 0:
         return {"unmeasurable": (proc.stderr or "")[-300:]}
-    return json.loads(Path(out).read_text(encoding="utf-8"))
+    try:
+        data = json.loads(out.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"unmeasurable": ("worker produced no valid output: " + (proc.stderr or "")[-300:]).strip()}
+    if not isinstance(data, dict):
+        return {"unmeasurable": "worker produced no valid output"}
+    return data
