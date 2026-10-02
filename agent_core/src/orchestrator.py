@@ -103,6 +103,10 @@ SERVED_TOOL_RESULTS_KEY = "served_tool_results"
 # A ``written_at_ms`` up to this far in the future counts as age 0; beyond it
 # the value is treated as malformed. A fixed tolerance, not a tunable.
 _CARRYOVER_CLOCK_SKEW_MS = 5000
+# A handoff marked "pending" this recently is still in flight: a second
+# human_request speaks the already line instead of escalating again
+# (identity/handoff spec §5.2). An older pending marker allows a new escalate.
+_HANDOFF_PENDING_WINDOW_MS = 30_000
 
 # Module-level guard to prevent double-instrumentation in test environments.
 _HTTPX_INSTRUMENTED = False
@@ -2793,7 +2797,7 @@ class AgentCore(AgentCoreBase):
         """
         current = bundle.session.get("current_subagent_id") or self._workflow.start_subagent_id
         step = (bundle.session.get("close_return_to") or current) if self._is_return_phase(current) else current
-        already = bundle.session.get("handoff_status") == "delivered"
+        already = self._handoff_already(bundle)
         payload = {} if already else build_handoff_payload(
             ticket_hint="",
             use_case=self._config.get("observability", {}).get("domain", "unknown"),
@@ -2804,8 +2808,39 @@ class AgentCore(AgentCoreBase):
         )
         return already, payload, step
 
-    def _handoff_writes(self, bundle, outcome: str, result: dict | None) -> dict:
-        """Session fields a handoff turn records (mirrored into bundle.session); next-turn routing reads them."""
+    @staticmethod
+    def _handoff_already(bundle) -> bool:
+        """True when this call already has a delivered handoff, or one still pending (< 30 s old)."""
+        status = bundle.session.get("handoff_status")
+        if status == "delivered":
+            return True
+        if status != "pending":
+            return False
+        try:
+            pending_at = int(float(bundle.session.get("handoff_pending_at") or 0))
+        except (TypeError, ValueError):
+            return False
+        return int(time.time() * 1000) - pending_at < _HANDOFF_PENDING_WINDOW_MS
+
+    @staticmethod
+    def _handoff_pending_writes(bundle) -> dict:
+        """The pending marker, written BEFORE escalate so a lost result can't allow a duplicate.
+
+        ``handoff_line`` is ``pending`` too: a pending handoff is not delivered,
+        so it never arms the delivered-only close_confirm question.
+        """
+        writes = {"handoff_status": "pending", "handoff_pending_at": int(time.time() * 1000),
+                  "handoff_line": "pending"}
+        bundle.session.update(writes)
+        return writes
+
+    def _handoff_writes(self, bundle, outcome: str, result: dict | None, *, session_id: str = "",
+                        line: str = "", caller: str = "") -> dict:
+        """Session fields a handoff turn records (mirrored into bundle.session); next-turn routing reads them.
+
+        Includes the exchange in ``recent_turns`` and the spoken line as
+        ``current_question``, like a normal turn, so the next turn sees it.
+        """
         current = bundle.session.get("current_subagent_id") or self._workflow.start_subagent_id
         writes: dict = {}
         # Inside a return phase close_return_to already names the real phase; keep it.
@@ -2822,6 +2857,11 @@ class AgentCore(AgentCoreBase):
         counts = dict(raw_counts) if isinstance(raw_counts, dict) else {}
         counts["handoff"] = int(counts.get("handoff", 0) or 0) + 1
         writes["subagent_entry_count"] = counts
+        writes["current_question"] = self._sanitize_current_question(
+            prev=bundle.session.get("current_question", "") or "", new=line, session_id=session_id)
+        writes[RECENT_TURNS_KEY] = append_recent_turn(
+            bundle.session.get(RECENT_TURNS_KEY), caller=caller, bot=line, interrupted=False,
+            history_turns=self._dialogue_cfg.history_turns)
         bundle.session.update(writes)
         return writes
 
@@ -2862,31 +2902,59 @@ class AgentCore(AgentCoreBase):
                 "operation": "orchestrator.handoff", "status": "skipped",
                 "session_id": data.get("session_id"), "error": type(exc).__name__})
 
+    def _handoff_will_escalate(self, bundle) -> bool:
+        """True when a ``human_request`` this turn would call Trust (handoff on, nothing delivered or pending)."""
+        return self._handoff_lines() is not None and not self._handoff_already(bundle)
+
     async def _handle_human_request_async(self, session_id: str, user_id: str, bundle, turn_input,
-                                          *, turn_id: str = "") -> str | None:
+                                          *, turn_id: str = "", caller: str = "") -> str | None:
         """Escalate a ``human_request`` to Trust; return the line to speak, or None when handoff is off.
 
-        At most one delivered handoff per call: after ``delivered`` the
-        ``already`` line is returned and nothing is sent; after ``failed`` a
-        new request tries again. Any exception counts as failed.
+        At most one delivered handoff per call: after ``delivered`` (or while a
+        handoff is pending, < 30 s) the ``already`` line is returned and nothing
+        is sent; after ``failed`` a new request tries again. Any exception
+        counts as failed. The pending marker is written before escalate, and
+        escalate + its result writes run shielded and held in ``_bg_tasks``,
+        so a cancelled turn still records the result.
         """
         lines = self._handoff_lines()
         if lines is None:
             return None
         already, payload, step = self._handoff_prepare(session_id, user_id, bundle, turn_input)
-        result: dict | None = None
-        latency_ms = 0
-        if not already:
-            t0 = time.time()
-            try:
-                result = await self._async_trust.escalate(
-                    session_id, "human_request", turn_input.user_message, step, handoff=payload)
-            except Exception as exc:  # noqa: BLE001 — a handoff failure must never fail the turn
-                self._handoff_escalate_failed(session_id, exc)
-                result = None
-            latency_ms = int((time.time() - t0) * 1000)
+        caller = caller or turn_input.user_message
+        if already:
+            return await self._handoff_finish_async(session_id, user_id, bundle, lines, None, True, 0,
+                                                    turn_id=turn_id, caller=caller)
+        pending = self._handoff_pending_writes(bundle)
+        await asyncio.gather(*(self._async_memory.write(session_id, user_id, "session", k, v)
+                               for k, v in pending.items()), return_exceptions=True)
+        task = asyncio.ensure_future(self._handoff_escalate_async(
+            session_id, user_id, bundle, turn_input, lines, payload, step, turn_id=turn_id, caller=caller))
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return await asyncio.shield(task)
+
+    async def _handoff_escalate_async(self, session_id: str, user_id: str, bundle, turn_input, lines: dict,
+                                      payload: dict, step: str, *, turn_id: str, caller: str) -> str:
+        """Escalate and record the result; runs under ``asyncio.shield`` so cancellation can't drop it."""
+        t0 = time.time()
+        result: dict | None
+        try:
+            result = await self._async_trust.escalate(
+                session_id, "human_request", turn_input.user_message, step, handoff=payload)
+        except Exception as exc:  # noqa: BLE001 — a handoff failure must never fail the turn
+            self._handoff_escalate_failed(session_id, exc)
+            result = None
+        latency_ms = int((time.time() - t0) * 1000)
+        return await self._handoff_finish_async(session_id, user_id, bundle, lines, result, False, latency_ms,
+                                                turn_id=turn_id, caller=caller)
+
+    async def _handoff_finish_async(self, session_id: str, user_id: str, bundle, lines: dict,
+                                    result: dict | None, already: bool, latency_ms: int, *,
+                                    turn_id: str, caller: str) -> str:
+        """Choose the line, write the session fields and emit the ``handoff`` signal."""
         line, outcome = choose_handoff_line(result, lines, already)
-        writes = self._handoff_writes(bundle, outcome, result)
+        writes = self._handoff_writes(bundle, outcome, result, session_id=session_id, line=line, caller=caller)
         await asyncio.gather(*(self._async_memory.write(session_id, user_id, "session", k, v)
                                for k, v in writes.items()), return_exceptions=True)
         data = self._handoff_signal(session_id, turn_id, outcome, result, latency_ms)
@@ -2906,6 +2974,8 @@ class AgentCore(AgentCoreBase):
         result: dict | None = None
         latency_ms = 0
         if not already:
+            for k, v in self._handoff_pending_writes(bundle).items():
+                self._write_memory_sync(session_id, user_id, "session", k, v)
             t0 = time.time()
             try:
                 result = self._trust.escalate(
@@ -2915,7 +2985,8 @@ class AgentCore(AgentCoreBase):
                 result = None
             latency_ms = int((time.time() - t0) * 1000)
         line, outcome = choose_handoff_line(result, lines, already)
-        for k, v in self._handoff_writes(bundle, outcome, result).items():
+        for k, v in self._handoff_writes(bundle, outcome, result, session_id=session_id, line=line,
+                                         caller=turn_input.user_message).items():
             self._write_memory_sync(session_id, user_id, "session", k, v)
         data = self._handoff_signal(session_id, turn_id, outcome, result, latency_ms)
         try:
@@ -4322,8 +4393,16 @@ class AgentCore(AgentCoreBase):
 
             # ── Human handoff — a fixed line, no LLM (identity/handoff §4) ──
             if nlu_result.intent == "human_request":
+                # The bridge speaks tool_status_phrases["request_human"] while
+                # escalate runs, so the caller does not hear silence.
+                _handoff_hold = self._handoff_will_escalate(bundle)
+                if _handoff_hold:
+                    yield _stamp(SignalEvent(stage="tool_start", status="start", tools=["request_human"]))
                 handoff_line = await self._handle_human_request_async(
-                    session_id, user_id, bundle, turn_input, turn_id=turn_id)
+                    session_id, user_id, bundle, turn_input, turn_id=turn_id,
+                    caller=" ".join(record.segments or [turn_input.user_message]))
+                if _handoff_hold:
+                    yield _stamp(SignalEvent(stage="tool_end", status="complete"))
                 if handoff_line is not None:
                     async for ev in self._stream_termination_short_circuit(
                         session_id=session_id, user_id=user_id, turn_id=turn_id,

@@ -8,12 +8,13 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from eval.nlu.offline import OfflineGateway, load_merged_config
-from src.models import ContextBundle, DoneEvent, NLUResult, SentenceEvent, TrustCheckResult
+from src.models import ContextBundle, DoneEvent, NLUResult, SentenceEvent, SignalEvent, TrustCheckResult
 from src.schema.config import MergedConfig
 from src.tool_registry import ToolRegistry
 from src.workflow_loader import AgentWorkflowLoader
@@ -74,8 +75,12 @@ class _Turn:
         self.escalate_calls: list[dict] = []
         self.session: dict = {**_CALL, "current_subagent_id": "job_match"}
         self.writes: dict = {}
+        self.write_log: list[tuple[str, object]] = []
+        self.events: list = []
+        self.status_at_escalate: list = []
 
     def _escalate(self, session_id, escalation_reason, user_message, workflow_step, handoff=None):
+        self.status_at_escalate.append(self.writes.get("handoff_status"))
         self.escalate_calls.append({"session_id": session_id, "escalation_reason": escalation_reason,
                                     "user_message": user_message, "workflow_step": workflow_step,
                                     "handoff": handoff})
@@ -85,6 +90,7 @@ class _Turn:
 
     def _record_write(self, session_id, user_id, scope, key, value):
         self.writes[key] = value
+        self.write_log.append((key, value))
 
     @property
     def llm_calls(self) -> int:
@@ -95,13 +101,18 @@ class _Turn:
         return
         yield  # pragma: no cover
 
-    async def stream(self, llm=None):
+    def _arm_stream(self, llm=None, escalate=None):
         a = self.agent
         a._llm.stream = llm or self._recording_stream
-        a._async_trust.escalate = AsyncMock(side_effect=self._escalate)
+        a._async_trust.escalate = AsyncMock(side_effect=escalate or self._escalate)
         a._async_memory.write = AsyncMock(side_effect=self._record_write)
         a._async_memory.context_bundle.return_value = ContextBundle(session=dict(self.session), profile={})
+
+    async def stream(self, llm=None):
+        a = self.agent
+        self._arm_stream(llm)
         events = await _collect_events(a, _make_turn_input(channel="voice", user_message=ASK))
+        self.events = events
         for _ in range(3):                                           # let fire-and-forget tasks run
             await asyncio.sleep(0)
         text = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
@@ -317,3 +328,139 @@ def test_sync_handoff_disabled_does_not_escalate():
     result = t.sync()
     assert result.response_text not in HANDOFF_LINES.values()
     assert t.escalate_calls == [] and "handoff_status" not in t.writes
+
+
+# ── pending marker, cancellation, recent_turns, hold line (final-review fixes) ─
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+@pytest.mark.asyncio
+async def test_pending_marker_written_before_escalate():
+    t = _Turn()
+    await t.stream()
+    assert t.status_at_escalate == ["pending"]
+    keys = [k for k, _ in t.write_log]
+    assert keys.index("handoff_pending_at") < keys.index("handoff_ticket_id")
+    assert t.writes["handoff_status"] == "delivered"
+
+
+def test_sync_pending_marker_written_before_escalate():
+    t = _Turn()
+    t.sync()
+    assert t.status_at_escalate == ["pending"]
+    assert t.writes["handoff_status"] == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_cancel_mid_escalate_still_records_result():
+    t = _Turn()
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_escalate(*a, **k):
+        started.set()
+        await release.wait()
+        return {"queued": True, "delivered": True, "reason": "delivered", "ticket_id": "TKT-9"}
+
+    t._arm_stream(escalate=slow_escalate)
+    turn = asyncio.ensure_future(_collect_events(t.agent, _make_turn_input(channel="voice", user_message=ASK)))
+    await started.wait()
+    assert t.writes["handoff_status"] == "pending"
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+    assert len(t.agent._bg_tasks) >= 1                               # escalate task still held
+    release.set()
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert t.writes["handoff_status"] == "delivered" and t.writes["handoff_ticket_id"] == "TKT-9"
+
+
+@pytest.mark.asyncio
+async def test_recent_pending_is_already_and_sends_nothing():
+    t = _Turn()
+    t.session.update(handoff_status="pending", handoff_pending_at=str(_now_ms() - 5_000))
+    text, _ = await t.stream()
+    assert text == HANDOFF_LINES["already"] and t.escalate_calls == []
+    assert t.writes["handoff_line"] == "already" and "handoff_status" not in t.writes
+    assert not any(isinstance(e, SignalEvent) and e.stage == "tool_start" for e in t.events)
+
+
+def test_sync_recent_pending_is_already():
+    t = _Turn()
+    t.session.update(handoff_status="pending", handoff_pending_at=_now_ms() - 5_000)
+    assert t.sync().response_text == HANDOFF_LINES["already"] and t.escalate_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stale_pending_retries():
+    t = _Turn()
+    t.session.update(handoff_status="pending", handoff_pending_at=str(_now_ms() - 30_000))
+    text, _ = await t.stream()
+    assert text == HANDOFF_LINES["delivered"] and len(t.escalate_calls) == 1
+
+
+def test_sync_stale_pending_retries():
+    t = _Turn()
+    t.session.update(handoff_status="pending", handoff_pending_at=_now_ms() - 31_000)
+    assert t.sync().response_text == HANDOFF_LINES["delivered"] and len(t.escalate_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_pending_never_arms_close_confirm_marker():
+    t = _Turn()
+    seen: list = []
+
+    async def peek(*a, **k):
+        seen.append(t.writes.get("handoff_line"))
+        return {"queued": False}
+
+    t._arm_stream(escalate=peek)
+    await _collect_events(t.agent, _make_turn_input(channel="voice", user_message=ASK))
+    assert seen == ["pending"] and t.writes["handoff_line"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_handoff_turn_lands_in_recent_turns_and_current_question():
+    t = _Turn()
+    t.session["recent_turns"] = [{"caller": "नमस्ते", "bot": "जी, बताइए।", "interrupted": False}]
+    await t.stream()
+    turns = t.writes["recent_turns"]
+    assert turns[-1] == {"caller": ASK, "bot": HANDOFF_LINES["delivered"], "interrupted": False}
+    assert turns[0]["caller"] == "नमस्ते"
+    assert t.writes["current_question"] == HANDOFF_LINES["delivered"]
+
+
+def test_sync_handoff_turn_lands_in_recent_turns_and_current_question():
+    t = _Turn()
+    t.sync()
+    assert t.writes["recent_turns"][-1] == {"caller": ASK, "bot": HANDOFF_LINES["delivered"],
+                                            "interrupted": False}
+    assert t.writes["current_question"] == HANDOFF_LINES["delivered"]
+
+
+@pytest.mark.asyncio
+async def test_hold_signal_yielded_before_the_handoff_line():
+    t = _Turn()
+    await t.stream()
+    kinds = [("start" if isinstance(e, SignalEvent) and e.stage == "tool_start" else
+              "line" if isinstance(e, SentenceEvent) else None) for e in t.events]
+    assert "start" in kinds and kinds.index("start") < kinds.index("line")
+    start = next(e for e in t.events if isinstance(e, SignalEvent) and e.stage == "tool_start")
+    assert start.tools == ["request_human"]
+
+
+@pytest.mark.asyncio
+async def test_no_hold_signal_after_delivery():
+    t = _Turn()
+    t.session["handoff_status"] = "delivered"
+    await t.stream()
+    assert not any(isinstance(e, SignalEvent) and e.stage == "tool_start" for e in t.events)
+
+
+def test_blue_dots_bridge_has_a_hold_phrase_for_request_human():
+    import yaml
+    reach = yaml.safe_load((BLUE_DOTS / "reach_layer.yaml").read_text(encoding="utf-8"))
+    phrases = reach["reach_layer"]["channels"]["bridge"]["tool_status_phrases"]
+    assert phrases["request_human"] == "एक मिनट।"

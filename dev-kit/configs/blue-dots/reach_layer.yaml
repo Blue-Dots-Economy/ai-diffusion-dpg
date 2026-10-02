@@ -47,3 +47,6 @@ reach_layer:
         fetch_profile: "एक मिनट।"
         fetch_jobs: "एक मिनट।"
         save_profile: "एक मिनट।"
+        # Not a workflow tool: Agent Core emits it while a human handoff is
+        # being escalated (identity/handoff spec §5.3).
+        request_human: "एक मिनट।"
