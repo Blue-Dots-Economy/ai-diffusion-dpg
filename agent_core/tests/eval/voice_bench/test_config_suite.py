@@ -75,3 +75,16 @@ def test_phone_for_is_reserved_range_and_distinct():
     a, b = phone_for("9199000", "T01", 0), phone_for("9199000", "T01", 1)
     assert a == "919900001000" and b == "919900001100" and a != b
     assert len(a) == 12 and a.isdigit()
+
+
+def test_backend_network_json_default_and_override(tmp_path):
+    """U1: backend.network_json defaults to the up-gzb schema path; the config key overrides it."""
+    from pathlib import Path
+
+    from eval.voice_bench.config import DEFAULT_NETWORK_JSON
+    p = tmp_path / "vb.yaml"
+    p.write_text(CFG, encoding="utf-8")
+    assert load_config(p).backend.network_json == DEFAULT_NETWORK_JSON
+    p.write_text(CFG.replace("search_url: \"http://localhost:3100\"}",
+                             "search_url: \"http://localhost:3100\", network_json: /x/net.json}"), encoding="utf-8")
+    assert load_config(p).backend.network_json == Path("/x/net.json")

@@ -67,3 +67,43 @@ class LogScraper:
             return (r.stdout or "") + (r.stderr or "")
         except (OSError, subprocess.SubprocessError):
             return ""
+
+
+_PHONE_RE = re.compile(r"\d{6,15}")
+
+
+def _redis(container: str, args: list[str], run) -> str:
+    try:
+        r = run(["docker", "exec", container, "redis-cli", *args], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise RuntimeError(f"redis-cli {args[0]} on {container} could not run: {type(e).__name__}") from e
+    out = r.stdout or ""
+    if r.returncode != 0 or out.lstrip().startswith(("ERR", "(error)", "WRONGTYPE", "NOAUTH")):
+        raise RuntimeError(f"redis-cli {args[0]} on {container} failed (exit {r.returncode})")
+    return out
+
+
+def reset_session(redis_container: str, phone: str, flush: bool, run=subprocess.run) -> None:
+    """Wipe the target's session memory before/after a call so no call resumes another's session (C1).
+
+    Args:
+        redis_container: The target's session Redis container.
+        phone: The call's phone (digits only).
+        flush: True for a throwaway git_ref stack (its Redis is private: FLUSHDB); False for an external bridge_url
+            Redis, where only this phone's ``session:<phone>*`` and ``user:<phone>*`` keys are deleted.
+        run: subprocess.run (injectable).
+
+    Raises:
+        RuntimeError: redis-cli fails, or phone is not digits; a call must not run on dirty memory.
+    """
+    if flush:
+        if _redis(redis_container, ["FLUSHDB"], run).strip() != "OK":
+            raise RuntimeError(f"redis-cli FLUSHDB on {redis_container} did not answer OK")
+        return
+    if not _PHONE_RE.fullmatch(phone or ""):
+        raise RuntimeError("reset_session: phone must be digits only")
+    keys: list[str] = []
+    for pattern in (f"session:{phone}*", f"user:{phone}*"):
+        keys += [k for k in _redis(redis_container, ["--scan", "--pattern", pattern], run).splitlines() if k.strip()]
+    if keys:
+        _redis(redis_container, ["DEL", *keys], run)

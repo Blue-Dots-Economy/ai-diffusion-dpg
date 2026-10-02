@@ -181,3 +181,16 @@ def test_bridge_url_target_only_health_checks(tmp_path):
     assert s.up() == url
     s.down()
     assert run.calls == []
+
+
+def test_apply_patch_rejects_a_leftover_upstream_host():
+    """M4: a non-comment line still naming an upstream host after patching (a 6th site) is a mismatch."""
+    host = "https://signals.bluedotseconomy.org"
+    extra = _ag(host) + f'    docs_url: "{host}/docs"\n'
+    with pytest.raises(PatchMismatch, match="upstream host still present"):
+        apply_patch(extra, PATCH, "http://t", "http://i")
+    other = _ag(host) + '    fallback: "https://dev-signals.serveirc.com"\n'      # the other known host
+    with pytest.raises(PatchMismatch, match="upstream host still present"):
+        apply_patch(other, PATCH, "http://t", "http://i")
+    commented = _ag(host) + f'    x: 1   # was {host}\n'
+    assert host not in apply_patch(commented, PATCH, "http://t", "http://i").split("#")[0]

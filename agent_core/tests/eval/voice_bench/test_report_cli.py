@@ -69,8 +69,11 @@ class FakeTap:
     def stop(self):
         self.stopped = True
 
-    def take(self, since_ms):
+    def take(self):
         return []
+
+    def clear(self):
+        pass
 
 
 class FakeBackend:
@@ -91,7 +94,7 @@ class FakeBackend:
         FakeBackend.calls.append("seed")
 
     def cleanup(self):
-        pass
+        FakeBackend.calls.append("cleanup")
 
 
 class FakeStack:
@@ -127,9 +130,10 @@ class FakeStack:
 def env(tmp_path, monkeypatch):
     FakeTap.instances, FakeBackend.calls, FakeStack.fail, FakeStack.downs = [], [], set(), []
     FakeStack.commits = {}
-    driven, nlu_calls = [], []
+    driven, nlu_calls, resets = [], [], []
 
     def fake_drive(deps, persona, run_idx, phone, max_turns, meta):
+        deps.cleanup()
         driven.append((meta["target"], persona.id, run_idx, phone))
         turns = [TurnRecord(0, "नमस्ते", "नमस्ते जी", None, 900, 900, 1000, {}, [], {}, True, None)]
         return CallRecord(meta["target"], meta["target_commit"], persona.id, run_idx, phone, meta["suite_version"],
@@ -140,7 +144,7 @@ def env(tmp_path, monkeypatch):
         rec.verdicts = {"TC12": Verdict("fail", "नमस्ते जी", "कारण", 0)}
         return rec.verdicts
 
-    def fake_nlu(worktree, cases, repeat, out):
+    def fake_nlu(worktree, cases, repeat, out, env_file=None):
         nlu_calls.append((worktree, cases, repeat))
         return {"adapter": "intent", "report": {"fields": {"intent": {"accuracy": 0.9, "n": 10}},
                                                 "termination_false_positives": 0,
@@ -153,6 +157,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "OpenAIJsonLLM", lambda model, temperature: object())
     monkeypatch.setattr(cli, "LogScraper", lambda c: object())
     monkeypatch.setattr(cli, "run_nlu", fake_nlu)
+    monkeypatch.setattr(cli, "reset_session", lambda c, phone, flush: resets.append((c, phone, flush)))
     monkeypatch.setattr(cli, "drive_call", fake_drive)
     monkeypatch.setattr(cli, "score_call", fake_score)
     monkeypatch.setattr(cli, "_repo_root", lambda: tmp_path)
@@ -164,7 +169,8 @@ def env(tmp_path, monkeypatch):
            "results_dir": str(results)}
     path = tmp_path / "vb.yaml"
     path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
-    return {"cfg": str(path), "results": results, "driven": driven, "nlu": nlu_calls, "tmp": tmp_path}
+    return {"cfg": str(path), "results": results, "driven": driven, "nlu": nlu_calls, "tmp": tmp_path,
+            "resets": resets, "raw_cfg": cfg}
 
 
 def test_run_skips_cached_records(env):
@@ -190,10 +196,12 @@ def test_run_records_unmeasurable_target_and_continues(env):
     assert all(os.path.isabs(c) and str(c).endswith(".jsonl") for c in env["nlu"][0][1])
 
 
-def test_dry_run_is_first_target_t01_r0(env):
+def test_dry_run_is_first_target_t01_r0_and_runs_nlu(env):
     assert cli.main(["run", "--config", env["cfg"], "--dry-run"]) == 0
     assert [(t, s, r) for t, s, r, _ in env["driven"]] == [("M0", "T01", 0)]
-    assert ResultStore(env["results"]).has("cM0", "T01", 0) and env["nlu"] == []
+    assert ResultStore(env["results"]).has("cM0", "T01", 0)
+    assert [w for w, *_ in env["nlu"]] == ["/wt/M0"]               # I5: the NLU worker path runs on a dry run too
+    assert ResultStore(env["results"]).read_meta("cM0")["nlu"]["adapter"] == "intent"
 
 
 def test_runs_flag_overrides_and_seeded_phone(env):
@@ -289,3 +297,141 @@ def test_delta_uses_unrounded_rates():
                if ln.startswith("| TC12 |"))
     # 16.67% -> 33.33%: unrounded delta 16.67 -> +17 (rounding each first would give 33-17 = +16)
     assert "17% (1/6)" in row and "33% (1/3)" in row and row.endswith("| +17 |")
+
+
+# ---- final-review fixes ---------------------------------------------------------------------------------------
+def _with_targets(env, targets):
+    raw = dict(env["raw_cfg"], targets=targets)
+    path = env["tmp"] / "vb2.yaml"
+    path.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+    return str(path)
+
+
+def test_per_call_cleanup_resets_target_session_memory(env):
+    """C1: every call's cleanup = Signals DB cleanup + session reset; FLUSHDB for git_ref, keyed delete for bridge_url."""
+    cfg = _with_targets(env, [{"name": "M0", "git_ref": "a"},
+                              {"name": "vm", "bridge_url": "http://127.0.0.1:8008", "redis_container": "dpg_redis"}])
+    assert cli.main(["run", "--config", cfg, "--scenarios", "T01,T14", "--runs", "1"]) == 0
+    assert env["resets"] == [("redis", "919900001000", True), ("redis", "919900014000", True),
+                             ("dpg_redis", "919900001000", False), ("dpg_redis", "919900014000", False)]
+    assert FakeBackend.calls.count("cleanup") == 4
+
+
+def test_cleanup_failure_exits_1_without_traceback(env, monkeypatch, capsys):
+    """C1 + M8: a reset failure aborts (no call on dirty memory) with an ASCII one-liner, exit 1."""
+    def boom(c, phone, flush):
+        raise RuntimeError("redis-cli FLUSHDB on redis failed (exit 1)")
+    monkeypatch.setattr(cli, "reset_session", boom)
+    assert cli.main(["run", "--config", env["cfg"], "--targets", "M0", "--scenarios", "T02"]) == 1
+    out = capsys.readouterr().out
+    assert "error: RuntimeError: redis-cli FLUSHDB on redis failed" in out and "Traceback" not in out
+    assert env["driven"] == [] and all(t.stopped for t in FakeTap.instances) and FakeStack.downs == ["M0"]
+
+
+def test_http_error_exits_1_and_redacts(env, monkeypatch, capsys):
+    """M8: httpx errors surface as an ASCII line with secrets scrubbed."""
+    import httpx
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-topsecret")
+
+    def boom(*a, **k):
+        raise httpx.ConnectError("connect failed for sk-topsecret à")
+    monkeypatch.setattr(cli, "drive_call", boom)
+    assert cli.main(["run", "--config", env["cfg"], "--targets", "M0", "--scenarios", "T02"]) == 1
+    out = capsys.readouterr().out
+    assert "error: ConnectError" in out and "sk-topsecret" not in out and out.isascii()
+
+
+def _harness_drive(env):
+    def drive(deps, persona, run_idx, phone, max_turns, meta):
+        env["driven"].append((meta["target"], persona.id, run_idx, phone))
+        turns = [TurnRecord(0, "नमस्ते", "नमस्ते जी", None, 900, 900, 1000, {}, [], {}, False, None)]
+        return CallRecord(meta["target"], meta["target_commit"], persona.id, run_idx, phone, meta["suite_version"],
+                          meta["seed_version"], meta["caller_model"], meta["judge_model"],
+                          [Leg("c", turns, "error", "caller_llm_bad_json")], 2, False, None,
+                          harness_error="caller_llm_bad_json")
+    return drive
+
+
+def test_harness_error_calls_are_rerun_and_reported_separately(env, monkeypatch, capsys):
+    """I1: a harness-error record is not a cache hit, and the report counts it outside the TC denominators."""
+    monkeypatch.setattr(cli, "drive_call", _harness_drive(env))
+    monkeypatch.setattr(cli, "score_call", lambda rec, *a: setattr(rec, "verdicts", {
+        "TC12": Verdict("error", reason=f"harness: {rec.harness_error}")}))
+    argv = ["run", "--config", env["cfg"], "--targets", "M0", "--scenarios", "T02"]
+    assert cli.main(argv) == 0 and cli.main(argv) == 0
+    assert len(env["driven"]) == 2                              # re-driven, not cached
+    assert "M0 T02 r0 harness-error 1 turns" in capsys.readouterr().out
+    out = env["tmp"] / "h.md"
+    assert cli.main(["report", "--config", env["cfg"], "--targets", "M0", "--out", str(out)]) == 0
+    s = json.loads((env["tmp"] / "h.md.json").read_text(encoding="utf-8"))["summaries"][0]
+    assert s["harness_errors"] == 1 and s["tc"]["TC12"]["n"] == 0 and s["failures"] == []
+    assert "harness-error calls: 1" in out.read_text(encoding="utf-8")
+
+
+def test_summarise_counts_retries_by_cause():
+    """I3: retried calls are visible: first-attempt errors vs persona re-runs."""
+    a = _rec(0, [900], {"TC12": ("pass", "q")})
+    b = _rec(1, [900], {"TC12": ("pass", "q")})
+    b.attempts, b.prior_error, b.prior_legs = 2, "http_502", [Leg("p", [], "error")]
+    c = _rec(2, [900], {"TC12": ("pass", "q")})
+    c.attempts, c.void_reason, c.voided = 2, "rerun_ok", True
+    s = summarise([a, b, c], {"name": "M3"})
+    assert (s["retried"], s["retried_first_errors"], s["retried_persona_reruns"]) == (2, 1, 1)
+    assert "retried calls: 2 (first-attempt errors: 1, persona re-runs: 1)" in render_markdown([s])
+
+
+def test_summarise_excludes_harness_errors_from_rates_and_latency():
+    ok = _rec(0, [900], {"TC12": ("pass", "q")})
+    bad = _rec(1, [7000], {"TC12": ("error", None, "harness: caller_llm_x")})
+    bad.harness_error = "caller_llm_x"
+    s = summarise([ok, bad], {"name": "M3"})
+    assert s["tc"]["TC12"]["n"] == 1 and s["tc"]["TC12"]["rate"] == 1.0
+    assert s["harness_errors"] == 1 and s["n_calls"] == 2 and s["latency"]["all"]["max"] == 900
+
+
+def test_delta_column_per_consecutive_pair():
+    """M10: M0→M1, M1→M2, M2→M3 deltas, not just the last two."""
+    def summ(name, passes, n):
+        return summarise([_rec(i, [900], {"TC12": ("pass" if i < passes else "fail", "q", "r", 0)})
+                          for i in range(n)], {"name": name})
+    md = render_markdown([summ("M0", 0, 2), summ("M1", 1, 2), summ("M2", 2, 2), summ("M3", 1, 2)])
+    head = next(ln for ln in md.splitlines() if ln.startswith("| TC |"))
+    assert head.endswith("| Δ pp M0→M1 | Δ pp M1→M2 | Δ pp M2→M3 |")
+    row = next(ln for ln in md.splitlines() if ln.startswith("| TC12 |"))
+    assert row.endswith("| +50 | +50 | -50 |")
+
+
+def test_rescore_rescores_stored_records_and_skips_harness_errors(env, monkeypatch, capsys):
+    """I4: `rescore` re-runs score_call on every stored record of the resolved commit and re-saves it."""
+    assert cli.main(["run", "--config", env["cfg"], "--targets", "M0", "--scenarios", "T02,T05"]) == 0
+    store = ResultStore(env["results"])
+    stuck = store.load("cM0", "T05", 0)
+    stuck.harness_error = "caller_llm_bad_json"
+    store.save(stuck)
+    seen = []
+
+    def rescore(rec, persona, judge_llm, places, no_idle_handling):
+        seen.append((rec.scenario, persona.id))
+        rec.verdicts = {"TC12": Verdict("pass", "नमस्ते जी", "fixed", 0)}
+        return rec.verdicts
+    monkeypatch.setattr(cli, "score_call", rescore)
+    capsys.readouterr()
+    assert cli.main(["rescore", "--config", env["cfg"], "--targets", "M0"]) == 0
+    assert seen == [("T02", "T02")]
+    assert store.load("cM0", "T02", 0).verdicts["TC12"].status == "pass"
+    assert store.load("cM0", "T05", 0).verdicts["TC12"].status == "fail"
+    out = capsys.readouterr().out
+    assert "M0 T02 r0 rescored" in out and "M0 T05 r0 skipped (harness error" in out and out.isascii()
+    assert env["driven"][-1][1] == "T05" and len(env["driven"]) == 2      # rescore drives nothing
+
+
+def test_example_config_loads_with_plan_target_names_and_up_gzb_schema():
+    """M12 + U1: the example yaml parses; target names match the plan's commands; backend uses up-gzb."""
+    from pathlib import Path
+
+    from eval.voice_bench.config import DEFAULT_NETWORK_JSON, load_config
+    ex = Path(cli.__file__).with_name("voice_bench.example.yaml")
+    cfg = load_config(ex)
+    assert [t.name for t in cfg.targets] == ["M0-baseline", "M1", "M2", "M3-head"]
+    assert cfg.backend.network_json == DEFAULT_NETWORK_JSON
+    assert str(cfg.backend.network_json).endswith("bluedots-schemas/blue_dot/up-gzb/network.json")

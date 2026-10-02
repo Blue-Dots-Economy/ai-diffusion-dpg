@@ -3,6 +3,7 @@
     python -m eval.voice_bench run     [--config voice_bench.yaml] [--targets ...] [--scenarios ...] [--runs N]
                                        [--dry-run] [--env-file F]
     python -m eval.voice_bench report  [--config ...] [--targets ...] --out report.md
+    python -m eval.voice_bench rescore [--config ...] [--targets ...]
     python -m eval.voice_bench backend up|down|seed [-v]
 
 Console output is ASCII only (Devanagari goes to the result files); secrets are never printed.
@@ -10,11 +11,19 @@ Console output is ASCII only (Devanagari goes to the result files); secrets are 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+import httpx
+
+try:
+    from openai import OpenAIError
+except ImportError:  # pragma: no cover - openai is a harness dependency
+    OpenAIError = RuntimeError
 
 from eval.voice_bench import SUITE_VERSION
 from eval.voice_bench.backend import Backend
@@ -24,7 +33,8 @@ from eval.voice_bench.config import BenchConfig, load_config
 from eval.voice_bench.drive import DriveDeps, drive_call
 from eval.voice_bench.llm import OpenAIJsonLLM
 from eval.voice_bench.nlu import run_nlu
-from eval.voice_bench.observe import LogScraper
+from eval.voice_bench.observe import LogScraper, reset_session
+from eval.voice_bench.redact import redact
 from eval.voice_bench.report import comparable, render_markdown, summarise
 from eval.voice_bench.score import score_call
 from eval.voice_bench.seed import SEED_VERSION, load_seed, places
@@ -94,8 +104,26 @@ def _safe_commit(stack, name: str) -> str:
         return f"unresolved-{name}"
 
 
+def _call_cleanup(backend, t, phone: str):
+    """Per-call cleanup: Signals DB back to the seed, and the target's session memory wiped (C1).
+
+    A throwaway git_ref stack owns its Redis, so it is flushed; an external bridge_url Redis only loses this
+    phone's session/user keys. Any failure raises: a call must not run on dirty memory.
+    """
+    def cleanup() -> None:
+        backend.cleanup()
+        reset_session(t.redis_container, phone, flush=bool(t.git_ref))
+    return cleanup
+
+
+def _status(rec) -> str:
+    if rec.harness_error:
+        return "harness-error"
+    return "error" if rec.error else ("voided" if rec.voided else "ok")
+
+
 def _run_target(t, stack, cfg: BenchConfig, store: ResultStore, plan, personas, backend, tap, caller, judge_llm,
-                seed_places, seed_version: int, dry_run: bool) -> None:
+                seed_places, seed_version: int, env_file: Path | None = None) -> None:
     try:
         url = stack.up()
         commit = stack.commit
@@ -117,15 +145,15 @@ def _run_target(t, stack, cfg: BenchConfig, store: ResultStore, plan, personas, 
                 _say(f"{t.name} {pid} r{run} cached")
                 continue
             phone = persona.seeded_phone or phone_for(cfg.phone_prefix, pid, run)
-            rec = drive_call(deps, persona, run, phone, cfg.max_turns, drive_meta)
+            call_deps = dataclasses.replace(deps, cleanup=_call_cleanup(backend, t, phone))
+            rec = drive_call(call_deps, persona, run, phone, cfg.max_turns, drive_meta)
             score_call(rec, persona, judge_llm, seed_places, t.no_idle_handling)
             store.save(rec)
-            status = "error" if rec.error else ("voided" if rec.voided else "ok")
-            _say(f"{t.name} {pid} r{run} {status} {_turns(rec)} turns")
-    if t.git_ref and not dry_run:
+            _say(f"{t.name} {pid} r{run} {_status(rec)} {_turns(rec)} turns")
+    if t.git_ref:          # also on --dry-run, so the target's NLU worker path is exercised before a full run
         nlu = store.read_meta(commit).get("nlu")
         if not nlu or nlu.get("unmeasurable"):
-            nlu = run_nlu(stack.worktree, _NLU_CASES, 1, store.target_dir(commit) / "nlu.json")
+            nlu = run_nlu(stack.worktree, _NLU_CASES, 1, store.target_dir(commit) / "nlu.json", env_file=env_file)
             _merge_meta(store, commit, {"nlu": nlu})
             _say(f"{t.name} nlu " + ("unmeasurable" if nlu.get("unmeasurable") else "ok"))
 
@@ -171,7 +199,7 @@ def cmd_run(cfg: BenchConfig, args) -> int:
                                 Path(state["api_key_env_file"]))
             try:
                 _run_target(t, stack, cfg, store, plan, personas, backend, tap, caller, judge_llm, seed_places,
-                            state["seed_version"], args.dry_run)
+                            state["seed_version"], Path(state["api_key_env_file"]))
             finally:
                 failed = stack.down()
                 if failed:
@@ -226,6 +254,36 @@ def cmd_report(cfg: BenchConfig, args) -> int:
     return 0
 
 
+def cmd_rescore(cfg: BenchConfig, args) -> int:
+    """Re-score every stored record of each target's resolved commit (after a check/judge fix) and re-save it.
+
+    Records with ``harness_error`` are skipped: they are re-driven by the next ``run``, not re-scored.
+    """
+    store = ResultStore(cfg.results_dir)
+    repo_root, work_root = _repo_root(), (Path(cfg.results_dir) / "worktrees").resolve()
+    personas = load_personas()
+    judge_llm = OpenAIJsonLLM(cfg.judge.model, cfg.judge.temperature)
+    seed_places = places(load_seed())
+    for t in _pick_targets(cfg, _csv(args.targets)):
+        commit = _resolve_commit(t, repo_root, work_root)
+        if commit is None or not store.target_dir(commit).is_dir():
+            _say(f"{t.name} no records" + ("" if commit is None else f" for {commit}"))
+            continue
+        for rec in store.load_target(commit):
+            where = f"{t.name} {rec.scenario} r{rec.run}"
+            if rec.harness_error:
+                _say(f"{where} skipped (harness error: re-run it)")
+                continue
+            persona = personas.get(rec.scenario)
+            if persona is None:
+                _say(f"{where} skipped (unknown scenario)")
+                continue
+            score_call(rec, persona, judge_llm, seed_places, t.no_idle_handling)
+            store.save(rec)
+            _say(f"{where} rescored")
+    return 0
+
+
 def cmd_backend(cfg: BenchConfig, args) -> int:
     b = Backend(cfg.backend, cfg.results_dir)
     if args.action == "up":
@@ -253,6 +311,8 @@ def _parser() -> argparse.ArgumentParser:
     rep.add_argument("--targets")
     rep.add_argument("--runs", type=int, help="planned-calls check: same override semantics as run --runs")
     rep.add_argument("--out", required=True)
+    rs = sub.add_parser("rescore", parents=[common])
+    rs.add_argument("--targets")
     be = sub.add_parser("backend", parents=[common])
     be.add_argument("action", choices=["up", "down", "seed"])
     be.add_argument("-v", "--volumes", action="store_true", help="down: also remove volumes (wipes the Signals DB)")
@@ -262,6 +322,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point; returns the process exit code."""
     args = _parser().parse_args(argv)
+    env_file = None
     overrides = {}
     if getattr(args, "runs", None) is not None:
         overrides = {"runs": args.runs, "runs_per_scenario": {}}
@@ -270,10 +331,14 @@ def main(argv: list[str] | None = None) -> int:
         env_file = args.env_file or cfg.backend.env_file
         if env_file:
             load_env_file(Path(env_file))
-        return {"run": cmd_run, "report": cmd_report, "backend": cmd_backend}[args.cmd](cfg, args)
+        cmds = {"run": cmd_run, "report": cmd_report, "rescore": cmd_rescore, "backend": cmd_backend}
+        return cmds[args.cmd](cfg, args)
     except (ValueError, OSError) as e:
         _say(f"error: {type(e).__name__}: {e}")
         return 2
+    except (RuntimeError, httpx.HTTPError, OpenAIError) as e:   # cleanup/psql/redis failure, LLM outage: no traceback
+        _say(f"error: {type(e).__name__}: {redact(str(e), Path(env_file) if env_file else None)}")
+        return 1
 
 
 if __name__ == "__main__":

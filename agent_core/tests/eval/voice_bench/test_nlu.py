@@ -79,3 +79,20 @@ def test_adapters_import_without_understanding_package():
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                        cwd=str(Path(__file__).resolve().parents[3]))
     assert r.returncode == 0, r.stderr
+
+
+def test_run_nlu_unmeasurable_tail_is_redacted(tmp_path, monkeypatch):
+    """M7: the stderr tail goes into meta/report, so secrets are scrubbed like StackError's."""
+    wt = tmp_path / "wt"
+    (wt / "agent_core").mkdir(parents=True)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-secret")
+    env = tmp_path / "bd.env"
+    env.write_text("BLUE_DOTS_API_KEY=sk_signals_" + "a" * 48 + "\n", encoding="utf-8")
+    err = "Traceback\nAuthError: key sk-openai-secret rejected; signals sk_signals_" + "a" * 48
+    res = run_nlu(wt, [], 1, tmp_path / "o.json", env_file=env,
+                  run=lambda a, **k: subprocess.CompletedProcess(a, 1, "", err))
+    assert "sk-openai-secret" not in res["unmeasurable"] and "sk_signals_" not in res["unmeasurable"]
+    assert res["unmeasurable"].count("***") == 2
+    ok = lambda a, **k: subprocess.CompletedProcess(a, 0, "", err)  # noqa: E731
+    res = run_nlu(wt, [], 1, tmp_path / "missing.json", env_file=env, run=ok)
+    assert "no valid output" in res["unmeasurable"] and "sk-openai-secret" not in res["unmeasurable"]

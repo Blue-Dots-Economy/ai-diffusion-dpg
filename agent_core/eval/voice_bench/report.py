@@ -54,10 +54,17 @@ def _one(records: list[CallRecord], attr: str):
 
 
 def summarise(records: list[CallRecord], meta: dict) -> dict:
-    """Aggregate one target's call records plus its meta (name, nlu, unmeasurable)."""
+    """Aggregate one target's call records plus its meta (name, nlu, unmeasurable).
+
+    Calls with ``harness_error`` (the harness failed, not the target) are counted in ``harness_errors`` and
+    otherwise left out: no TC denominator, latency or failure excerpt includes them.
+    """
     tc = {t: {s: 0 for s in VERDICT_STATUSES} for t in CALL_TCS}
     failures = []
     llm_calls = []
+    all_records = records
+    records = [r for r in all_records if not r.harness_error]
+    retried = [r for r in all_records if r.attempts > 1]
     for rec in records:
         for name, v in rec.verdicts.items():
             if name in tc:
@@ -75,10 +82,12 @@ def summarise(records: list[CallRecord], meta: dict) -> dict:
         counts["n"] = n
         counts["rate"] = round(counts["pass"] / n, 4) if n else None
     failures.sort(key=lambda f: (f["tc"], f["scenario"], f["run"], f["turn"] if f["turn"] is not None else -1))
-    commit = meta.get("commit") or (records[0].target_commit if records else None)
+    commit = meta.get("commit") or (all_records[0].target_commit if all_records else None)
     return {
-        "target": meta.get("name") or (records[0].target if records else None), "commit": commit,
-        "n_calls": len(records),
+        "target": meta.get("name") or (all_records[0].target if all_records else None), "commit": commit,
+        "n_calls": len(all_records), "harness_errors": len(all_records) - len(records),
+        "retried": len(retried), "retried_first_errors": sum(r.prior_error is not None for r in retried),
+        "retried_persona_reruns": sum(r.prior_error is None for r in retried),
         "suite_version": _one(records, "suite_version") if records else SUITE_VERSION,
         "seed_version": _one(records, "seed_version"), "judge_model": _one(records, "judge_model"),
         "tc": tc, "latency": _latency(records, 0), "latency_reply": _latency(records, 1),
@@ -179,17 +188,21 @@ def render_markdown(summaries: list[dict]) -> str:
         if s.get("unmeasurable"):
             stamp += f" · **unmeasurable:** {s['unmeasurable']}"
         out.append(stamp)
+        out.append(f"  - retried calls: {s.get('retried', 0)} (first-attempt errors: "
+                   f"{s.get('retried_first_errors', 0)}, persona re-runs: {s.get('retried_persona_reruns', 0)})")
+        out.append(f"  - harness-error calls: {s.get('harness_errors', 0)} (not the target's fault; excluded from "
+                   "TC rates and latency; re-run to repair)")
         out += [f"  - **Warning ({s['target']}):** {w}" for w in s.get("warnings") or []]
     reasons = comparable(summaries)
     if reasons:
         out += ["", "> **Warning: targets are not comparable.** " + "; ".join(reasons)]
     out += ["", "## Test cases", ""]
-    head = ["TC"] + [s["target"] for s in summaries] + ["Δ pp (last two)"]
+    pairs = list(zip(summaries, summaries[1:]))          # one Δ per consecutive pair: M0→M1, M1→M2, M2→M3
+    head = ["TC"] + [s["target"] for s in summaries] + [f"Δ pp {a['target']}→{b['target']}" for a, b in pairs]
     rows = []
     for tc in CALL_TCS:
         cells = [_cell(s["tc"][tc]) for s in summaries]
-        d = _delta(summaries[-2]["tc"][tc], summaries[-1]["tc"][tc]) if len(summaries) >= 2 else "—"
-        rows.append([tc, *cells, d])
+        rows.append([tc, *cells, *(_delta(a["tc"][tc], b["tc"][tc]) for a, b in pairs)])
     out += _table(head, rows) + [""]
     llm = ", ".join(f"{s['target']} {_fmt(s['llm_calls_mean'])} (n={s['llm_calls_n']} turns)" for s in summaries)
     out += [f"Mean LLM calls per turn: {llm}", ""]

@@ -9,6 +9,9 @@ import yaml
 from eval.voice_bench import SUITE_VERSION
 
 _DEFAULT_COMPOSE = "automation/docker/docker-compose.yml"
+# The Blue Dots UP-Ghaziabad schema the local backend runs (network blue_dot; seeker/provider/service_provider).
+# Like every relative path in voice_bench.yaml, it resolves against the CWD (run the CLI from agent_core/).
+DEFAULT_NETWORK_JSON = Path("../../bluedots-schemas/blue_dot/up-gzb/network.json")
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,7 @@ class BackendCfg:
     tap_port: int = 18742
     postgres_container: str = "signals-postgres"
     env_file: Path | None = None
+    network_json: Path = DEFAULT_NETWORK_JSON
 
 
 @dataclass(frozen=True)
@@ -87,6 +91,7 @@ def load_config(path: str | Path, overrides: dict | None = None) -> BenchConfig:
     b = dict(raw.get("backend") or {})
     backend = BackendCfg(signals_dir=Path(b.pop("signals_dir", "../Signals-DPG")),
                          env_file=Path(b.pop("env_file")) if b.get("env_file") else None,
+                         network_json=Path(b.pop("network_json", None) or DEFAULT_NETWORK_JSON),
                          **{k: v for k, v in b.items() if k != "env_file"})
     extra = {k: raw[k] for k in ("status_phrases", "terminal_words") if k in raw}
     return BenchConfig(suite_version=SUITE_VERSION, targets=[_target(t) for t in raw.get("targets") or []],

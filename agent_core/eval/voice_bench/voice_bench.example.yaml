@@ -2,7 +2,7 @@
 # Secrets (OPENAI_API_KEY, Signals service key) come from env or --env-file; never put them here.
 suite_version: 1
 targets:                                    # what to measure
-  - name: M0
+  - name: M0-baseline
     git_ref: edf7ec8                        # build + run this commit
     # compose: automation/deploy/shared-vm/docker-compose.yml   # optional; default automation/docker/docker-compose.yml
     # redis_container: redis                # default; session Redis is read via docker exec
@@ -12,7 +12,7 @@ targets:                                    # what to measure
     git_ref: 6b38e48
   - name: M2
     git_ref: cf794ef
-  - name: M3
+  - name: M3-head
     git_ref: spec/tool-predispatch
   # - name: vm
   #   bridge_url: http://127.0.0.1:8008     # an already-running bridge: no build
@@ -22,7 +22,9 @@ models:
   caller: { provider: openai, model: gpt-4.1, temperature: 0.3 }
   judge:  { provider: openai, model: gpt-4.1, temperature: 0 }
 backend:
+  # Relative paths here (signals_dir, network_json, env_file, results_dir) resolve against the CWD: run from agent_core/.
   signals_dir: ../../Signals-DPG
+  network_json: ../../bluedots-schemas/blue_dot/up-gzb/network.json   # UP-Ghaziabad schema the local backend runs
   signals_url: http://localhost:2742
   search_url: http://localhost:3100
   tap_port: 18742

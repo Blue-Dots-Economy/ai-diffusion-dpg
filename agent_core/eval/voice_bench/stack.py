@@ -13,6 +13,7 @@ import httpx
 import yaml
 
 from eval.voice_bench.config import TargetCfg
+from eval.voice_bench.redact import redact
 
 PATCH_FILE = Path(__file__).parent / "patches" / "blue-dots-local.yaml"
 OVERRIDE_NAME = "voice-bench.override.yml"
@@ -45,6 +46,10 @@ def apply_patch(text: str, patch: dict, tap_url: str, instance_url: str) -> str:
         if n != rule["count"]:
             raise PatchMismatch(f"rule {i}: expected {rule['count']}, found {n}")
         text = text.replace(find, repl)
+    for ln in text.splitlines():
+        code = ln.split("#", 1)[0]
+        if any(h in code for h in patch["upstream_hosts"]):
+            raise PatchMismatch("upstream host still present")
     return text
 
 
@@ -111,21 +116,8 @@ class TargetStack:
             raise StackError(f"{what} failed (exit {r.returncode}): {tail}")
         return r
 
-    def _secrets(self) -> list[str]:
-        vals = [os.environ.get("OPENAI_API_KEY") or ""]
-        try:
-            for ln in self.env_file.read_text(encoding="utf-8").splitlines():
-                if "=" in ln and not ln.lstrip().startswith("#"):
-                    v = ln.split("=", 1)[1].strip().strip("'\"")
-                    vals.append(v)
-        except OSError:
-            pass
-        return sorted({v for v in vals if v}, key=len, reverse=True)
-
     def _redact(self, text: str) -> str:
-        for v in self._secrets():
-            text = text.replace(v, "***")
-        return text
+        return redact(text, self.env_file)
 
     def _compose_argv(self, *tail: str) -> list[str]:
         compose = self.worktree / self.target.compose

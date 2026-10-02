@@ -52,3 +52,62 @@ def test_read_session_falls_back_to_phone_key():
 
 def test_log_scraper_without_container_is_empty():
     assert LogScraper(None).since(0) == ""
+
+
+# ---- reset_session (C1) ----
+import pytest  # noqa: E402
+
+from eval.voice_bench.observe import reset_session  # noqa: E402
+
+
+def _redis_run(responses, rc=0):
+    calls = []
+
+    def run(args, **kw):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, rc, stdout=responses.get(args[4], ""), stderr="")
+    return run, calls
+
+
+def test_reset_session_flushes_a_private_stack_redis():
+    run, calls = _redis_run({"FLUSHDB": "OK\n"})
+    reset_session("redis", "919900001000", flush=True, run=run)
+    assert calls == [["docker", "exec", "redis", "redis-cli", "FLUSHDB"]]
+
+
+def test_reset_session_external_redis_deletes_only_this_phones_keys():
+    keys = "session:919900001000\nsession:919900001000:vb-1\n"
+
+    def run(args, **kw):
+        calls.append(args)
+        out = keys if args[-1] == "session:919900001000*" else ("user:919900001000\n" if "--scan" in args else "3\n")
+        return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
+    calls = []
+    reset_session("dpg_redis", "919900001000", flush=False, run=run)
+    assert [c[4:] for c in calls] == [["--scan", "--pattern", "session:919900001000*"],
+                                      ["--scan", "--pattern", "user:919900001000*"],
+                                      ["DEL", "session:919900001000", "session:919900001000:vb-1",
+                                       "user:919900001000"]]
+    assert not any("FLUSHDB" in c for c in calls)
+
+
+def test_reset_session_no_keys_sends_no_del():
+    run, calls = _redis_run({})
+    reset_session("dpg_redis", "919900001000", flush=False, run=run)
+    assert [c[4] for c in calls] == ["--scan", "--scan"]
+
+
+def test_reset_session_failures_raise():
+    with pytest.raises(RuntimeError, match="FLUSHDB"):
+        reset_session("redis", "919900001000", flush=True, run=_redis_run({"FLUSHDB": ""}, rc=1)[0])
+    with pytest.raises(RuntimeError, match="FLUSHDB on redis failed"):
+        reset_session("redis", "919900001000", flush=True, run=_redis_run({"FLUSHDB": "ERR unknown"})[0])
+    with pytest.raises(RuntimeError, match="did not answer OK"):
+        reset_session("redis", "919900001000", flush=True, run=_redis_run({"FLUSHDB": "QUEUED"})[0])
+    with pytest.raises(RuntimeError, match="digits"):
+        reset_session("dpg_redis", "9199*", flush=False, run=_redis_run({})[0])
+
+    def missing(args, **kw):
+        raise FileNotFoundError("docker")
+    with pytest.raises(RuntimeError, match="could not run"):
+        reset_session("redis", "919900001000", flush=True, run=missing)

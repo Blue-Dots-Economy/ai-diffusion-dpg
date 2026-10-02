@@ -7,6 +7,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from eval.voice_bench.redact import redact
+
 _EVAL_DIR = Path(__file__).resolve().parents[1]
 
 
@@ -23,7 +25,8 @@ def _copy_harness(worktree: Path) -> Path:
     return dest
 
 
-def run_nlu(worktree: Path, cases: list[Path], repeat: int, out: Path, run=subprocess.run) -> dict:
+def run_nlu(worktree: Path, cases: list[Path], repeat: int, out: Path, run=subprocess.run,
+            env_file: Path | None = None) -> dict:
     """Run the NLU worker in the target's uv env and return its report.
 
     Args:
@@ -32,6 +35,7 @@ def run_nlu(worktree: Path, cases: list[Path], repeat: int, out: Path, run=subpr
         repeat: Repeats per case.
         out: Where the worker writes its JSON.
         run: subprocess.run (injectable).
+        env_file: Secrets env file whose values (plus OPENAI_API_KEY) are redacted from the stderr tail.
 
     Returns:
         The worker's JSON, or ``{"unmeasurable": <stderr tail>}`` on non-zero exit.
@@ -46,12 +50,13 @@ def run_nlu(worktree: Path, cases: list[Path], repeat: int, out: Path, run=subpr
             "--cases", *[str(c) for c in cases], "--repeat", str(repeat), "--out", str(out)]
     env = {**os.environ, "PYTHONPATH": f"{harness}:{agent_core}"}
     proc = run(args, cwd=str(harness), env=env, capture_output=True, text=True)
+    tail = redact(proc.stderr or "", env_file)[-300:]    # redact before cutting: a cut secret would not match
     if proc.returncode != 0:
-        return {"unmeasurable": (proc.stderr or "")[-300:]}
+        return {"unmeasurable": tail}
     try:
         data = json.loads(out.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"unmeasurable": ("worker produced no valid output: " + (proc.stderr or "")[-300:]).strip()}
+        return {"unmeasurable": ("worker produced no valid output: " + tail).strip()}
     if not isinstance(data, dict):
         return {"unmeasurable": "worker produced no valid output"}
     return data
