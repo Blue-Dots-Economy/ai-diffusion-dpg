@@ -83,7 +83,7 @@ from src.understanding.config import DialogueActConfig
 from src.understanding.dialogue_act_nlu import DialogueActNLU
 from src.understanding.history import RECENT_TURNS_KEY, append_recent_turn
 from src.context.state import render_recent, render_state
-from src.output.contract import contract_language
+from src.output.contract import contract_language, sentence_language
 from src.output.guard import OutputGuard
 from src.understanding.frame import offered_entry, offered_rows
 from src.understanding.pending import PendingResolver
@@ -464,12 +464,12 @@ class AgentCore(AgentCoreBase):
         """
         contract = (channel_config or {}).get("output_contract")
         guard = OutputGuard(contract)
-        language = contract_language(contract, profile_context.get("language_preference")
-                                     or bundle.session.get("language_preference"))
+        preference = profile_context.get("language_preference") or bundle.session.get("language_preference")
+        language = contract_language(contract, preference)
         counts = {"digits_rewritten": 0, "foreign_script_words": 0}
 
         def guarded(text: str) -> str:
-            r = guard.apply(text, language)
+            r = guard.apply(text, sentence_language(text, contract, preference))
             counts["digits_rewritten"] += r.digits_rewritten
             counts["foreign_script_words"] += r.foreign_script_words
             return r.text

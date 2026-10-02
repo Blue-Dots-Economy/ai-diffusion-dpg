@@ -61,3 +61,26 @@ def contract_language(contract: dict | None, preference: str | None) -> str:
     if preference and preference in langs:
         return preference
     return str(contract.get("default_language") or "")
+
+
+def sentence_language(text: str, contract: dict | None, preference: str | None) -> str:
+    """Guard language for one sentence.
+
+    An explicit preference always wins. With none, a sentence with more Latin than
+    Devanagari letters is guarded as ``english`` when the contract defines it;
+    anything else uses the contract default.
+
+    Args:
+        text: The sentence about to be guarded.
+        contract: Raw output_contract dict, or None.
+        preference: Session/profile ``language_preference``, or None/"".
+
+    Returns:
+        Language id, or "" when there is no contract.
+    """
+    base = contract_language(contract, preference)
+    if preference or not isinstance(contract, dict) or "english" not in (contract.get("languages") or {}):
+        return base
+    latin = sum(1 for ch in text if ("a" <= ch <= "z") or ("A" <= ch <= "Z"))
+    deva = sum(1 for ch in text if "ऀ" <= ch <= "ॿ")
+    return "english" if latin > deva else base

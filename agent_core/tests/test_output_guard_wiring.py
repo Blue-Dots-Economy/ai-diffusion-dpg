@@ -150,3 +150,63 @@ async def test_nested_stream_gateway_site_shapes_each_live_result():
     agent._result_shaper.shape.side_effect = lambda r: r
     await _collect_events(agent, _make_turn_input())
     assert agent._result_shaper.shape.call_count == 2
+
+
+# ── no explicit language preference: guard language chosen per sentence by script ──
+
+from src.output.contract import sentence_language  # noqa: E402
+
+
+def test_sentence_language_unit():
+    assert sentence_language("It pays 25000.", _CONTRACT, "") == "english"
+    assert sentence_language("It pays 25000.", _CONTRACT, None) == "english"
+    assert sentence_language("सैलरी 27620 है।", _CONTRACT, "") == "hindi"
+    assert sentence_language("सैलरी 5 lakh है।", _CONTRACT, "") == "hindi"   # Devanagari outweighs Latin
+    assert sentence_language("It pays 25000.", _CONTRACT, "hindi") == "hindi"  # explicit wins
+    assert sentence_language("It pays 25000.", {**_CONTRACT, "languages": {"hindi": _CONTRACT["languages"]["hindi"]}},
+                             "") == "hindi"                                     # no english entry
+    assert sentence_language("x", None, "") == ""
+
+
+def _blue_dots_agent(tokens, preference=None):
+    """Normalisation disabled, like Blue Dots: language_preference stays empty."""
+    agent = _make_agent_core()
+    _set_contract(agent)
+    agent._config = {**agent._config, "preprocessing": {
+        **agent._config["preprocessing"], "language_normalisation": {"enabled": False}}}
+    if preference:
+        agent._async_memory.context_bundle.return_value.session["language_preference"] = preference
+
+    async def stream(*a, **k):
+        for t in tokens:
+            yield t
+
+    agent._llm.stream = stream
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_no_preference_english_sentence_gets_english_words():
+    agent = _blue_dots_agent(["It pays 25000. "])
+    spoken = _spoken(await _collect_events(agent, _make_turn_input(channel="cli")))
+    assert "twenty-five thousand" in spoken and "पच्चीस" not in spoken
+
+
+@pytest.mark.asyncio
+async def test_no_preference_hindi_sentence_gets_hindi_words():
+    agent = _blue_dots_agent(["सैलरी 27620 है। "])
+    assert _WORDS in _spoken(await _collect_events(agent, _make_turn_input(channel="cli")))
+
+
+@pytest.mark.asyncio
+async def test_no_preference_mixed_turn_guards_each_sentence_by_script():
+    agent = _blue_dots_agent(["It pays 25000. ", "सैलरी 27620 है। "])
+    spoken = _spoken(await _collect_events(agent, _make_turn_input(channel="cli")))
+    assert "twenty-five thousand" in spoken and _WORDS in spoken
+
+
+@pytest.mark.asyncio
+async def test_explicit_hindi_preference_wins_over_script():
+    agent = _blue_dots_agent(["It pays 25000. "], preference="hindi")
+    spoken = _spoken(await _collect_events(agent, _make_turn_input(channel="cli")))
+    assert "twenty-five" not in spoken and "पच्चीस हज़ार" in spoken

@@ -2595,3 +2595,20 @@ def test_orchestrator_bootstrap_receives_the_shaper():
                       nlu_chat_provider=_nlu_provider_mock())
     assert agent._bootstrap is not None
     assert agent._bootstrap._shape == agent._result_shaper.shape
+
+
+def test_state_phase_is_the_post_routing_subagent():
+    """<state> is built for the subagent the prompt is for, not the one the turn started in."""
+    rule = MagicMock()
+    rule.intent = "termination_intent"
+    rule.next_subagent_id = "ended"
+    rule.condition = None
+    rule.conditions = None
+    rule.session_writes = None
+    wf = _make_workflow(subagent_id="greeting", global_routing=[rule],
+                        extra_subagents={"ended": _make_subagent("ended")})
+    agent = _make_agent(nlu_result=_TERMINATION_NLU, workflow=wf,
+                        session_data={"current_subagent_id": "greeting"})
+    agent.process_turn(_turn_input())
+    state = agent._manager_agent.build_system_prompt.call_args.kwargs["state"]
+    assert state.startswith("phase: ended")
