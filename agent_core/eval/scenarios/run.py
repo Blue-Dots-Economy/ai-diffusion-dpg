@@ -3,6 +3,14 @@
 Drives the bridge streaming path turn by turn, runs the automatic checks on each
 reply and writes a JSON report. Replies live only in the report, never on stdout.
 
+Known gaps (Spec D §9.3 metrics the bridge does not expose; listed under ``not_collected`` in
+the report summary): llm_ttft_ms, LLM call count, input tokens and the digit-rewrite rate. They
+live in the agent_core ``orchestrator.stream_turn_complete`` log extras (``digits_rewritten``,
+``foreign_script_words``) and in the OTel metrics.
+
+An order check result of None means skipped (no spoken-pay marker in the reply); it is counted
+under ``skipped_counts``, never as a pass.
+
 Usage:
     python -m eval.scenarios.run --bridge http://127.0.0.1:18008 \
         --scenarios eval/scenarios/blue_dots.yaml --out report.json [--redis-container dpg_redis]
@@ -22,6 +30,15 @@ import httpx
 import yaml
 
 from eval.scenarios.checks import foreign_script_words, run_checks
+
+
+NOT_COLLECTED = [
+    "llm_ttft_ms: OTel metrics (agent_core), not exposed by the bridge",
+    "llm_calls: OTel metrics (agent_core), not exposed by the bridge",
+    "input_tokens: OTel metrics (agent_core), not exposed by the bridge",
+    "digit_rewrite_rate: `orchestrator.stream_turn_complete` log extras `digits_rewritten` / "
+    "`foreign_script_words`, and OTel `agent_core.output_guard.digits_rewritten_total`",
+]
 
 
 def _stream_turn(client: httpx.Client, bridge: str, line: str, phone: str, call_id: str) -> tuple[str, int | None, int]:
@@ -76,17 +93,14 @@ def _offered_rows(container: str, phone: str, call_id: str) -> list[dict]:
     return []
 
 
-def _session_facts(container: str | None, phone: str, call_id: str, reply: str, expect_list: bool) -> dict:
-    """Facts for the order check. Only set when the reply names the jobs in Latin script,
-    because stored labels are Latin and a Devanagari reply cannot be matched to them."""
-    if not container or not expect_list:
+def _session_facts(container: str | None, phone: str, call_id: str) -> dict:
+    """Per-row spoken-pay markers of the offered rows, for the order check."""
+    if not container:
         return {}
     rows = _offered_rows(container, phone, call_id)
-    if not rows:
-        return {}
-    named = any(str(r.get("company", "")) and str(r["company"]) in reply for r in rows)
-    first = str(rows[0].get("company", ""))
-    return {"spoken_first_label": first} if named and first else {}
+    markers = [next((str(r[k]) for k in ("salary_spoken", "stipend_spoken", "task_rate_spoken") if r.get(k)), None)
+               for r in rows]
+    return {"offered_markers": markers} if any(markers) else {}
 
 
 def _pct(values: list[int], q: float) -> int | None:
@@ -110,18 +124,17 @@ def run(bridge: str, scenarios: list[dict], redis_container: str | None) -> dict
             phones[sid] = phone
             call_id = f"scn-{sid}-{uuid.uuid4().hex[:8]}"
             turns = []
-            for i, line in enumerate(sc["lines"]):
-                last = i == len(sc["lines"]) - 1
+            for line in sc["lines"]:
                 try:
                     reply, first_ms, total_ms = _stream_turn(client, bridge, line, phone, call_id)
                 except httpx.HTTPError as exc:
                     turns.append({"line": line, "error": type(exc).__name__})
                     break
-                facts = _session_facts(redis_container, phone, call_id, reply, bool(sc.get("expect_list")) and last)
+                facts = _session_facts(redis_container, phone, call_id)
                 if first_ms is not None:
                     first_ms_all.append(first_ms)
                 turns.append({"line": line, "reply": reply, "first_sentence_ms": first_ms, "total_ms": total_ms,
-                              "checks": run_checks(reply, facts), "foreign_script_words": foreign_script_words(reply)})
+                              "checks": run_checks(reply, facts), "foreign_script_words": None if sc.get("language") == "english" else foreign_script_words(reply)})
             results.append({"id": sid, "phone": phone, "call_id": call_id, "turns": turns})
     checked = [t for r in results for t in r["turns"] if "checks" in t]
     names = sorted({k for t in checked for k in t["checks"]})
@@ -130,7 +143,10 @@ def run(bridge: str, scenarios: list[dict], redis_container: str | None) -> dict
         "summary": {
             "turns": len(checked),
             "errors": sum(1 for r in results for t in r["turns"] if "error" in t),
-            "pass_counts": {n: sum(1 for t in checked if t["checks"].get(n)) for n in names},
+            "pass_counts": {n: sum(1 for t in checked if t["checks"].get(n) is True) for n in names},
+            "fail_counts": {n: sum(1 for t in checked if t["checks"].get(n) is False) for n in names},
+            "skipped_counts": {n: sum(1 for t in checked if t["checks"].get(n) is None) for n in names},
+            "not_collected": NOT_COLLECTED,
             "first_sentence_ms_p50": int(statistics.median(first_ms_all)) if first_ms_all else None,
             "first_sentence_ms_p95": _pct(first_ms_all, 0.95),
         },

@@ -45,6 +45,7 @@
   expect_list: false
   lines: ["नमस्ते", "हाँ ठीक है", "मेरा नाम अजय सिंह है", "मैं पैंतीस साल का हूँ"]
 - id: D13
+  language: english
   expect_list: false
   lines: ["नमस्ते", "हाँ ठीक है", "I am looking for a welder job"]
 - id: D14
