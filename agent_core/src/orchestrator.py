@@ -4994,11 +4994,16 @@ class AgentCore(AgentCoreBase):
 
             # Flush remaining token buffer as a final sentence into the batcher,
             # then drain the batcher in one final Trust call (turn-end flush).
+            # The final add() can itself trigger a flush (size or time); its
+            # release must be spoken ahead of whatever flush() returns, or a
+            # reply whose length is a multiple of max_sentences loses its
+            # last batch.
             remaining = token_buffer.strip()
+            final_release: list[str] = []
             if remaining and not _trust_batcher.was_escalated:
-                await _trust_batcher.add(remaining)
+                final_release = await _trust_batcher.add(remaining)
             yield _stamp(SignalEvent(stage="trust_output", status="start"))
-            final_release = await _trust_batcher.flush()
+            final_release += await _trust_batcher.flush()
             yield _stamp(SignalEvent(stage="trust_output", status="complete"))
             if _trust_batcher.was_escalated:
                 was_escalated = True
@@ -5035,6 +5040,9 @@ class AgentCore(AgentCoreBase):
                         "session_id": session_id,
                         "subagent_id": current_subagent_id,
                         "recovered": bool(_empty_line),
+                        # Sentences the model produced that never reached
+                        # the caller (count only, never the text).
+                        "dropped_sentences": _trust_batcher.sentences_added,
                     },
                 )
                 if _empty_line:
@@ -5358,6 +5366,7 @@ class _TrustOutputBatcher:
         self._batch_start: float | None = None
         self.was_escalated: bool = False
         self.batch_count: int = 0
+        self.sentences_added: int = 0
 
     @property
     def has_pending(self) -> bool:
@@ -5397,6 +5406,7 @@ class _TrustOutputBatcher:
         if self._batch_start is None:
             self._batch_start = self._time_fn()
         self._buffer.append(sentence)
+        self.sentences_added += 1
         if self._should_flush():
             return await self._flush_now()
         return []
