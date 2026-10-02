@@ -3,6 +3,7 @@ Tests for stream_turn() orchestrator method and sentence splitter.
 """
 
 import asyncio
+import dataclasses
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1426,6 +1427,30 @@ class TestStreamTurnToolResultPersistence:
         assert called == ["search"]
         assert _last_tool_result_texts(requests[2])[0].startswith("(stored result")
 
+    async def test_gateway_result_is_shaped_once(self):
+        agent, _order, requests = _tr_agent(
+            [[ToolUseBlock(tool_name="get_balance", tool_use_id="tu_1", input={"account": "999"})]],
+        )
+        agent._result_shaper = MagicMock()
+        agent._result_shaper.shape.side_effect = lambda r: dataclasses.replace(
+            r, result_text='{"shaped": true}')
+        await _collect_events(agent, _make_turn_input())
+        assert agent._result_shaper.shape.call_count == 1
+        assert _last_tool_result_texts(requests[1])[0] == '{"shaped": true}'
+        sid, uid, batch = agent._async_memory.apply_tool_results.await_args.args
+        assert batch["puts"][0]["data"] == {"shaped": True}
+
+    async def test_cache_hit_is_not_reshaped(self):
+        call = [ToolUseBlock(tool_name="get_balance", tool_use_id="tu_1", input={"account": "999"})]
+        call2 = [ToolUseBlock(tool_name="get_balance", tool_use_id="tu_2", input={"account": "999"})]
+        agent, _order, requests = _tr_agent([call, call2])
+        agent._result_shaper = MagicMock()
+        agent._result_shaper.shape.side_effect = lambda r: r
+        await _collect_events(agent, _make_turn_input())
+        assert agent._async_gateway.execute.await_count == 1
+        assert _last_tool_result_texts(requests[2])[0].startswith("(stored result")
+        assert agent._result_shaper.shape.call_count == 1
+
     async def test_stream_prompt_gets_known_facts_and_augmented_tools(self):
         agent, _order, requests = _tr_agent([], entries=[_tr_entry()], remember=True)
         agent._workflow.resolve_tools_for.return_value = [
@@ -1436,14 +1461,6 @@ class TestStreamTurnToolResultPersistence:
         tools = {t.name: t for t in requests[0].tools}
         assert set(tools) == {"get_balance", "remember"}
         assert "force_refresh" in tools["get_balance"].input_schema["properties"]
-
-    async def test_stream_prompt_session_fields_reach_build_system_prompt(self):
-        agent, _order, _requests = _tr_agent([], entries=[_tr_entry()])
-        agent._prompt_session_fields = ["profile_item_id"]
-        agent._async_memory.context_bundle.return_value.session["profile_item_id"] = "p1"
-        await _collect_events(agent, _make_turn_input())
-        profile = agent._manager_agent.build_system_prompt.call_args.kwargs["profile"]
-        assert profile["profile_item_id"] == "p1"
 
     async def test_stream_replay_skips_tools_with_fresh_stored_results(self):
         prior = {"tool_uses": [{"type": "tool_use", "id": "tu_p", "name": "get_balance",

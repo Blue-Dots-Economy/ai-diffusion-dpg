@@ -2341,14 +2341,6 @@ def test_build_profile_context_does_not_override_existing():
     assert agent._build_profile_context(b, {})["name"] == "Asha"
 
 
-def test_prompt_session_fields_reach_build_system_prompt():
-    agent = _make_agent(session_data={"current_subagent_id": "market_truth", "profile_item_id": "p1"})
-    agent._prompt_session_fields = ["profile_item_id"]
-    agent.process_turn(_turn_input())
-    profile = agent._manager_agent.build_system_prompt.call_args.kwargs["profile"]
-    assert profile["profile_item_id"] == "p1"
-
-
 # ---------------------------------------------------------------------------
 # Session bootstrap wiring (session-bootstrap spec §5) — sync path
 # ---------------------------------------------------------------------------

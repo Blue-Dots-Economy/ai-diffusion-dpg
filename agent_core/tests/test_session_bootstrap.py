@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from types import SimpleNamespace
 
@@ -65,6 +66,15 @@ def test_sync_success_writes_values_cache_and_latch_first():
     assert len(b.tool_results) == 1 and b.tool_results[0]["origin"] == "bootstrap"
     assert rec.batches[0]["puts"][0]["origin"] == "bootstrap"
     assert rec.calls[0].tool_use_id == "bootstrap-0" and rec.calls[0].input_params == {}
+
+
+def test_shape_applied_before_cache():
+    shape = lambda r: dataclasses.replace(r, result_text="[]")  # noqa: E731
+    boot, rec, b = SessionBootstrap.from_config(CONFIG, POL, shape=shape), Rec(), bundle()
+    report = boot.run_sync(b, **sync_deps(rec))
+    assert report.outcomes == {"fetch_profile": "ok"}
+    assert b.tool_results[0]["data"] == []
+    assert rec.batches[0]["puts"][0]["data"] == []
 
 
 def test_sync_failure_sets_latch_writes_nothing_else():

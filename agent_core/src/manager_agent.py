@@ -28,13 +28,13 @@ from src.chat_provider.types import (
     ToolResultBlock,
     ToolUseBlock,
 )
-from src.context.state import is_collected as _is_collected
 from src.exceptions import ConsentRequiredError
 from src.identity import render_identity
 from src.interfaces.action_gateway import ActionGatewayBase
 from src.interfaces.knowledge_engine import KnowledgeEngineBase
 from src.interfaces.trust_layer import TrustLayerBase
 from src.models import RetrievalChunk, ToolCall, ToolResult
+from src.output.contract import render_output_contract
 from src.tool_registry import ToolRegistry
 from src.tool_results import TurnToolCache
 
@@ -209,6 +209,24 @@ session_grounded: dict[str, list[str]] | None = None,
     return missing
 
 
+HOW_TO_READ_CONTEXT = """\
+- <caller_turn> is the system's reading of what the caller just did. It is
+  already applied: listed updates are saved, and "resolved: option N" is the
+  option the caller picked. Act on it; do not ask the caller to confirm what it
+  shows, and do not re-ask a value it lists.
+- "open: <question>" means that question is still waiting: answer what the
+  caller asked, then return to it in the same reply.
+- "off_track" means the caller has drifted several times: briefly restate what
+  you need and why.
+- "understanding unavailable" means rely on the caller's words and <recent>.
+- If the caller's words clearly contradict <caller_turn>, act on neither: ask
+  one short question to settle it.
+- <recent> is the last exchanges. "(caller heard only)" marks a reply they did
+  not hear in full: do not repeat what they heard; finish what they did not.
+- <state> is where the call stands. Never ask for a value under "collected".
+  Read offered options in the order listed and never re-rank them."""
+
+
 class ManagerAgent:
     """
     Drives the tool-use loop for one conversation turn.
@@ -318,6 +336,7 @@ class ManagerAgent:
         tool_cache: TurnToolCache | None = None,
         remember_name: str = "",
         remember_handler: Callable[[ToolCall, list], ToolResult] | None = None,
+        result_shaper: Callable[[ToolResult], ToolResult] | None = None,
     ) -> tuple[str, list[ToolCall], list[ToolResult]]:
         """
         Drive the tool-use loop starting from the initial LLM response.
@@ -525,6 +544,8 @@ class ManagerAgent:
                             _turn_tool_counts[tool_call.tool_name] = _used + 1
                             _call = tool_cache.prepare(tool_call) if tool_cache else tool_call
                             tool_result = self._execute_tool(_call, session_id, user_id)
+                            if result_shaper is not None:
+                                tool_result = result_shaper(tool_result)
                             if tool_cache:
                                 tool_cache.after_call(tool_call, tool_result)
                 all_tool_calls.append(tool_call)
@@ -628,14 +649,14 @@ class ManagerAgent:
         subagent_system_prompt: str,
         detected_language: str,
         channel: str,
-        profile: dict,
         channel_config: dict | None = None,
         is_resumption: bool = False,
-        guardrail_constraints: dict | None = None,
         user_state_guidance: str | None = None,
         session_end_eval_prompt: str | None = None,
         known_facts: str = "",
         caller_turn: str = "",
+        state: str = "",
+        recent: str = "",
     ) -> SystemPrompt:
         """Build a neutral SystemPrompt with TextBlock entries for one LLM call.
 
@@ -644,6 +665,8 @@ class ManagerAgent:
         Tier 1 (session-stable — cache_hint="session"):
             <persona>             agent_system_prompt
             <channel_rules>       channel_config.system_prompt_suffix
+            <output_contract>     rendered channel_config.output_contract
+            <how_to_read_context> HOW_TO_READ_CONTEXT
             <session_end_policy>  session_end_eval_prompt
 
         Tier 2 (state-stable — cache_hint="session"):
@@ -653,10 +676,10 @@ class ManagerAgent:
         Tier 3 (dynamic — no cache_hint):
             <channel_context>     channel + detected_language line
             <resumption>          resumption note (first turn after adoption)
-            <known_profile>       profile grounding
+            <state>               where the call stands
+            <recent>              the last exchanges
             <known_facts>         stored tool results rendered for grounding
             <caller_turn>         NLU conclusion for this turn (dialogue-act NLU)
-            <active_guardrails>   guardrail constraints + required disclosures
 
         Empty inputs elide their section entirely; empty tiers are not
         appended to the output list. The Anthropic provider translates
@@ -667,13 +690,10 @@ class ManagerAgent:
             subagent_system_prompt: Active subagent's system prompt.
             detected_language:      Language detected by Language Normaliser.
             channel:                Channel type (e.g. "cli", "whatsapp", "voip").
-            profile:                User profile dict for grounding injection.
             channel_config:         Optional per-channel config. When present and
                                     ``system_prompt_suffix`` is non-empty the suffix
                                     joins Tier 1 as <channel_rules>.
             is_resumption:          Whether the user is resuming an ongoing session.
-            guardrail_constraints:  Optional dict with ``prompt_constraints`` and
-                                    ``required_disclosures`` from the Trust Layer.
             user_state_guidance:    Optional text describing the active user state.
             session_end_eval_prompt: Optional prompt that instructs the LLM to emit
                                     the ``end_session`` tool when the user signals
@@ -683,6 +703,8 @@ class ManagerAgent:
                                     elides the ``<known_facts>`` section.
             caller_turn:            Rendered NLU conclusion (``render_caller_turn``);
                                     empty elides ``<caller_turn>``.
+            state:                  Rendered ``<state>`` body; empty elides it.
+            recent:                 Rendered ``<recent>`` body; empty elides it.
 
         Returns:
             Neutral SystemPrompt with TextBlock entries; the Anthropic provider
@@ -701,10 +723,13 @@ class ManagerAgent:
 
         # ── Tier 1: session-stable ────────────────────────────────────
         suffix = (channel_config or {}).get("system_prompt_suffix", "")
+        contract_text = render_output_contract((channel_config or {}).get("output_contract"))
         tier1 = join([
             xml("persona", agent_system_prompt),
             xml("identity", render_identity(self._identity)),
             xml("channel_rules", suffix),
+            xml("output_contract", contract_text),
+            xml("how_to_read_context", HOW_TO_READ_CONTEXT),
             xml("session_end_policy", session_end_eval_prompt),
         ])
 
@@ -738,46 +763,13 @@ class ManagerAgent:
             "for the current stage."
         ) if is_resumption else ""
 
-        profile_body = ""
-        if profile:
-            lines: list[str] = []
-            skip_keys = {"attributes", "user_id"}
-            for k, v in profile.items():
-                if k not in skip_keys and _is_collected(v, k, self._zero_seed_fields):
-                    lines.append(f"  {k}: {v}")
-            for attr in profile.get("attributes", []) or []:
-                attr_key = attr.get("key") if isinstance(attr, dict) else None
-                attr_val = attr.get("value") if isinstance(attr, dict) else None
-                if attr_key and attr_val:
-                    lines.append(f"  {attr_key}: {attr_val}")
-            if lines:
-                profile_body = (
-                    "Already collected — do NOT ask for any of these fields again:\n"
-                    + "\n".join(lines)
-                )
-
-        guardrails_body = ""
-        if guardrail_constraints:
-            constraints = guardrail_constraints.get("prompt_constraints", []) or []
-            disclosures = guardrail_constraints.get("required_disclosures", []) or []
-            parts: list[str] = []
-            if constraints:
-                parts.append(
-                    "Constraints:\n" + "\n".join(f"- {c}" for c in constraints)
-                )
-            if disclosures:
-                parts.append(
-                    "Required disclosures:\n" + "\n".join(f"- {d}" for d in disclosures)
-                )
-            guardrails_body = "\n\n".join(parts)
-
         tier3 = join([
             xml("channel_context", channel_ctx),
             xml("resumption", resumption_note),
-            xml("known_profile", profile_body),
+            xml("state", state),
+            xml("recent", recent),
             xml("known_facts", known_facts),
             xml("caller_turn", caller_turn),
-            xml("active_guardrails", guardrails_body),
         ])
 
         # ── Assemble blocks ───────────────────────────────────────────
@@ -795,36 +787,19 @@ class ManagerAgent:
             blocks.append(TextBlock(text=tier3))
         return SystemPrompt(blocks=blocks)
 
-    def build_messages(
-        self,
-        user_message: str,
-        current_question: str,
-    ) -> list[Message]:
-        """
-        Build the neutral messages list for one LLM call.
+    def build_messages(self, user_message: str) -> list[Message]:
+        """Build the per-turn user message: the caller's utterance only (Spec D §6.1).
 
-        No RAG chunks injected here — knowledge retrieval is now tool-driven.
-        The LLM calls knowledge_retrieval tool when it needs context; chunks
-        arrive as tool_result blocks within the same turn's tool-use loop.
+        Question context reaches the model through <recent> and <state>.
 
         Args:
-            user_message:     Raw user message text.
-            current_question: The last question the agent asked (from session). Empty string if first turn.
+            user_message: The caller's utterance (raw, possibly carryover-folded).
 
         Returns:
-            Single-turn messages list with one user Message.
+            A single user Message.
         """
-        # If user_message is empty (e.g. cold-start resumption), use a placeholder
-        # so the LLM has a "turn" to generate the resumption prompt.
         input_text = user_message.strip() if user_message else "[Resuming session...]"
-
-        content_parts: list[str] = []
-        if current_question:
-            content_parts.append(f"[Last question asked: {current_question}]")
-        content_parts.append(input_text)
-
-        full_text = "\n\n".join(content_parts)
-        return [Message(role="user", content=[TextBlock(text=full_text)])]
+        return [Message(role="user", content=[TextBlock(text=input_text)])]
 
     # ------------------------------------------------------------------
     # Private helpers

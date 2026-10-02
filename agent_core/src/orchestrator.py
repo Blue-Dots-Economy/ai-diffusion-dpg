@@ -86,6 +86,7 @@ from src.understanding.precedence import nlu_owned_values
 from src.understanding.understander import TurnContext, TurnUnderstander, TurnUnderstanderBase
 from src.tool_results import ToolResultPolicies, TurnToolCache, augment_tool_definitions
 from src.remember import RememberTool
+from src.output.result_shaping import ResultShaper
 from src.session_bootstrap import SessionBootstrap
 from src.turn_policy import TurnPolicy, resolve_turn_policy
 from src.workflow_loader import AgentWorkflow, RoutingCondition, RoutingRule, SubAgent
@@ -223,6 +224,7 @@ class AgentCore(AgentCoreBase):
             raise ValueError("workflow must not be None")
 
         self._config = config
+        self._result_shaper = ResultShaper(self._config)
         # Resolved per channel on first use; config is immutable after startup.
         self._turn_policies: dict[str, TurnPolicy] = {}
         self._llm = chat_provider
@@ -385,7 +387,9 @@ class AgentCore(AgentCoreBase):
         # Tool-result persistence: per-tool cache/invalidate policies and the
         # optional framework ``remember`` tool, both derived from config.
         self._tool_policies = ToolResultPolicies.from_config(config)
-        self._bootstrap = SessionBootstrap.from_config(config, self._tool_policies)
+        self._bootstrap = SessionBootstrap.from_config(
+            config, self._tool_policies, shape=self._result_shaper.shape,
+        )
         self._remember = RememberTool.from_config(config)
         self._prompt_session_fields: list[str] = list(
             ((config.get("agent") or {}).get("prompt_session_fields")) or [])
@@ -781,7 +785,6 @@ class AgentCore(AgentCoreBase):
             bundle.session.get("current_subagent_id")
             or self._workflow.start_subagent_id
         )
-        current_question: str = bundle.session.get("current_question", "")
 
         # ── Step 4: Language Normalisation ───────────────────────────
         # Runs before the consent gate so the detected language is available
@@ -1297,7 +1300,6 @@ class AgentCore(AgentCoreBase):
             subagent_system_prompt=next_subagent.system_prompt,
             detected_language=final_language,
             channel=turn_input.channel,
-            profile=profile_context,
             channel_config=channel_config,
             is_resumption=is_resumption,
             user_state_guidance=user_state_guidance_text,
@@ -1306,6 +1308,8 @@ class AgentCore(AgentCoreBase):
             ),
             known_facts=tool_cache.render_known_facts(),
             caller_turn=render_caller_turn(understanding),
+            state="",
+            recent="",
         )
 
         # Clear resumption flag in session so it only affects the first turn
@@ -1314,7 +1318,6 @@ class AgentCore(AgentCoreBase):
             self._write_memory_sync(session_id, user_id, "session", "was_adopted", False)
         messages = self._manager_agent.build_messages(
             user_message=turn_input.user_message,
-            current_question=current_question,
         )
 
         # #193: replay the previous turn's tool exchanges, exactly as
@@ -1440,6 +1443,7 @@ class AgentCore(AgentCoreBase):
         # sends whatever is pending; the original exception propagates.
         try:
             final_text, tool_calls, tool_results = self._manager_agent.run_turn(
+                result_shaper=self._result_shaper.shape,
                 messages=messages,
                 session_id=session_id,
                 initial_response=llm_response,
@@ -4611,7 +4615,6 @@ class AgentCore(AgentCoreBase):
                 subagent_system_prompt=next_subagent.system_prompt,
                 detected_language=final_language,
                 channel=turn_input.channel,
-                profile=profile_context,
                 channel_config=channel_config,
                 is_resumption=is_resumption,
                 user_state_guidance=stream_user_state_guidance_text,
@@ -4620,6 +4623,8 @@ class AgentCore(AgentCoreBase):
                 ),
                 known_facts=tool_cache.render_known_facts(),
                 caller_turn=render_caller_turn(understanding),
+                state="",
+                recent="",
             )
 
             if is_resumption:
@@ -4628,7 +4633,6 @@ class AgentCore(AgentCoreBase):
 
             messages = self._manager_agent.build_messages(
                 user_message=turn_input.user_message,
-                current_question=current_question,
             )
 
             # ── #193: prepend prior tool_use/tool_result exchanges ──────
@@ -4915,6 +4919,7 @@ class AgentCore(AgentCoreBase):
                                 tool_cache.prepare(tc), session_id, user_id,
                                 session_values=self._tool_session_values(bundle),
                             )
+                            tool_result = self._result_shaper.shape(tool_result)
                             await self._write_mapped_session_values(
                                 session_id, user_id, tool_result, bundle,
                             )
@@ -5240,6 +5245,7 @@ class AgentCore(AgentCoreBase):
                                         tool_cache.prepare(tc), session_id, user_id,
                                         session_values=self._tool_session_values(bundle),
                                     )
+                                    tool_result = self._result_shaper.shape(tool_result)
                                     await self._write_mapped_session_values(
                                         session_id, user_id, tool_result, bundle,
                                     )
