@@ -139,6 +139,7 @@ async def test_human_request_delivered_speaks_line_and_routes():
     assert {"session_id", "turn_id", "timestamp_ms", "reason", "latency_ms"} <= set(data)
     assert "handoff" not in data and "summary" not in data          # never the payload
     assert t.writes["subagent_entry_count"]["handoff"] == 1
+    assert t.writes["handoff_line"] == "delivered"                   # the line spoken this turn
     assert t.llm_calls == 0
 
 
@@ -149,6 +150,7 @@ async def test_human_request_failed_when_trust_unreachable():
     text, done = await t.stream()
     assert text == HANDOFF_LINES["failed"] and t.writes["handoff_status"] == "failed"
     assert done.session_ended is False and t.writes["current_subagent_id"] == "handoff"
+    assert t.writes["handoff_line"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -172,6 +174,7 @@ async def test_second_request_after_delivery_is_already_and_no_new_escalation():
     assert text == HANDOFF_LINES["already"] and t.escalate_calls == []
     assert t.writes["close_return_to"] == "job_match" and t.writes["current_subagent_id"] == "handoff"
     assert "handoff_status" not in t.writes and done.session_ended is False
+    assert t.writes["handoff_line"] == "already"                     # status stays delivered, line does not
     kind, data = t.agent._async_learning.emit_signal.await_args.args
     assert kind == "handoff" and data["outcome"] == "already" and data["reason"] == "already"
 
@@ -304,6 +307,7 @@ def test_sync_second_request_after_delivery_is_already():
     t.session["handoff_status"] = "delivered"
     result = t.sync()
     assert result.response_text == HANDOFF_LINES["already"] and t.escalate_calls == []
+    assert t.writes["handoff_line"] == "already" and "handoff_status" not in t.writes
 
 
 def test_sync_handoff_disabled_does_not_escalate():

@@ -16,6 +16,17 @@ def test_render_identity_none_and_rules():
     assert "Never claim to be human" in out
 
 
+def test_render_identity_none_mode_no_handoff_line_only_for_a_person_request():
+    """'who are you?' / 'are you a human?' get the disclosure only; asking for a person gets no_handoff_line."""
+    out = render_identity(IDENT)
+    who_rule = next(line for line in out.splitlines() if "who you are" in line)
+    assert "disclosure line" in who_rule and "human or a computer" in who_rule
+    assert IDENT["no_handoff_line"] not in who_rule and "speak to a person" not in who_rule
+    person_rule = next(line for line in out.splitlines() if IDENT["no_handoff_line"] in line)
+    assert "speak to a person" in person_rule
+    assert "who you are" not in person_rule and "human or a computer" not in person_rule
+
+
 def test_render_identity_request_mode_omits_no_handoff_line():
     out = render_identity({**IDENT, "human_handoff": "request"})
     assert IDENT["no_handoff_line"] not in out and "handoff" in out.lower()

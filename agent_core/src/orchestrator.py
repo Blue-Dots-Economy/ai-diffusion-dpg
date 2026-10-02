@@ -2811,6 +2811,10 @@ class AgentCore(AgentCoreBase):
         # Inside a return phase close_return_to already names the real phase; keep it.
         if not self._is_return_phase(current):
             writes["close_return_to"] = current
+        # The line spoken THIS turn (delivered | failed | already). handoff_status
+        # stays "delivered" on an already turn; only the delivered line asks to end
+        # the call, so the next turn's close_confirm pending keys on this marker.
+        writes["handoff_line"] = outcome
         if outcome != "already":
             writes["handoff_status"] = outcome
             writes["handoff_ticket_id"] = str((result or {}).get("ticket_id") or "")

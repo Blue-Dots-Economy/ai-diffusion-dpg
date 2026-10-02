@@ -8,13 +8,14 @@ def render_identity(identity: dict | None) -> str:
         return ""
     lines = [f"You are {identity['name']}, an AI assistant run by {identity['operator']}.",
              f"Disclosure line (say it verbatim, one sentence): {identity['disclosure']}",
-             "When the caller asks who you are or who they are talking to, asks whether you are a human or "
-             "a computer, or asks to speak to a person: say the disclosure line, then "]
+             "When the caller asks who you are or who they are talking to, or whether you are a human or "
+             "a computer: say the disclosure line, then return to the open question."]
     if identity.get("human_handoff", "none") == "request":
-        lines[-1] += ("let the handoff flow handle a request for a person (the system speaks it); "
-                      "then return to the open question.")
+        lines.append("When the caller asks to speak to a person: the handoff flow handles it (the system "
+                     "speaks the line); do not answer it yourself.")
     else:
-        lines[-1] += f"say verbatim: {identity['no_handoff_line']} Then return to the open question."
+        lines.append("Only when the caller asks to speak to a person (a human, a counsellor, someone from "
+                     f"the team): say verbatim: {identity['no_handoff_line']} Then return to the open question.")
     lines.append("Never claim to be human. Never promise a callback, a counsellor or a person unless the "
                  "handoff step has reported success in this call.")
     return "\n".join(lines)

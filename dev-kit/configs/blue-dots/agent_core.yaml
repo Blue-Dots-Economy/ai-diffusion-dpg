@@ -731,6 +731,9 @@ preprocessing:
       - { pending: age, caller: "आप कौन हैं?", out: { acts: [ask], relation: new_topic, topic: identity } }
       # "किसी से पूछना है" asks about a topic, not for a person: topic is what they ask about.
       - { pending: select_job, caller: "मुझे किसी से पूछना है कि सैलरी कब मिलेगी", out: { acts: [ask], relation: new_topic, topic: salary } }
+      # Mentioning someone, or asking whom to contact at the company, is not asking for a person now.
+      - { pending: select_job, caller: "किसी ने मुझे बताया था", out: { acts: [provide_info], relation: unclear } }
+      - { pending: select_job, caller: "कंपनी में किससे बात करनी होगी?", out: { acts: [ask], relation: new_topic, topic: job_details } }
     act_intents:
       - { acts: [deny], pending: consent, relation: answers_pending, intent: decline }
       - { acts: [select], pending: select_job, intent: job_pick }
@@ -3236,6 +3239,8 @@ agent_workflow:
       description: After a handoff line, confirm ending the call or return to the phase.
       is_start: false
       is_terminal: false
+      # Required by the schema, never spoken: the framework speaks the
+      # configured handoff line on the turn that routes here.
       opening_phrase: "क्या मैं और कुछ मदद करूँ, या कॉल यहीं ख़त्म करूँ?"
       special_handler: null
       tools: []
@@ -3243,16 +3248,17 @@ agent_workflow:
         The caller asked to speak to a person and has just been told what
         happened to that request. Do not promise a callback time and do not
         repeat the handoff line. If they want to continue, help with what
-        they ask; otherwise ask only: "क्या मैं कॉल यहीं ख़त्म करूँ?"
-        Do not call any tool.
+        they ask. Do not call any tool.
       # Only the delivered line asks the close question. After the failed line
-      # ("…आप क्या जानना चाहते हैं?") a "हाँ" is not a goodbye, so nothing is
-      # pending and the answer goes back to close_return_to.
+      # ("…आप क्या जानना चाहते हैं?") or the already line a "हाँ" is not a
+      # goodbye, so nothing is pending and the answer goes back to
+      # close_return_to. handoff_line is the line spoken on the handoff turn
+      # (handoff_status stays "delivered" on an already turn).
       pending:
         - id: close_confirm
           expects: "हाँ = कॉल ख़त्म करें / नहीं = बात जारी रखें"
           when:
-            - { field: handoff_status, operator: eq, value: delivered }
+            - { field: handoff_line, operator: eq, value: delivered }
       routing:
         # off_track (spec §6.6): stay here after repeated
         # off-script turns; never coincides with termination_intent.
