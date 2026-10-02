@@ -102,7 +102,8 @@ backend:
   search_url:  http://localhost:3100
   redis_url:   redis://:${REDIS_PASSWORD}@localhost:6379
   agent_log_container: dpg_agent_core      # optional, for tool and timing logs
-runs: 3
+runs: 1                                     # default runs per scenario
+runs_per_scenario: { T01: 3, T12: 3, T14: 3 }   # extra runs where a wrong verdict costs most (apply, consent, returning-caller apply)
 max_turns: 14
 phone_prefix: "9199000"                     # reserved test range; never a real user's number
 results_dir: eval_results/voice_bench
@@ -145,6 +146,7 @@ The local backend (Signals, search, TEI) is started once by `backend.py` and sta
   - never voice stage directions (say "..." for silence);
   - hang up after the bot's goodbye.
 - **Repeatability:** the seed is fixed per (scenario, run index), so runs are paired across targets.
+- **Run counts:** `runs` is the default per scenario (1). `runs_per_scenario` raises it for the scenarios behind the high-stakes checks (T01, T12, T14 → 3). Latency percentiles are computed over turns (about 140 per target at one run each), so they don't need repeats.
 - **Voided calls:** a call is voided and re-run once if the caller breaks persona. That means a stage direction, or 2 off-script turns, as flagged by a cheap judge check.
 
 ### 6.4 `drive.py`: one call
@@ -181,7 +183,7 @@ The report has three parts:
 - latency p50, p90, p95 and max per target, with tool and non-tool turns split;
 - TC22 accuracy per target.
 
-It also shows the deltas between consecutive targets, plus example excerpts for every failure: the turn, the reply and the judge quote. Output goes to a markdown file and a JSON summary.
+Every figure shows how many calls back it (`n`), so a single-call pass rate is visible as such. It also shows the deltas between consecutive targets, plus example excerpts for every failure: the turn, the reply and the judge quote. Output goes to a markdown file and a JSON summary.
 
 **Comparability:** targets are only compared when they share `suite_version`, `seed_version` and the judge model.
 
@@ -219,7 +221,7 @@ Results are cached per (target commit, suite version, scenario, run). A re-run e
 - **M2:** `cf794ef`, Specs A–C.
 - **M3:** the Spec E head (#434).
 
-**Scale:** 14 scenarios × 3 runs per target, so 168 calls in total.
+**Scale:** 14 scenarios × 1 run, plus 2 extra runs each for T01, T12 and T14 → 20 calls per target, 80 calls in total.
 
 **Output:** `local_docs/2026-10-xx-change-evidence-report.md`. It contains the change inventory (from the plan doc) followed by the voice-bench tables.
 
@@ -227,4 +229,4 @@ Results are cached per (target commit, suite version, scenario, run). A re-run e
 
 - **Old targets may not build or run.** They may have a different compose path, or tools that hit endpoints the local Signals doesn't serve. A target that won't start is reported as unmeasurable, with the reason. Tool errors at a target are counted at that target, not hidden.
 - **Judge bias.** The bot, the caller and the judge are all OpenAI, as decided. The bias is mitigated by deterministic checks wherever possible and by requiring a quoted verdict.
-- **Variance.** Three runs give medians, not significance. The report says so and shows each run's spread.
+- **Variance.** Most scenarios run once, so a single flaky call can flip a test case at a target. Mitigations: 3 runs for the high-stakes scenarios; `n` shown on every figure; `--runs` / `runs_per_scenario` can be raised when a check looks borderline. The report states that results show direction, not statistical significance.
