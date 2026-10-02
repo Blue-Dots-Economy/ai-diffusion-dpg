@@ -318,13 +318,26 @@ async def test_confirm_then_end_over_stream_turn():
     assert ended is True
 
 
-@pytest.mark.parametrize("relation", ["answers_pending", "answers_other", "unclear", "new_topic"])
-def test_affirm_on_close_confirm_ends_whatever_the_relation(relation):
-    """A bare 'ठीक है' may be labelled with any relation; on the pending close question it still confirms."""
+@pytest.mark.parametrize("relation", ["answers_pending", "unclear"])
+def test_affirm_on_close_confirm_ends_despite_mislabelled_relation(relation):
+    """A bare 'ठीक है' may be labelled answers_pending or unclear; on the close question it confirms."""
     from src.understanding.models import DialogueActResult
     _, _, _, state = _route("opening", _CALL, _close())
     intent, nxt, _, _ = _route("confirm_close", state, DialogueActResult(acts=("affirm",), relation=relation))
     assert (intent, nxt) == ("termination_intent", "ended")
+
+
+@pytest.mark.parametrize("acts, relation", [
+    (("affirm",), "new_topic"), (("affirm",), "answers_other"),
+    (("affirm", "ask"), "new_topic"), (("affirm", "ask"), "answers_pending"),
+    (("affirm", "request_change"), "answers_pending"),
+])
+def test_affirm_that_opens_a_topic_does_not_end_the_call(acts, relation):
+    """'हाँ, एक बात और पूछनी है' on the close question returns to the phase."""
+    from src.understanding.models import DialogueActResult
+    _, _, _, state = _route("opening", _CALL, _close())
+    intent, nxt, _, _ = _route("confirm_close", state, DialogueActResult(acts=acts, relation=relation))
+    assert intent != "termination_intent" and nxt == "opening"
 
 
 @pytest.mark.asyncio

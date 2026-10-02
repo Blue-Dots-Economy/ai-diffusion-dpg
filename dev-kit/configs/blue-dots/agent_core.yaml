@@ -734,7 +734,14 @@ preprocessing:
       # above and lands here, so routing can ask confirm_close's one question
       # instead of letting the phase write a goodbye that never hangs up.
       - { acts: [close], intent: termination_blocked }
-      - { acts: [affirm], pending: close_confirm, intent: termination_intent, gated: true }
+      # An affirm that also asks / requests something is not a bare yes: keep the
+      # call (close_declined, routed back by confirm_close) before the confirming rows below. relation answers_pending
+      # and unclear cover a bare "ठीक है" the model mis-labels; new_topic and
+      # answers_other never confirm.
+      - { acts: [affirm, ask], pending: close_confirm, intent: close_declined }
+      - { acts: [affirm, request_change], pending: close_confirm, intent: close_declined }
+      - { acts: [affirm], pending: close_confirm, relation: answers_pending, intent: termination_intent, gated: true }
+      - { acts: [affirm], pending: close_confirm, relation: unclear, intent: termination_intent, gated: true }
       - { acts: [deny], pending: closing_offer, intent: termination_intent, gated: true }
     termination_gate:
       any_of:
@@ -3152,6 +3159,13 @@ agent_workflow:
           next_subagent_id: confirm_close
         - intent: termination_intent
           next_subagent_id: ended
+        # Yes-but-also-asking (close_declined): back to the phase like any other non-confirming answer.
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: opening }], next_subagent_id: opening }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: profile_resolve }], next_subagent_id: profile_resolve }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
         # Any other answer ("नहीं", a question, a detail): back to where the caller was.
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: opening }], next_subagent_id: opening }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: profile_resolve }], next_subagent_id: profile_resolve }
