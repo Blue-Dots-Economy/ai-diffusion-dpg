@@ -496,6 +496,8 @@ def test_sync_path_predispatch(caplog):
     r = _complete_extras(caplog, "orchestrator.turn_complete")
     assert (r.llm_calls, r.predispatch_tool, r.predispatch_outcome) == (1, "fetch_jobs", "fired")
     assert isinstance(r.predispatch_ms, int)
+    banner = next(x.getMessage() for x in caplog.records if "  TURN COMPLETE" in x.getMessage())
+    assert "  llm_calls=1  predispatch_tool=fetch_jobs  predispatch_outcome=fired  predispatch_ms=" in banner
 
 
 def test_sync_session_values_written_before_run_turn():

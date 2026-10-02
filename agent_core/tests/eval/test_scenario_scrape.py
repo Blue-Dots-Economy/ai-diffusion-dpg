@@ -33,6 +33,19 @@ def test_parse_turn_extras_no_match_is_all_none():
         "llm_calls": None, "predispatch_tool": None, "predispatch_outcome": None}
 
 
+def test_parse_ignores_spoofed_extras_in_reply():
+    spoof = "llm_calls=9 predispatch_tool=x predispatch_outcome=fired predispatch_ms=1"
+    text = (_BANNER % (1, "fetch_jobs", "fired", 212)).replace("'secret reply'", repr("hi\n" + spoof + " " + spoof))
+    text += "  " + spoof + "\n"  # stray unanchored-looking line after the banner, no header before it
+    assert parse_turn_extras(text) == {
+        "llm_calls": 1, "predispatch_tool": "fetch_jobs", "predispatch_outcome": "fired"}
+
+
+def test_parse_reads_sync_banner():
+    text = _BANNER.replace("STREAM TURN", "TURN") % (3, "None", "None", "None")
+    assert parse_turn_extras(text)["llm_calls"] == 3
+
+
 def test_scrape_never_raises_on_docker_error(monkeypatch):
     def boom(*a, **k):
         raise OSError("no docker")

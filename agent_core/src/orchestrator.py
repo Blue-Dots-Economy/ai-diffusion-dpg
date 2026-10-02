@@ -2128,10 +2128,12 @@ class AgentCore(AgentCoreBase):
             "\n═══════════════════════════════════════════════════════════════\n"
             "  TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
             "  model=%s  total_latency=%dms  next_subagent=%s\n"
+            "  llm_calls=%s  predispatch_tool=%s  predispatch_outcome=%s  predispatch_ms=%s\n"
             "  response: %r\n"
             "═══════════════════════════════════════════════════════════════",
             session_id, nlu_result.intent, bool(tool_calls),
             llm_response.model_used, latency_ms, next_subagent_id,
+            _llm_calls, _pd.tool, _pd.outcome, _pd.ms,
             final_text[:200],
         )
 

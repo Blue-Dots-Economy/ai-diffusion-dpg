@@ -11,7 +11,12 @@ agent_core ``orchestrator.stream_turn_complete`` log extras (``digits_rewritten`
 With ``--agent-container`` the runner also reads ``llm_calls``, ``predispatch_tool`` and
 ``predispatch_outcome`` (Spec E §10) from that container's logs after each turn. agent_core's log
 format does not render ``extra=`` fields, so they are read from the "STREAM TURN COMPLETE"
-message. A failed scrape records None and never fails the run; replies are never printed.
+message (stream and sync banners, last banner block, extras line only). A failed scrape records
+None and never fails the run; replies are never printed.
+
+Limits: the scrape assumes sequential, single-session use. It reads ``docker logs --since`` the
+turn start at one-second granularity with no session filter, so concurrent runs against the same
+agent container can read each other's turns.
 
 An order check result of None means skipped (no spoken-pay marker in the reply); it is counted
 under ``skipped_counts``, never as a pass.
@@ -47,7 +52,10 @@ NOT_COLLECTED = [
 
 
 _EXTRAS_LINE = re.compile(
-    r"llm_calls=(\S+)\s+predispatch_tool=(\S+)\s+predispatch_outcome=(\S+)\s+predispatch_ms=(\S+)")
+    r"^\s*llm_calls=(\S+)\s+predispatch_tool=(\S+)\s+predispatch_outcome=(\S+)\s+predispatch_ms=(\S+)\s*$",
+    re.M)
+_BANNER_HEADER = re.compile(r"^\s*(?:STREAM )?TURN COMPLETE\b", re.M)
+_RESPONSE_LINE = re.compile(r"^\s*response:", re.M)
 
 
 def _val(raw: str) -> str | None:
@@ -64,10 +72,18 @@ def parse_turn_extras(log_text: str) -> dict:
         Dict with those three keys; any missing or ``None`` value is None. ``llm_calls`` is an int.
     """
     out: dict = {"llm_calls": None, "predispatch_tool": None, "predispatch_outcome": None}
-    matches = _EXTRAS_LINE.findall(log_text or "")
-    if not matches:
+    headers = list(_BANNER_HEADER.finditer(log_text or ""))
+    if not headers:
         return out
-    calls, tool, outcome, _ms = matches[-1]
+    block = log_text[headers[-1].start():]
+    # The extras line sits before the reply line; never look past it (replies are untrusted text).
+    resp = _RESPONSE_LINE.search(block)
+    if resp:
+        block = block[:resp.start()]
+    m = _EXTRAS_LINE.search(block)
+    if not m:
+        return out
+    calls, tool, outcome, _ms = m.groups()
     try:
         out["llm_calls"] = int(calls)
     except ValueError:
@@ -223,7 +239,9 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--redis-container", default=None)
     ap.add_argument("--agent-container", default=None,
-                    help="agent_core container; reads llm_calls and the pre-dispatch outcome from its logs")
+                    help="agent_core container; reads llm_calls and the pre-dispatch outcome from its logs. "
+                         "Assumes sequential, single-session use: docker logs --since the turn start "
+                         "(1 s granularity), no session filter")
     a = ap.parse_args()
     scenarios = yaml.safe_load(Path(a.scenarios).read_text(encoding="utf-8"))
     report = run(a.bridge.rstrip("/"), scenarios, a.redis_container, a.agent_container)
