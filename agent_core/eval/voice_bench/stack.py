@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -17,6 +18,9 @@ PATCH_FILE = Path(__file__).parent / "patches" / "blue-dots-local.yaml"
 OVERRIDE_NAME = "voice-bench.override.yml"
 PROJECT = "vb"
 BRIDGE_HOST_PORT = 18008
+
+
+_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 
 class PatchMismatch(Exception):
@@ -86,7 +90,12 @@ class TargetStack:
 
     @property
     def worktree(self) -> Path:
-        return self.work_root / f"{self.target.name}-{self.commit}"
+        if not _NAME_RE.fullmatch(self.target.name):
+            raise StackError("invalid target name")
+        wt = self.work_root / f"{self.target.name}-{self.commit}"
+        if not wt.resolve().is_relative_to(self.work_root.resolve()):
+            raise StackError("worktree path escapes work_root")
+        return wt
 
     def _git(self, *args: str):
         return self._exec(["git", "-C", str(self.repo_root), *args], "git " + args[0])
@@ -97,9 +106,26 @@ class TargetStack:
         except OSError as e:
             raise StackError(f"{what} could not run: {type(e).__name__}") from e
         if r.returncode != 0:
-            tail = ((r.stderr or "").strip().splitlines() or [""])[-1][:300]
+            tail = ((r.stderr or "").strip().splitlines() or [""])[-1]
+            tail = self._redact(tail)[:300]
             raise StackError(f"{what} failed (exit {r.returncode}): {tail}")
         return r
+
+    def _secrets(self) -> list[str]:
+        vals = [os.environ.get("OPENAI_API_KEY") or ""]
+        try:
+            for ln in self.env_file.read_text(encoding="utf-8").splitlines():
+                if "=" in ln and not ln.lstrip().startswith("#"):
+                    v = ln.split("=", 1)[1].strip().strip("'\"")
+                    vals.append(v)
+        except OSError:
+            pass
+        return sorted({v for v in vals if v}, key=len, reverse=True)
+
+    def _redact(self, text: str) -> str:
+        for v in self._secrets():
+            text = text.replace(v, "***")
+        return text
 
     def _compose_argv(self, *tail: str) -> list[str]:
         compose = self.worktree / self.target.compose
@@ -116,25 +142,40 @@ class TargetStack:
             return url
         wt = self.worktree
         self.work_root.mkdir(parents=True, exist_ok=True)
+        if wt.exists():  # stale from a killed run
+            self._best_effort(["git", "-C", str(self.repo_root), "worktree", "remove", "--force", str(wt)])
+            self._best_effort(["git", "-C", str(self.repo_root), "worktree", "prune"])
         self._git("worktree", "add", "--detach", str(wt), self.target.git_ref or "")
         self._up = True
         try:
-            patch = yaml.safe_load(PATCH_FILE.read_text())
+            patch = yaml.safe_load(PATCH_FILE.read_text(encoding="utf-8"))
             f = wt / patch["file"]
             try:
-                f.write_text(apply_patch(f.read_text(), patch, self.tap_url, self.instance_url))
+                f.write_text(apply_patch(f.read_text(encoding="utf-8"), patch, self.tap_url,
+                                         self.instance_url), encoding="utf-8")
             except PatchMismatch as e:
                 raise StackError(f"patch does not apply: {e}") from e
             compose = wt / self.target.compose
-            (compose.parent / OVERRIDE_NAME).write_text(compose_override(BRIDGE_HOST_PORT, self.env_file))
+            (compose.parent / OVERRIDE_NAME).write_text(
+                compose_override(BRIDGE_HOST_PORT, self.env_file), encoding="utf-8")
             self._exec(self._compose_argv("up", "-d", "--build", "reach_layer_bridge"),
                        "docker compose up", env=self._env())
             url = f"http://127.0.0.1:{BRIDGE_HOST_PORT}"
             self._wait_healthy(url)
             return url
-        except Exception:
-            self.down()
+        except BaseException:
+            try:
+                self.down()
+            except BaseException:
+                pass
             raise
+
+    def _best_effort(self, argv: list[str], env: dict[str, str] | None = None) -> bool:
+        try:
+            r = self._run(argv, capture_output=True, text=True, **({"env": env} if env else {}))
+        except Exception:
+            return False
+        return r.returncode == 0
 
     def _wait_healthy(self, base: str) -> None:
         waited = 0.0
@@ -149,11 +190,15 @@ class TargetStack:
             self._sleep(self._interval)
             waited += self._interval
 
-    def down(self) -> None:
+    def down(self) -> list[str]:
+        """Best-effort teardown; returns the names of steps that failed (never raises on a step failure)."""
         if self.target.bridge_url or not self._up:
-            return
+            return []
         self._up = False
         wt = self.worktree
-        self._run(self._compose_argv("down", "-v"), capture_output=True, text=True, env=self._env())
-        self._run(["git", "-C", str(self.repo_root), "worktree", "remove", "--force", str(wt)],
-                  capture_output=True, text=True)
+        failed = []
+        if not self._best_effort(self._compose_argv("down", "-v"), env=self._env()):
+            failed.append("compose down")
+        if not self._best_effort(["git", "-C", str(self.repo_root), "worktree", "remove", "--force", str(wt)]):
+            failed.append("worktree remove")
+        return failed

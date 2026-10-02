@@ -112,14 +112,48 @@ def test_up_creates_worktree_patches_and_composes(tmp_path, monkeypatch):
     assert ov["services"]["action_gateway"]["env_file"] == [str((tmp_path / "bd.env").resolve())]
 
 
-def test_compose_failure_raises_stack_error_without_env_values(tmp_path, monkeypatch):
+def test_compose_failure_redacts_secrets(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
-    run = FakeRun(tmp_path, fail_on="up", stderr="build error: no space left")
+    (tmp_path / "bd.env").write_text("BLUE_DOTS_API_KEY=key-12345\nBLUE_DOTS_ORG_ID=org-9\n")
+    run = FakeRun(tmp_path, fail_on="up", stderr="bad line BLUE_DOTS_API_KEY=key-12345 sk-secret")
     s = _stack(tmp_path, run)
-    with pytest.raises(StackError, match="no space left") as ei:
+    with pytest.raises(StackError) as ei:
         s.up()
-    assert "sk-secret" not in str(ei.value)
-    assert any("worktree" in c and "remove" in c for c in run.calls)  # cleaned up after failed up
+    msg = str(ei.value)
+    assert "***" in msg and "key-12345" not in msg and "sk-secret" not in msg
+    assert any("worktree" in c and "remove" in c for c in run.calls)
+
+
+def test_patch_mismatch_up_no_compose_and_cleaned(tmp_path):
+    class BadRun(FakeRun):
+        def __call__(self, argv, **kw):
+            r = super().__call__(argv, **kw)
+            if "worktree" in argv and "add" in argv:
+                wt = Path(argv[argv.index("--detach") + 1])
+                (wt / "dev-kit/configs/blue-dots/action_gateway.yaml").write_text('base_url: "https://example.org"')
+            return r
+    run = BadRun(tmp_path)
+    with pytest.raises(StackError, match="patch does not apply"):
+        _stack(tmp_path, run).up()
+    assert not any("compose" in c for c in run.calls if c[0] == "docker" and "up" in c)
+    assert any("worktree" in c and "remove" in c for c in run.calls)
+
+
+def test_down_is_best_effort(tmp_path):
+    def run(argv, **kw):
+        if argv[0] == "docker":
+            raise OSError("no docker")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    s = _stack(tmp_path, FakeRun(tmp_path))
+    s.up()
+    s._run = run
+    assert s.down() == ["compose down"]
+
+
+def test_invalid_target_name_rejected(tmp_path):
+    s = _stack(tmp_path, FakeRun(tmp_path), target=TargetCfg(name="../x", git_ref="abc"))
+    with pytest.raises(StackError, match="invalid target name"):
+        s.up()
 
 
 def test_health_timeout_raises(tmp_path):
