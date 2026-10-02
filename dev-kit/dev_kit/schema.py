@@ -127,6 +127,15 @@ class ConnectorDef(BaseModel):
         description="Per-connector result shaping (Spec D §4); validated by the agent_core domain schema",
     )
 
+    @field_validator("result_shaping")
+    @classmethod
+    def _validate_result_shaping(cls, v: Optional[dict]) -> Optional[dict]:
+        """Reject shapes the runtime rejects; keep the plain dict."""
+        if v is not None:
+            from dev_kit.schemas.domain.agent_core import ResultShapingConfig
+            ResultShapingConfig.model_validate(v)
+        return v
+
 
 class InternalConnectorDef(BaseModel):
     name: str = Field(..., description="Internal connector name, e.g. knowledge_retrieval")
@@ -700,6 +709,15 @@ class ChannelConfig(BaseModel):
         default=None,
         description="Spoken-output contract (Spec D); validated by the agent_core domain schema",
     )
+    @field_validator("output_contract")
+    @classmethod
+    def _validate_output_contract(cls, v: Optional[dict]) -> Optional[dict]:
+        """Reject shapes the runtime rejects; keep the plain dict."""
+        if v is not None:
+            from dev_kit.schemas.domain.agent_core import OutputContractConfig
+            OutputContractConfig.model_validate(v)
+        return v
+
     max_tokens: Optional[int] = Field(
         default=None, gt=0,
         description="Per-channel max output tokens",

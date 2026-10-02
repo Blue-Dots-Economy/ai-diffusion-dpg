@@ -235,3 +235,20 @@ def test_pending_field_in_irrelevant_or_gated_off_phase_does_not_backtrack():
         "agent_core.agent_workflow.agent_system_prompt": "pending",
     }
     assert decide_next_phase("workflow", state, accumulator={}, field_status=field_status) == "workflow"
+
+
+def test_spec_d_rules_do_not_stall_reach_and_tools_for_web_only():
+    from dev_kit.agent.router import _is_phase_complete
+    from dev_kit.agent.skeleton import build_skeleton
+    state = _intake(selected_channels=["web"], has_external_tools=False)
+    _, status = build_skeleton(state)
+    spec_d = ("agent_core.agent.state_fields", "agent_core.connectors.read.result_shaping",
+              "agent_core.channels.voice.output_contract")
+    for path in spec_d:
+        assert status.get(path) in ("answered", "not_applicable"), path
+    # Every other applicable chat field answered: the Spec D rules must not block.
+    for path, rule in AGGREGATED_FIELD_RULES.items():
+        if rule.category == "chat" and path not in spec_d:
+            status[path] = "answered"
+    assert _is_phase_complete("reach", state, status)
+    assert _is_phase_complete("tools", state, status)

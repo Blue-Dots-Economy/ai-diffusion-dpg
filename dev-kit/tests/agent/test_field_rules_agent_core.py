@@ -75,7 +75,6 @@ EXPECTED_PATHS = {
     "agent.history_turns",
     "agent.state_fields",
     "channels.voice.output_contract",
-    "channels.bridge.output_contract",
     "connectors.read.result_shaping",
     # Predetermined (catalogue §7.1)
     "agent.ask_for_consent",
@@ -162,6 +161,6 @@ def test_no_rule_is_invalidated_by_a_removed_path():
 def test_no_tts_rules_keys_and_spec_d_keys_present():
     assert not [k for k in FIELD_RULES if "tts_rules" in k]
     for key in ("agent.history_turns", "agent.state_fields",
-                "channels.voice.output_contract", "channels.bridge.output_contract",
+                "channels.voice.output_contract",
                 "connectors.read.result_shaping"):
         assert key in FIELD_RULES

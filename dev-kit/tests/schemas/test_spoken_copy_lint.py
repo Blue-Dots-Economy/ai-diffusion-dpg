@@ -16,3 +16,8 @@ def test_flags_digits_and_markdown_in_authored_copy():
 def test_placeholders_are_not_digits():
     cfg = {"agent_workflow": {"subagents": [{"id": "x", "fixed_opening": "{stored_trade} में {stored_location}"}]}}
     assert lint_spoken_copy(cfg) == []
+
+
+def test_malformed_config_does_not_raise():
+    assert lint_spoken_copy({"conversation": "x", "agent_workflow": "y"}) == []
+    assert lint_spoken_copy({"agent_workflow": {"subagents": "z"}}) == []

@@ -718,3 +718,18 @@ class TestSpecDFlatSchema:
         data = {"agent": {"history_turns": 2, "state_fields": ["applications_submitted"]}}
         assert validate_partial("agent_core", data) == []
         assert validate_partial("agent_core", {"agent": {"history_turns": -1}}) != []
+
+
+class TestSpecDFlatRejects:
+    def test_unknown_operator_rejected(self):
+        data = {"connectors": {"read": [{"name": "f", "result_shaping": {
+            "drop_when": [{"field": "a", "operator": "like", "value": "x"}]}}]}}
+        assert validate_partial("agent_core", data) != []
+
+    def test_unknown_result_shaping_key_rejected(self):
+        data = {"connectors": {"read": [{"name": "f", "result_shaping": {"bogus": 1}}]}}
+        assert validate_partial("agent_core", data) != []
+
+    def test_output_contract_default_language_must_be_declared(self):
+        bad = {**_SPEC_D_CONTRACT, "default_language": "english"}
+        assert validate_partial("agent_core", {"channels": {"voice": {"output_contract": bad}}}) != []

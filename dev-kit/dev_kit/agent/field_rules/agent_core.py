@@ -215,6 +215,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         invalidated_by=["has_external_tools", "default_language"],
         description="Per-connector result shaping: drop, sort, spoken fields (Spec D §4).",
         pydantic_class="ResultShapingConfig",
+        auto_answer=True,
     ),
     "connectors.write": FieldRule(
         category="chat",
@@ -480,6 +481,8 @@ FIELD_RULES: dict[str, FieldRule] = {
         category="chat",
         phase="reach",
         description="Session keys shown on the <state> status line.",
+        default=[],
+        auto_answer=True,
     ),
     "preprocessing.nlu_processor.history_turns": FieldRule(
         category="framework_default_only",
@@ -620,13 +623,6 @@ FIELD_RULES: dict[str, FieldRule] = {
         category="chat",
         phase="reach",
         applies_if='"voice" in selected_channels',
-        invalidated_by=["selected_channels", "default_language"],
-        description="Spoken-output contract: per-language script, numbers, short rules, guard switches.",
-        pydantic_class="OutputContractConfig",
-    ),
-    "channels.bridge.output_contract": FieldRule(
-        category="chat",
-        phase="reach",
         invalidated_by=["selected_channels", "default_language"],
         description="Spoken-output contract: per-language script, numbers, short rules, guard switches.",
         pydantic_class="OutputContractConfig",

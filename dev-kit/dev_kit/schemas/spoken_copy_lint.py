@@ -34,10 +34,15 @@ def lint_spoken_copy(agent_core_cfg: dict) -> list[str]:
         Human-readable warnings (empty when clean). Never raises.
     """
     out: list[str] = []
-    conv = agent_core_cfg.get("conversation") or {}
+    if not isinstance(agent_core_cfg, dict):
+        return out
+    conv = agent_core_cfg.get("conversation")
+    conv = conv if isinstance(conv, dict) else {}
     for key in _MESSAGE_KEYS:
         _check(f"conversation.{key}", conv.get(key), out)
-    for sa in (agent_core_cfg.get("agent_workflow") or {}).get("subagents") or []:
+    wf = agent_core_cfg.get("agent_workflow")
+    subs = wf.get("subagents") if isinstance(wf, dict) else None
+    for sa in subs if isinstance(subs, list) else []:
         if isinstance(sa, dict):
             for key in ("opening_phrase", "fixed_opening"):
                 _check(f"subagents[{sa.get('id')}].{key}", sa.get(key), out)
