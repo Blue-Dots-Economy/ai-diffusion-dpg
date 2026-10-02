@@ -97,13 +97,17 @@ class FakeBackend:
 class FakeStack:
     fail = set()
     downs = []
+    commits = {}
 
     def __init__(self, target, repo_root, work_root, tap_url, instance_url, env_file):
         self.target = target
 
     @property
     def commit(self):
-        return f"c{self.target.name}"
+        c = FakeStack.commits.get(self.target.name, f"c{self.target.name}")
+        if c is None:
+            raise StackError("cannot resolve ref")
+        return c
 
     @property
     def worktree(self):
@@ -122,6 +126,7 @@ class FakeStack:
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     FakeTap.instances, FakeBackend.calls, FakeStack.fail, FakeStack.downs = [], [], set(), []
+    FakeStack.commits = {}
     driven, nlu_calls = [], []
 
     def fake_drive(deps, persona, run_idx, phone, max_turns, meta):
@@ -227,3 +232,60 @@ def test_backend_subcommands_delegate(env):
     assert cli.main(["backend", "seed", "--config", env["cfg"]]) == 0
     assert cli.main(["backend", "down", "-v", "--config", env["cfg"]]) == 0
     assert FakeBackend.calls == ["up", "seed", ("down", True)]
+
+
+def test_report_uses_the_commit_the_ref_resolves_to_and_warns_on_partial(env):
+    FakeStack.commits = {"M0": "old0000"}
+    assert cli.main(["run", "--config", env["cfg"], "--targets", "M0", "--scenarios", "T01,T02"]) == 0
+    FakeStack.commits = {"M0": "new0000"}
+    assert cli.main(["run", "--config", env["cfg"], "--targets", "M0", "--scenarios", "T02"]) == 0
+    store = ResultStore(env["results"])
+    assert store.read_meta("old0000")["name"] == store.read_meta("new0000")["name"] == "M0"
+    FakeStack.commits = {"M0": "old0000", "M1": None}
+    out = env["tmp"] / "r.md"
+    assert cli.main(["report", "--config", env["cfg"], "--out", str(out)]) == 0
+    data = json.loads((env["tmp"] / "r.md.json").read_text(encoding="utf-8"))
+    m0, m1 = data["summaries"]
+    assert m0["commit"] == "old0000" and m0["n_calls"] == 4
+    md = out.read_text(encoding="utf-8")
+    assert "**Warning (M0):** partial: 4 of 16 planned calls" in md
+    assert "**Warning (M1):** ref 'b' does not resolve" in md
+    FakeStack.commits = {"M0": "nothere"}
+    assert cli.main(["report", "--config", env["cfg"], "--targets", "M0", "--out", str(out)]) == 0
+    assert "**Warning (M0):** no records for commit nothere" in out.read_text(encoding="utf-8")
+
+
+def test_report_planned_calls_honour_runs_override(env):
+    assert cli.main(["run", "--config", env["cfg"], "--targets", "M0", "--runs", "1"]) == 0
+    out = env["tmp"] / "r.md"
+    assert cli.main(["report", "--config", env["cfg"], "--targets", "M0", "--runs", "1", "--out", str(out)]) == 0
+    assert "Warning (M0)" not in out.read_text(encoding="utf-8")
+
+
+def test_run_refuses_targets_resolving_to_the_same_commit(env, capsys):
+    FakeStack.commits = {"M0": "same000", "M1": "same000"}
+    assert cli.main(["run", "--config", env["cfg"], "--scenarios", "T02"]) == 2
+    assert env["driven"] == [] and FakeTap.instances == []
+    assert "M0 and M1" in capsys.readouterr().out
+
+
+def test_error_counts_in_denominator_rerun_ok_counts_and_none_latency_excluded():
+    r0 = _rec(0, [900, 1000], {"TC12": ("pass", "q")})
+    r0.legs[0].turns[1].t_first_content_ms = None
+    r1 = _rec(1, [800], {"TC12": ("error", None, "bridge: x")})
+    r1.void_reason, r1.voided = "rerun_ok", True
+    r2 = _rec(2, [700], {"TC12": ("pass", "q")})
+    r2.void_reason, r2.voided = "rerun_ok", True
+    s = summarise([r0, r1, r2], {"name": "M3"})
+    assert s["tc"]["TC12"]["n"] == 3 and s["tc"]["TC12"]["error"] == 1 and s["tc"]["TC12"]["rate"] == 0.6667
+    assert s["latency"]["all"]["n"] == 3 and s["n_calls"] == 3
+
+
+def test_delta_uses_unrounded_rates():
+    def summ(name, passes, n):
+        return summarise([_rec(i, [900], {"TC12": ("pass" if i < passes else "fail", "q", "r", 0)})
+                          for i in range(n)], {"name": name})
+    row = next(ln for ln in render_markdown([summ("A", 1, 6), summ("B", 1, 3)]).splitlines()
+               if ln.startswith("| TC12 |"))
+    # 16.67% -> 33.33%: unrounded delta 16.67 -> +17 (rounding each first would give 33-17 = +16)
+    assert "17% (1/6)" in row and "33% (1/3)" in row and row.endswith("| +17 |")

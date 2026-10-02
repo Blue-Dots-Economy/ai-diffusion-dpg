@@ -25,10 +25,6 @@ class ResultStore:
     def target_dir(self, target_commit: str) -> Path:
         return self._root / target_commit
 
-    def commits(self) -> list[str]:
-        """Every target commit with a results directory."""
-        return sorted(p.name for p in self._root.iterdir() if p.is_dir()) if self._root.is_dir() else []
-
     def has(self, target_commit: str, scenario: str, run: int) -> bool:
         """True only for a complete, parseable record."""
         p = self.path(target_commit, scenario, run)

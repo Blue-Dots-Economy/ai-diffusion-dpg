@@ -155,6 +155,14 @@ def cmd_run(cfg: BenchConfig, args) -> int:
     seed_places = places(load_seed())
     repo_root = _repo_root()
     work_root = (Path(cfg.results_dir) / "worktrees").resolve()
+    seen: dict[str, str] = {}
+    for t in targets:
+        c = _resolve_commit(t, repo_root, work_root)
+        if c is not None and c in seen:
+            _say(f"targets {seen[c]} and {t.name} resolve to the same commit {c}: results would be mislabeled")
+            return 2
+        if c is not None:
+            seen[c] = t.name
     tap = Tap(cfg.backend.tap_port, cfg.backend.signals_url, cfg.backend.search_url)
     tap.start()
     try:
@@ -173,28 +181,48 @@ def cmd_run(cfg: BenchConfig, args) -> int:
     return 0
 
 
-def _latest_commit_for(store: ResultStore, name: str) -> str | None:
-    """The results dir for a target name; the most recently written meta wins when a ref moved."""
-    cands = [c for c in store.commits() if store.read_meta(c).get("name") == name]
-    return max(cands, key=lambda c: (store.target_dir(c) / "meta.json").stat().st_mtime_ns, default=None)
+def _resolve_commit(t, repo_root: Path, work_root: Path) -> str | None:
+    """The target's commit id without bringing anything up (TargetStack.commit); None if the ref won't resolve."""
+    try:
+        return TargetStack(t, repo_root, work_root, "", "", Path(os.devnull)).commit
+    except StackError:
+        return None
+
+
+def _planned_calls(cfg: BenchConfig, personas) -> int:
+    return sum(runs_for(cfg, i) for i in personas)
 
 
 def cmd_report(cfg: BenchConfig, args) -> int:
     store = ResultStore(cfg.results_dir)
+    repo_root, work_root = _repo_root(), (Path(cfg.results_dir) / "worktrees").resolve()
+    planned = _planned_calls(cfg, load_personas())
     summaries = []
     for t in _pick_targets(cfg, _csv(args.targets)):
-        commit = _latest_commit_for(store, t.name)
+        commit = _resolve_commit(t, repo_root, work_root)
         if commit is None:
-            summaries.append(summarise([], {"name": t.name, "unmeasurable": "no stored results"}))
+            s = summarise([], {"name": t.name, "unmeasurable": f"ref {t.git_ref!r} does not resolve"})
+            s["warnings"] = [f"ref {t.git_ref!r} does not resolve; no results reported"]
+            summaries.append(s)
             continue
-        summaries.append(summarise(store.load_target(commit), store.read_meta(commit)))
+        records = store.load_target(commit) if store.target_dir(commit).is_dir() else []
+        s = summarise(records, {"commit": commit, **store.read_meta(commit), "name": t.name})
+        warnings = []
+        if not records:
+            warnings.append(f"no records for commit {commit}")
+        elif len(records) < planned:
+            warnings.append(f"partial: {len(records)} of {planned} planned calls")
+        s["warnings"] = warnings
+        summaries.append(s)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render_markdown(summaries), encoding="utf-8")
     js = out.with_name(out.name + ".json")
     js.write_text(json.dumps({"suite_version": SUITE_VERSION, "comparability": comparable(summaries),
                               "summaries": summaries}, ensure_ascii=False, indent=1), encoding="utf-8")
-    _say(f"report: {out} ({len(summaries)} targets)" + (" - NOT COMPARABLE, see header" if comparable(summaries) else ""))
+    flags = (" - NOT COMPARABLE" if comparable(summaries) else "") + \
+        (" - WARNINGS" if any(s["warnings"] for s in summaries) else "")
+    _say(f"report: {out} ({len(summaries)} targets){flags}" + (", see header" if flags else ""))
     return 0
 
 
@@ -223,6 +251,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--dry-run", action="store_true")
     rep = sub.add_parser("report", parents=[common])
     rep.add_argument("--targets")
+    rep.add_argument("--runs", type=int, help="planned-calls check: same override semantics as run --runs")
     rep.add_argument("--out", required=True)
     be = sub.add_parser("backend", parents=[common])
     be.add_argument("action", choices=["up", "down", "seed"])

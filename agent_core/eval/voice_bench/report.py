@@ -107,7 +107,7 @@ def _cell(c: dict) -> str:
 def _delta(a: dict, b: dict) -> str:
     if not a["n"] or not b["n"]:
         return "—"
-    return f"{round(b['rate'] * 100) - round(a['rate'] * 100):+d}"
+    return f"{round((b['rate'] - a['rate']) * 100):+d}"
 
 
 def _fmt(v) -> str:
@@ -179,6 +179,7 @@ def render_markdown(summaries: list[dict]) -> str:
         if s.get("unmeasurable"):
             stamp += f" · **unmeasurable:** {s['unmeasurable']}"
         out.append(stamp)
+        out += [f"  - **Warning ({s['target']}):** {w}" for w in s.get("warnings") or []]
     reasons = comparable(summaries)
     if reasons:
         out += ["", "> **Warning: targets are not comparable.** " + "; ".join(reasons)]
@@ -203,5 +204,6 @@ def render_markdown(summaries: list[dict]) -> str:
             "- **Tool turns** run against a local, emulated TEI; latency claims rest on non-tool turns.",
             f"- **Out of scope:** {_OUT_OF_SCOPE}.",
             "- Pass rate = pass / (pass + fail + unscored + error); n/a is excluded. Every figure shows its n.",
+            "- Latency includes turns from calls that were re-run after a persona break.",
             "- These results show direction, not statistical significance.", ""]
     return "\n".join(out)
