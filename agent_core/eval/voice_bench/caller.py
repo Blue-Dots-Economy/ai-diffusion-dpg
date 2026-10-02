@@ -30,6 +30,10 @@ def stage_direction(line: str) -> bool:
     return _STAGE.search(line) is not None
 
 
+class CallerLLMError(Exception):
+    """Caller LLM returned an unusable response; str(e) is the error code."""
+
+
 class Caller:
     """LLM caller persona."""
 
@@ -43,11 +47,18 @@ class Caller:
                                 goal=leg.goal, quirks="; ".join(persona.quirks), ends_when=persona.ends_when,
                                 hinglish=", mixing English words as Hinglish" if persona.id == "T03" else "")
         transcript = "\n".join(f"आप: {c}\nबॉट: {b}" for c, b in history)
-        line = str(self._llm.complete_json(system, transcript, seed).get("line", "<END>")).strip()
+        raw = self._llm.complete_json(system, transcript, seed).get("line")
+        if not isinstance(raw, str):
+            raise CallerLLMError("caller_llm_bad_json")
+        line = raw.strip()
         return "<END>" if "<END>" in line else (line or "...")
 
 
 def persona_broken(llm: JsonLLM, persona: Persona, caller_lines: list[str], seed: int) -> bool:
     """Cheap LLM audit of the caller's lines (plan ruling 7)."""
     system = _AUDIT.format(title=persona.title, goal=persona.goal, quirks="; ".join(persona.quirks))
-    return bool(llm.complete_json(system, "\n".join(caller_lines), seed).get("broken", False))
+    try:
+        broken = llm.complete_json(system, "\n".join(caller_lines), seed).get("broken")
+    except Exception:
+        return True
+    return broken if isinstance(broken, bool) else True

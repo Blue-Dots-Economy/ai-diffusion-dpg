@@ -2,7 +2,6 @@
 from eval.voice_bench.bridge import BridgeTurn
 from eval.voice_bench.caller import Caller, stage_direction
 from eval.voice_bench.drive import DriveDeps, drive_call
-from eval.voice_bench.records import TapEntry
 from eval.voice_bench.suite import load_personas
 
 META = dict(target="M3", target_commit="8b39427", suite_version=1, seed_version=1, caller_model="m", judge_model="m")
@@ -11,11 +10,17 @@ META = dict(target="M3", target_commit="8b39427", suite_version=1, seed_version=
 class FakeLLM:
     def __init__(self, lines, broken=False):
         self.lines, self.broken, self.calls = list(lines), broken, []
+        self.audit, self.raise_on_line = None, None
 
     def complete_json(self, system, user, seed):
         self.calls.append((system, user, seed))
         if "audit a simulated caller" in system:
-            return {"broken": self.broken}
+            return self.audit if self.audit is not None else {"broken": self.broken}
+        if self.raise_on_line:
+            raise self.raise_on_line.pop(0)
+        if self.lines and self.lines[0] is None:
+            self.lines.pop(0)
+            return {}
         return {"line": self.lines.pop(0) if self.lines else "<END>"}
 
 
@@ -106,3 +111,76 @@ def test_drive_stops_at_max_turns():
     bridge = FakeBridge([_bt("आपका नाम?")] * 3)
     rec = drive_call(_deps(bridge, FakeLLM(["...", "..."]), []), p, 0, "919900007000", 3, META)
     assert len(rec.legs[0].turns) == 3 and rec.legs[0].ended_by == "max_turns"
+
+
+def _ok():
+    return [_bt("नमस्ते"), _bt("धन्यवाद", ended=True)]
+
+
+def test_cleanup_count_three_on_retry_and_void_paths():
+    p = load_personas()["T01"]
+    c1 = []
+    drive_call(_deps(FakeBridge([_bt("", error="x")] + _ok()), FakeLLM(["रमेश"]), c1), p, 0, "919900001000", 14, META)
+    c2 = []
+    drive_call(_deps(FakeBridge(_ok() * 2), FakeLLM(["(x) रमेश", "रमेश"]), c2), p, 0, "919900001000", 14, META)
+    assert len(c1) == 3 and len(c2) == 3
+
+
+def test_broken_twice_reason():
+    p = load_personas()["T01"]
+    rec = drive_call(_deps(FakeBridge(_ok() * 2), FakeLLM(["(x) रमेश", "(y) रमेश"]), []), p, 0, "919900001000", 14, META)
+    assert rec.voided and rec.void_reason == "broken_twice" and rec.attempts == 2
+
+
+def test_caller_end_on_turn_one():
+    p = load_personas()["T01"]
+    rec = drive_call(_deps(FakeBridge([_bt("नमस्ते")]), FakeLLM(["<END>"]), []), p, 0, "919900001000", 14, META)
+    assert rec.legs[0].ended_by == "caller" and len(rec.legs[0].turns) == 1 and rec.error is None
+
+
+def test_caller_llm_raises_retries():
+    p = load_personas()["T01"]
+    llm = FakeLLM(["रमेश"])
+    llm.raise_on_line = [RuntimeError("boom")]
+    rec = drive_call(_deps(FakeBridge([_bt("नमस्ते")] + _ok()), llm, []), p, 0, "919900001000", 14, META)
+    assert rec.attempts == 2 and rec.error is None and rec.legs[0].ended_by == "bot"
+
+
+def test_caller_llm_raises_twice_records_error_and_cleans_up():
+    p = load_personas()["T01"]
+    llm = FakeLLM([])
+    llm.raise_on_line = [RuntimeError("a"), RuntimeError("b")]
+    cl = []
+    rec = drive_call(_deps(FakeBridge([_bt("नमस्ते")] * 2), llm, cl), p, 0, "919900001000", 14, META)
+    assert rec.error == "caller_llm_RuntimeError" and len(cl) == 3
+
+
+def test_caller_bad_json_error_after_retry():
+    p = load_personas()["T01"]
+    rec = drive_call(_deps(FakeBridge([_bt("नमस्ते")] * 2), FakeLLM([None, None]), []), p, 0, "919900001000", 14, META)
+    assert rec.attempts == 2 and rec.error == "caller_llm_bad_json" and rec.legs[0].ended_by == "error"
+
+
+def test_audit_bad_json_treated_as_broken():
+    p = load_personas()["T01"]
+    llm = FakeLLM(["रमेश", "रमेश"])
+    llm.audit = {}
+    rec = drive_call(_deps(FakeBridge(_ok() * 2), llm, []), p, 0, "919900001000", 14, META)
+    assert rec.voided and rec.void_reason == "broken_twice"
+
+
+def test_cleanup_runs_when_audit_llm_raises_out_of_drive():
+    p = load_personas()["T01"]
+    class Boom(FakeLLM):
+        def complete_json(self, system, user, seed):
+            if "audit a simulated caller" in system:
+                return {"broken": False}
+            return super().complete_json(system, user, seed)
+    cl = []
+    deps = _deps(FakeBridge(_ok()), Boom(["रमेश"]), cl)
+    deps.bridge.turn = lambda *a: (_ for _ in ()).throw(RuntimeError("bridge"))
+    try:
+        drive_call(deps, p, 0, "919900001000", 14, META)
+    except RuntimeError:
+        pass
+    assert len(cl) == 2

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from eval.voice_bench import observe
-from eval.voice_bench.caller import Caller, persona_broken, stage_direction
+from eval.voice_bench.caller import Caller, CallerLLMError, persona_broken, stage_direction
 from eval.voice_bench.records import CallRecord, Leg, TurnRecord
 from eval.voice_bench.suite import Persona
 
@@ -38,7 +38,12 @@ def _leg(deps: DriveDeps, persona: Persona, run_idx: int, leg_idx: int, phone: s
     line = persona.legs[leg_idx].opening_line
     for i in range(max_turns):
         if i > 0:
-            line = deps.caller.next_line(persona, leg_idx, history, _seed(persona.id, run_idx, leg_idx, i))
+            try:
+                line = deps.caller.next_line(persona, leg_idx, history, _seed(persona.id, run_idx, leg_idx, i))
+            except CallerLLMError as e:
+                return Leg(call_id, turns, "error", str(e))
+            except Exception as e:
+                return Leg(call_id, turns, "error", f"caller_llm_{type(e).__name__}")
             if line == "<END>":
                 return Leg(call_id, turns, "caller")
         since_ms, since_s = int(time.time() * 1000), int(time.time())
@@ -69,7 +74,7 @@ def _attempt(deps, persona, run_idx, phone, max_turns) -> list[Leg]:
 
 
 def _err(legs: list[Leg]) -> str | None:
-    return next((t.error for lg in legs for t in lg.turns if t.error), None)
+    return next((e for lg in legs for e in [lg.error, *(t.error for t in lg.turns)] if e), None)
 
 
 def _broken(deps, persona, run_idx, legs) -> bool:
@@ -82,17 +87,19 @@ def drive_call(deps: DriveDeps, persona: Persona, run_idx: int, phone: str, max_
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     attempts, void_reason = 1, None
     deps.cleanup()
-    legs = _attempt(deps, persona, run_idx, phone, max_turns)
-    if _err(legs):
-        deps.cleanup()
-        attempts += 1
+    try:
         legs = _attempt(deps, persona, run_idx, phone, max_turns)
-    elif _broken(deps, persona, run_idx, legs):
+        if _err(legs):
+            deps.cleanup()
+            attempts += 1
+            legs = _attempt(deps, persona, run_idx, phone, max_turns)
+        elif _broken(deps, persona, run_idx, legs):
+            deps.cleanup()
+            attempts += 1
+            legs = _attempt(deps, persona, run_idx, phone, max_turns)
+            void_reason = "broken_twice" if _broken(deps, persona, run_idx, legs) else "rerun_ok"
+    finally:
         deps.cleanup()
-        attempts += 1
-        legs = _attempt(deps, persona, run_idx, phone, max_turns)
-        void_reason = "broken_twice" if _broken(deps, persona, run_idx, legs) else "rerun_ok"
-    deps.cleanup()
     return CallRecord(target=meta["target"], target_commit=meta["target_commit"], scenario=persona.id, run=run_idx,
                       phone=phone, suite_version=meta["suite_version"], seed_version=meta["seed_version"],
                       caller_model=meta["caller_model"], judge_model=meta["judge_model"], legs=legs,

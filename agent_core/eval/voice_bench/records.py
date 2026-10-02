@@ -69,6 +69,7 @@ class Leg:
     call_id: str
     turns: list[TurnRecord]
     ended_by: str             # bot | caller | max_turns | error
+    error: str | None = None  # leg-level error not tied to a bridge turn (e.g. caller LLM failure)
 
 
 @dataclass
@@ -98,7 +99,7 @@ class CallRecord:
     def from_json(cls, s: str) -> "CallRecord":
         """Inverse of to_json."""
         d = json.loads(s)
-        legs = [Leg(call_id=lg["call_id"], ended_by=lg["ended_by"],
+        legs = [Leg(call_id=lg["call_id"], ended_by=lg["ended_by"], error=lg.get("error"),
                     turns=[TurnRecord(**{**t, "tap": [TapEntry(**x) for x in t["tap"]]}) for t in lg["turns"]])
                 for lg in d.pop("legs")]
         verdicts = {k: Verdict(**v) for k, v in d.pop("verdicts").items()}
