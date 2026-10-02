@@ -48,15 +48,18 @@ conversation:
 channels:
   voice:
     system_prompt_suffix: ""  # Appended to the main system prompt for this channel.
-    tts_rules:                # Required when voice is declared. TTS formatting rules.
-      numbers: ""             # How to write numeric values for speech (e.g. "write as Hindi words").
-      money: ""               # How to write monetary values for speech.
-      dates: ""               # How to write date values for speech.
-      time: ""                # How to write time values for speech.
-      phone: ""               # How to speak phone numbers.
-      abbreviations: ""       # How to expand abbreviations for speech.
-      output_script: ""       # Script to use for TTS output (e.g. Devanagari).
-      english_loanwords: ""   # How to handle English loanwords in TTS output.
+    output_contract:          # Optional. Spoken-output contract rendered into the prompt and enforced by the guard (Spec D).
+      default_language: english
+      languages:
+        english:
+          script: latin
+          numbers: words
+          rules:
+            - "Spell out dates, times and amounts the way they are spoken."
+      guard:
+        rewrite_digits: true
+        strip_markdown: true
+        count_foreign_script: false
     terminal_word: ""         # Required when voice is declared. Word that signals call end.
     turn_assembler:
       silence_trigger:
@@ -65,14 +68,12 @@ channels:
         max_wait_ms: 8000
   web:
     system_prompt_suffix: ""
-    tts_rules: null
     terminal_word: null
     turn_assembler:
       silence_trigger: {silence_ms: 1500}
       max_wait_ceiling: {max_wait_ms: 15000}
   cli:
     system_prompt_suffix: ""
-    tts_rules: null
     terminal_word: null
     turn_assembler:
       silence_trigger: {silence_ms: 200}

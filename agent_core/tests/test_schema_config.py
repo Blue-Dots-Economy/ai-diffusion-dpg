@@ -100,7 +100,10 @@ def _minimal_valid_config() -> dict:
             "voice": {
                 "system_prompt_suffix": "voice suffix",
                 "terminal_word": "Goodbye",
-                "tts_rules": {"numbers": "words"},
+                "output_contract": {
+                    "default_language": "hindi",
+                    "languages": {"hindi": {"numbers": "words"}, "english": {"numbers": "words"}},
+                },
                 "turn_assembler": {
                     "silence_trigger": {"silence_ms": 400},
                     "max_wait_ceiling": {"max_wait_ms": 8000},
@@ -798,3 +801,80 @@ def test_handoff_summary_turns_bounds():
     for bad in (0, 21):
         with pytest.raises(ValidationError):
             MergedConfig.validate_full({**_minimal_valid_config(), "handoff": {**_HANDOFF, "summary_turns": bad}})
+
+
+# ---------------------------------------------------------------------------
+# Spec D: output_contract, result_shaping, history_turns, state_fields
+# ---------------------------------------------------------------------------
+
+_CONTRACT = {
+    "default_language": "hindi",
+    "languages": {"hindi": {"script": "devanagari", "numbers": "words", "rules": ["Devanagari only."]},
+                  "english": {"script": "latin", "numbers": "words"}},
+    "guard": {"rewrite_digits": True, "strip_markdown": True, "count_foreign_script": True},
+}
+_SHAPING = {
+    "drop_when": [{"field": "role", "operator": "contains", "value": "|"}],
+    "sort": [{"field": "match_score", "order": "desc"}],
+    "spoken": {"salary_spoken": {"format": "range_thousands", "from": ["salary_min", "salary_max"], "unit": "per_month"}},
+    "strip_numbers_in": ["location"],
+}
+
+
+def _with_language(cfg, default="hindi", supported=("english", "hindi")):
+    cfg.setdefault("preprocessing", {})["language_normalisation"] = {
+        "enabled": False, "default_language": default, "supported_languages": list(supported)}
+    return cfg
+
+
+def test_output_contract_and_shaping_accepted():
+    cfg = _with_language(copy.deepcopy(_minimal_valid_config()))
+    cfg.setdefault("channels", {})["bridge"] = {"output_contract": _CONTRACT}
+    cfg["connectors"]["read"][0]["result_shaping"] = _SHAPING
+    cfg.setdefault("agent", {}).update({"history_turns": 3, "state_fields": ["applications_submitted"]})
+    MergedConfig.validate_full(cfg)
+
+
+def test_tts_rules_rejected():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    cfg.setdefault("channels", {})["voice"] = {"tts_rules": {"numbers": "words"}}
+    with pytest.raises(ValidationError, match="tts_rules"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_contract_default_language_must_be_declared():
+    cfg = _with_language(copy.deepcopy(_minimal_valid_config()))
+    cfg.setdefault("channels", {})["bridge"] = {"output_contract": {**_CONTRACT, "default_language": "tamil"}}
+    with pytest.raises(ValidationError, match="default_language"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_contract_must_cover_supported_languages():
+    cfg = _with_language(copy.deepcopy(_minimal_valid_config()), supported=("english", "hindi", "kannada"))
+    cfg.setdefault("channels", {})["bridge"] = {"output_contract": _CONTRACT}
+    with pytest.raises(ValidationError, match="kannada"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_numbers_words_needs_a_converter():
+    cfg = _with_language(copy.deepcopy(_minimal_valid_config()), default="kannada", supported=("kannada",))
+    cfg["channels"]["voice"].pop("output_contract")  # keep the fixture's contract out of the way
+    c = {"default_language": "kannada", "languages": {"kannada": {"script": "any", "numbers": "words"}}}
+    cfg.setdefault("channels", {})["bridge"] = {"output_contract": c}
+    with pytest.raises(ValidationError, match="spoken-number converter"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_spoken_fields_need_a_supported_default_language():
+    cfg = _with_language(copy.deepcopy(_minimal_valid_config()), default="kannada", supported=("kannada",))
+    cfg["channels"]["voice"].pop("output_contract")  # keep the fixture's contract out of the way
+    cfg["connectors"]["read"][0]["result_shaping"] = _SHAPING
+    with pytest.raises(ValidationError, match="spoken"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_history_turns_non_negative():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    cfg.setdefault("agent", {})["history_turns"] = -1
+    with pytest.raises(ValidationError):
+        MergedConfig.validate_full(cfg)

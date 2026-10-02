@@ -402,19 +402,35 @@ class ConversationSection(BaseModel):
 
 # -- agent_core.channels (language, reach phases) ----------------------------
 
-class TtsRulesConfig(BaseModel):
-    """Voice-channel TTS-rendering rules per data type (numbers, dates, etc.)."""
+class OutputLanguageContract(BaseModel):
+    """Mirrors runtime OutputLanguageContract 1:1 (Spec D §3)."""
     model_config = ConfigDict(extra="forbid")
-    numbers: str = ""
-    money: str = ""
-    dates: str = ""
-    time: str = ""
-    phone: str = ""
-    abbreviations: str = ""
-    output_script: str = ""
-    english_loanwords: str = ""
-    email: str = ""               # Blue Dots has this; LLM doesn't generate
-    named_entities: str = ""      # Blue Dots has this; LLM doesn't generate
+    script: Literal["devanagari", "latin", "any"] = "any"
+    numbers: Literal["words", "digits"] = "digits"
+    rules: List[str] = Field(default_factory=list)
+
+
+class OutputGuardConfig(BaseModel):
+    """Mirrors runtime OutputGuardConfig 1:1 (Spec D §5)."""
+    model_config = ConfigDict(extra="forbid")
+    rewrite_digits: bool = False
+    strip_markdown: bool = False
+    count_foreign_script: bool = False
+
+
+class OutputContractConfig(BaseModel):
+    """Mirrors runtime OutputContractConfig 1:1 (Spec D §3)."""
+    model_config = ConfigDict(extra="forbid")
+    default_language: str = Field(min_length=1)
+    languages: Dict[str, OutputLanguageContract] = Field(min_length=1)
+    guard: OutputGuardConfig = Field(default_factory=OutputGuardConfig)
+
+    @model_validator(mode="after")
+    def _default_declared(self) -> "OutputContractConfig":
+        if self.default_language not in self.languages:
+            raise ValueError(f"output_contract.default_language '{self.default_language}' "
+                             f"is not in languages {sorted(self.languages)}")
+        return self
 
 
 class SilenceTriggerConfig(BaseModel):
@@ -470,7 +486,7 @@ class ChannelEntry(BaseModel):
     """One channel-specific entry under agent_core.channels (web/voice/cli)."""
     model_config = ConfigDict(extra="forbid")
     system_prompt_suffix: str = ""
-    tts_rules: Optional[TtsRulesConfig] = None
+    output_contract: Optional[OutputContractConfig] = None
     turn_assembler: Optional[TurnAssemblerConfig] = None
     terminal_word: Optional[str] = None
     max_tokens: Optional[int] = Field(default=None, gt=0)

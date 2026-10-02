@@ -110,16 +110,6 @@ _TEST_VALUES: dict[str, Any] = {
     # ---- voice channel (reach phase) ----
     "agent_core.channels.voice.system_prompt_suffix": "Voice suffix.",
     "agent_core.channels.voice.terminal_word": "bye",
-    "agent_core.channels.voice.tts_rules.numbers": "Read digits one by one.",
-    "agent_core.channels.voice.tts_rules.money": "Speak rupee values clearly.",
-    "agent_core.channels.voice.tts_rules.dates": "Say dates as words.",
-    "agent_core.channels.voice.tts_rules.time": "Say time as words.",
-    "agent_core.channels.voice.tts_rules.phone": "Phone digits one by one.",
-    "agent_core.channels.voice.tts_rules.abbreviations": "Spell out abbreviations.",
-    "agent_core.channels.voice.tts_rules.output_script": "Devanagari",
-    "agent_core.channels.voice.tts_rules.english_loanwords": "Keep English words.",
-    "agent_core.channels.voice.tts_rules.email": "Read emails carefully.",
-    "agent_core.channels.voice.tts_rules.named_entities": "Pronounce names well.",
     # ---- reach_layer ----
     "reach_layer.channels.web.ui.app_name": "TestBot",
     "reach_layer.channels.web.ui.app_tagline": "Helpful assistant",

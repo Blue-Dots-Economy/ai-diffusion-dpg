@@ -80,7 +80,7 @@ channels:
       - Never use markdown, asterisks, bullet points, numbered lists, headings,
         backticks or emoji — they are read aloud character by character.
       - Write numbers, money, dates, times, phone numbers and email addresses in
-        spoken form, not digits or symbols (see tts_rules below).
+        spoken form, never digits or symbols.
       - Never mention screens, tapping, clicking, links or typing — the caller
         only has their voice and their ears.
 
@@ -154,105 +154,28 @@ channels:
         next question, CALL the next tool silently, or ANNOUNCE the
         result — nothing in between.
     terminal_word: "धन्यवाद"
-    tts_rules:
-      # There is NO TTS normalisation layer between this agent and the
-      # caller's ear. Whatever these rules produce is spoken verbatim, so
-      # every value has to leave here already in its spoken form.
-      numbers: >
-        Write every number the way it should be SPOKEN, in WORDS.
-        A digit character must never appear in anything you say — not
-        Latin 0-9, and not Devanagari ०-९. Both are read out as digits
-        and both are wrong.
-          27620  → "सत्ताईस हज़ार छह सौ बीस"   NOT "27620", NOT "२७ हज़ार"
-          100    → "एक सौ"
-          24     → "चौबीस"
-        A range puts BOTH bounds in words: "तेरह हज़ार से सत्रह हज़ार".
-        Half-converting is the common failure — "२७ हज़ार छह सौ बीस"
-        mixes a numeral with words and still reaches the caller as a
-        numeral. Convert the whole number or do not say it.
-
-        CONVERT DIGIT BY DIGIT, never by eye. Take the number apart
-        before you say it: thousands, then hundreds, then the rest.
-          25755 -> 25 thousand + 7 hundred + 55
-                   "पच्चीस हज़ार सात सौ पचपन"
-          31121 -> 31 thousand + 1 hundred + 21
-                   "इकतीस हज़ार एक सौ इक्कीस"
-          8192  ->  8 thousand + 1 hundred + 92
-                   "आठ हज़ार एक सौ बानवे"
-
-        The leading pair is where this goes wrong. On a live call 25755
-        was spoken as "पैंसठ हज़ार" — sixty-five thousand, off by forty
-        thousand — and 32435 became "तीन लाख चौंतीस हज़ार", ten times the
-        real figure. A caller hearing a salary that is not the salary
-        applies for a job that does not pay it. Read the leading digits
-        again before you commit to them.
-
-        A RANGE MUST ASCEND. Say the smaller bound first. If what you
-        are about to say has the larger number first, you have
-        mis-converted one of them — redo both. "पैंसठ हज़ार से इकतीस
-        हज़ार" (sixty-five thousand to thirty-one thousand) is
-        impossible.
-
-        SALARY RANGES ARE SPOKEN IN ROUNDED THOUSANDS. Do not read the
-        exact rupee figure — round each bound DOWN to its thousand and
-        say the pair once:
-          25755-31121 -> "पच्चीस से इकतीस हज़ार"
-          24951-32435 -> "चौबीस से बत्तीस हज़ार"
-           8192-14404 -> "आठ से चौदह हज़ार"
-        Exact five-digit conversion is where this keeps going wrong —
-        24951 was spoken as "उनचास हज़ार" (forty-nine thousand) on a
-        live call, and a range came out running from a larger number to
-        a smaller one. Two small numbers are safe to say; two large ones
-        are not. Never say "साढ़े" (half) — a salary is not a fraction.
-
-        If you are not certain of a figure, say the job WITHOUT the pay
-        rather than guess it. A missing salary is recoverable; a wrong
-        one is not.
-      money: >
-        Amounts in full words, never digits: 20000-30000 → "बीस हज़ार से
-        तीस हज़ार रुपये". A per-unit rate takes the per-form:
-        "₹500/day" → "पाँच सौ रुपये दिन का" (five hundred rupees a day).
-        Sanity-check a range before speaking it — if the lower bound is
-        greater than the upper, the inventory row is wrong; say the one
-        figure you trust, or omit the salary, rather than speaking an
-        impossible range.
-      dates: >
-        Full spoken form: 29/01/2026 → "उनतीस जनवरी दो हज़ार छब्बीस".
-        Never a short or numeric format.
-      time: >
-        सुबह / दोपहर / शाम / रात (morning / afternoon / evening / night),
-        never AM or PM. "दोपहर तीन बजे" = three in the afternoon.
-      phone: >
-        Digit by digit, in words: 9876543210 → "नौ, आठ, सात, छह, पाँच,
-        चार, तीन, दो, एक, शून्य".
-      email: >
-        Spell it speakably: a.b@gmail.com → "ए डॉट बी ऐट जीमेल डॉट कॉम".
-      abbreviations: >
-        Spoken letters, in Devanagari: ITI → "आई टी आई",
-        NCVT → "एन सी वी टी", PMKVY → "पी एम के वी वाय".
-      output_script: >
-        Devanagari, always — this domain speaks Hindi. No Roman Hindi, no
-        Latin script, no mixed-script words. English-origin words are fine
-        in Devanagari transliteration: जॉब, स्किल, ऑप्शन, अप्लाई, लोकेशन,
-        डेटा. Only switch script if the caller switches language.
-      english_loanwords: >
-        Keep English loan words, but write them in Devanagari — "job"
-        is जॉब, not "job".
-      named_entities: >
-        Employer, place and role names arrive from tool results in LATIN
-        script and must be converted to Devanagari before they enter a
-        sentence. Sound the name out and write it:
-        "SARA ENTERPRISES" → "सारा एंटरप्राइज़ेज़";
-        "QUESS CORP LTD." → "क्वेस कॉर्प";
-        "CY Future" → "सी वाई फ्यूचर";
-        "Sarjapur" → "सरजापुर".
-        A name you do not recognise is handled exactly like one you do —
-        most arrive from the inventory and appear on no list anywhere.
-        Never let a Latin value pass into speech, and never read one out
-        as English letters.
-        A PIN or postal code is NEVER spoken as part of a place name:
-        "Dasna, 201015" is "दासना", never "दासना दो लाख एक हज़ार पंद्रह".
-        Plot, house, gali and sector numbers are not spoken at all.
+    output_contract:
+      default_language: hindi
+      languages:
+        hindi:
+          script: devanagari
+          numbers: words
+          rules:
+            - "Devanagari only. English loanwords in Devanagari: जॉब, स्किल, ऑप्शन, अप्लाई, लोकेशन, डेटा. Switch script only if the caller switches language."
+            - "Employer, role and place names arrive in Latin script: sound each out and write it in Devanagari (SARA ENTERPRISES → सारा एंटरप्राइज़ेज़, QUESS CORP LTD. → क्वेस कॉर्प, Sarjapur → सरजापुर). Never read a Latin value out as English letters."
+            - "Read pay exactly as given in salary_spoken, stipend_spoken or task_rate_spoken; never convert a number yourself. If none is present, say the job without pay."
+            - "Times as सुबह / दोपहर / शाम / रात, never AM or PM. Dates in full words: उनतीस जनवरी दो हज़ार छब्बीस."
+            - "Abbreviations as letters in Devanagari: ITI → आई टी आई, NCVT → एन सी वी टी."
+            - "Speak a city, never a PIN, plot, house, gali or sector number."
+        english:
+          script: latin
+          numbers: words
+          rules:
+            - "Plain spoken English. Read pay from the *_spoken field's meaning in English words, never digits."
+      guard:
+        rewrite_digits: true
+        strip_markdown: true
+        count_foreign_script: true
     turn_assembler:
       silence_trigger:
         silence_ms: 800

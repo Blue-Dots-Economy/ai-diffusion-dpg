@@ -637,19 +637,6 @@ class AgentWorkflowConfig(BaseModel):
 # Top-level channel config models (GH-137)
 # ---------------------------------------------------------------------------
 
-class TtsRulesConfig(BaseModel):
-    """TTS formatting rules for a voice channel (GH-137)."""
-
-    numbers: str = Field(default="", description="How to read numeric values aloud")
-    money: str = Field(default="", description="How to read monetary values aloud")
-    dates: str = Field(default="", description="How to read date values aloud")
-    time: str = Field(default="", description="How to read time values aloud")
-    phone: str = Field(default="", description="How to read phone numbers aloud")
-    abbreviations: str = Field(default="", description="How to expand abbreviations aloud")
-    output_script: str = Field(default="", description="Script/language to use for TTS output")
-    english_loanwords: str = Field(default="", description="How to handle English loanwords in TTS")
-
-
 class ChannelTurnAssemblerConfig(BaseModel):
     """Turn-assembler settings for a channel (GH-137)."""
 
@@ -695,9 +682,9 @@ class ChannelConfig(BaseModel):
         default="",
         description="Appended to the main system prompt for this channel",
     )
-    tts_rules: TtsRulesConfig | None = Field(
+    output_contract: dict | None = Field(
         default=None,
-        description="TTS formatting rules; non-null for voice channels only",
+        description="Spoken-output contract (Spec D); validated by the agent_core domain schema",
     )
     turn_assembler: ChannelTurnAssemblerConfig = Field(
         default_factory=ChannelTurnAssemblerConfig,
@@ -714,7 +701,7 @@ class ChannelsTopLevelConfig(BaseModel):
     """
 
     voice: ChannelConfig = Field(
-        default_factory=lambda: ChannelConfig(tts_rules=TtsRulesConfig()),
+        default_factory=ChannelConfig,
         description="Voice channel configuration",
     )
     web: ChannelConfig = Field(

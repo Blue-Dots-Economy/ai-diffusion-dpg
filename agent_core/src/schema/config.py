@@ -214,7 +214,11 @@ class AgentConfig(BaseModel):
     features: FeaturesConfig = Field(default_factory=FeaturesConfig)
     timeout_ms: int = Field(default=10000, gt=0)
     prompt_session_fields: list[str] = Field(default_factory=list)
-    """Session fields rendered into <known_profile> (session-bootstrap spec §5.4)."""
+    """Session fields rendered into <state> collected (session-bootstrap spec §5.4)."""
+    # Spec D §6.2: how many past exchanges the main LLM sees in <recent>; 0 omits it.
+    history_turns: int = Field(default=2, ge=0)
+    # Spec D §6.3: session keys shown as-is on the <state> "status" line.
+    state_fields: list[str] = Field(default_factory=list)
 
     @field_validator("features", mode="before")
     @classmethod
@@ -404,6 +408,47 @@ class ToolCacheConfig(BaseModel):
     vary_on: list[str] = Field(default_factory=list)
 
 
+class ShapingCondition(BaseModel):
+    """A row is dropped when any drop_when condition matches (Spec D §4.1)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    field: str = Field(min_length=1)
+    operator: Literal["eq", "not_eq", "in", "lt", "gt", "contains"]
+    value: Any = None
+
+
+class ShapingSort(BaseModel):
+    """One stable sort key; nulls always last."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    field: str = Field(min_length=1)
+    order: Literal["asc", "desc"] = "asc"
+
+
+class SpokenFieldConfig(BaseModel):
+    """A derived ready-to-speak field rendered in the default language."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    format: Literal["range_thousands", "amount"]
+    from_: list[str] = Field(alias="from", min_length=1, max_length=2)
+    unit: Literal["none", "per_month", "per_task", "per_day"] = "none"
+
+
+class ResultShapingConfig(BaseModel):
+    """Per-connector shaping applied once at tool-result ingress (Spec D §4)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    list_key: str = ""
+    drop_when: list[ShapingCondition] = Field(default_factory=list)
+    sort: list[ShapingSort] = Field(default_factory=list)
+    spoken: dict[str, SpokenFieldConfig] = Field(default_factory=dict)
+    strip_numbers_in: list[str] = Field(default_factory=list)
+
+
 class ConnectorDef(BaseModel):
     """External-facing connector (read / write / identity)."""
 
@@ -414,6 +459,7 @@ class ConnectorDef(BaseModel):
     input_schema: InputSchema = Field(default_factory=InputSchema)
     invocation_rules: InvocationRules = Field(default_factory=InvocationRules)
     cache: Optional[ToolCacheConfig] = None
+    result_shaping: Optional[ResultShapingConfig] = None
     invalidates: list[str] = Field(default_factory=list)
 
 
@@ -760,23 +806,6 @@ class AgentWorkflowConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class TtsRulesConfig(BaseModel):
-    """TTS formatting rules for a voice channel."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    numbers: str = ""
-    money: str = ""
-    dates: str = ""
-    time: str = ""
-    phone: str = ""
-    abbreviations: str = ""
-    output_script: str = ""
-    english_loanwords: str = ""
-    email: str = ""
-    named_entities: str = ""
-
-
 class SilenceTriggerConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -833,6 +862,43 @@ class TurnAssemblerConfig(BaseModel):
     session_idle_ttl_ms: int = Field(default=1_800_000, ge=0)
 
 
+class OutputLanguageContract(BaseModel):
+    """Spoken-output rules for one language on a channel (Spec D §3)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    script: Literal["devanagari", "latin", "any"] = "any"
+    numbers: Literal["words", "digits"] = "digits"
+    rules: list[str] = Field(default_factory=list)
+
+
+class OutputGuardConfig(BaseModel):
+    """Deterministic output guard switches (Spec D §5)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rewrite_digits: bool = False
+    strip_markdown: bool = False
+    count_foreign_script: bool = False
+
+
+class OutputContractConfig(BaseModel):
+    """What this channel's model output must look like; rendered into the prompt and enforced by the guard."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    default_language: str = Field(min_length=1)
+    languages: dict[str, OutputLanguageContract] = Field(min_length=1)
+    guard: OutputGuardConfig = Field(default_factory=OutputGuardConfig)
+
+    @model_validator(mode="after")
+    def _default_declared(self) -> "OutputContractConfig":
+        if self.default_language not in self.languages:
+            raise ValueError(f"output_contract.default_language '{self.default_language}' "
+                             f"is not in languages {sorted(self.languages)}")
+        return self
+
+
 class ChannelConfig(BaseModel):
     """Per-channel LLM-facing configuration (GH-137).
 
@@ -845,7 +911,7 @@ class ChannelConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     system_prompt_suffix: str = ""
-    tts_rules: Optional[TtsRulesConfig] = None
+    output_contract: Optional[OutputContractConfig] = None
     terminal_word: Optional[str] = None
     max_tokens: Optional[int] = Field(default=None, gt=0)
     turn_assembler: TurnAssemblerConfig = Field(default_factory=TurnAssemblerConfig)
@@ -1143,6 +1209,37 @@ class MergedConfig(BaseModel):
             if clash:
                 raise ValueError(
                     f"dialogue_act state key '{sorted(clash)[0]}' collides with memory_tool field")
+        return self
+
+    @model_validator(mode="after")
+    def _check_output_rules(self) -> "MergedConfig":
+        """Output contracts and spoken fields need declared languages with a number converter (Spec D §3, §4)."""
+        converters = {"hindi", "english"}
+        ln = getattr(getattr(self, "preprocessing", None), "language_normalisation", None)
+        supported = list(getattr(ln, "supported_languages", None) or [])
+        default_lang = str(getattr(ln, "default_language", "") or "")
+        channels = getattr(self, "channels", None)
+        for name in ("voice", "web", "cli", "mcp", "bridge"):
+            ch = getattr(channels, name, None) if channels is not None else None
+            contract = getattr(ch, "output_contract", None)
+            if contract is None:
+                continue
+            missing = [lang for lang in supported if lang not in contract.languages]
+            if missing:
+                raise ValueError(f"channels.{name}.output_contract lacks languages {missing} "
+                                 f"listed in language_normalisation.supported_languages")
+            for lang, entry in contract.languages.items():
+                if entry.numbers == "words" and lang not in converters:
+                    raise ValueError(f"channels.{name}.output_contract.languages.{lang}: numbers=words "
+                                     f"needs a spoken-number converter (have {sorted(converters)})")
+        conns = getattr(self, "connectors", None)
+        for group in ("read", "write", "identity"):
+            for c in (getattr(conns, group, None) or []):
+                rs = getattr(c, "result_shaping", None)
+                if rs is not None and rs.spoken and default_lang not in converters:
+                    raise ValueError(f"connectors.{group}[{c.name}].result_shaping.spoken renders in "
+                                     f"language_normalisation.default_language '{default_lang}', which has "
+                                     f"no spoken-number converter (have {sorted(converters)})")
         return self
 
     @classmethod

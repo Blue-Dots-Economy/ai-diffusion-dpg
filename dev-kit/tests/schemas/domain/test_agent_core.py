@@ -23,7 +23,7 @@ from dev_kit.schemas.domain.agent_core import (
     RoutingCondition,
     RoutingRule,
     SubAgent,
-    TtsRulesConfig,
+    OutputContractConfig,
     TurnAssemblerConfig,
     UserStateDefinition,
     UserStateModel,
@@ -323,13 +323,20 @@ def test_user_state_model_enabled_with_states_still_validates_default():
         )
 
 
-# -- TtsRulesConfig ----------------------------------------------------------
+# -- OutputContractConfig ----------------------------------------------------
 
-def test_tts_rules_includes_email_and_named_entities():
-    """Blue Dots has these fields."""
-    t = TtsRulesConfig(email="Spell email", named_entities="Speak entities")
-    assert t.email == "Spell email"
-    assert t.named_entities == "Speak entities"
+def test_output_contract_default_language_must_be_declared():
+    with pytest.raises(ValidationError, match="default_language"):
+        OutputContractConfig(default_language="tamil", languages={"hindi": {"numbers": "words"}})
+
+
+def test_output_contract_parses():
+    c = OutputContractConfig(
+        default_language="hindi",
+        languages={"hindi": {"script": "devanagari", "numbers": "words"}},
+        guard={"rewrite_digits": True},
+    )
+    assert c.languages["hindi"].numbers == "words" and c.guard.rewrite_digits
 
 
 # -- ChannelsSection ---------------------------------------------------------
