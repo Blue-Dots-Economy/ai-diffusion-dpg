@@ -244,8 +244,37 @@ def _sentences(reply: str) -> set[str]:
     return {p for p in parts if len(p) >= 25}
 
 
-def _tc09_leg(lg: Leg) -> Verdict | None:
+AGE_WORDS = frozenset(
+    "एक दो तीन चार पाँच पांच छह छः सात आठ नौ दस बीस तीस चालीस पचास उन्नीस इक्कीस बाईस तेईस चौबीस पच्चीस "
+    "छब्बीस सत्ताईस अट्ठाईस उनतीस इकतीस बत्तीस".split())
+AGE_SUFFIXES = ("बीस", "तीस", "चालीस", "पचास")
+
+
+def _trade_names() -> list[str]:
+    from eval.voice_bench.seed import load_seed
+    names: list[str] = []
+    for tr in load_seed()["trades"]:
+        names += [tr["role"].casefold(), tr["hi"]]
+    return names
+
+
+def _carries_value(caller: str, field: str, places: dict[str, list[str]]) -> bool:
+    """The caller line plausibly answered `field` (name is never value-detected)."""
+    if field == "age":
+        if re.search(r"\d", caller):
+            return True
+        return any(w in AGE_WORDS or w.endswith(AGE_SUFFIXES) for w in re.findall(r"[\w\u0900-\u097F]+", caller))
+    if field == "city":
+        return any(_names_place(caller, aliases) for aliases in places.values())
+    if field == "trade":
+        folded = caller.casefold()
+        return any(n in folded for n in _trade_names())
+    return False
+
+
+def _tc09_leg(lg: Leg, places: dict[str, list[str]]) -> Verdict | None:
     seen: dict[str, int] = {}
+    asked_at: dict[str, int] = {}
     for i, t in enumerate(lg.turns):
         corrected = any(m in t.caller for m in CORRECTION_MARKERS)
         if i > 0 and not corrected:
@@ -253,6 +282,16 @@ def _tc09_leg(lg: Leg) -> Verdict | None:
             for f in _asked_fields(t.reply):
                 if _known(prev, f) and not _reads_back(t.reply, prev, f):
                     return _fail(t, f"asked {f} again though session already has it")
+        if i > 0 and not corrected and not REPEAT_REQUEST_RE.search(t.caller):
+            prev = lg.turns[i - 1].session
+            for f in _asked_fields(t.reply):
+                j = asked_at.get(f)
+                if (j is not None and j + 1 < len(lg.turns) and not _reads_back(t.reply, prev, f)
+                        and _carries_value(lg.turns[j + 1].caller, f, places)):
+                    return _fail(t, f"asked {f} again after the caller answered (turn {lg.turns[j + 1].idx})")
+        for f in _asked_fields(t.reply):
+            if not (i > 0 and _reads_back(t.reply, lg.turns[i - 1].session, f)):
+                asked_at[f] = i
         for s in _sentences(t.reply):
             if s in seen and seen[s] != i and not REPEAT_REQUEST_RE.search(t.caller):
                 return _fail(t, "repeated an earlier sentence unprompted")
@@ -261,7 +300,7 @@ def _tc09_leg(lg: Leg) -> Verdict | None:
 
 
 def _tc09(ctx: CheckCtx) -> Verdict:
-    return next((r for r in map(_tc09_leg, ctx.rec.legs) if r), Verdict("pass"))
+    return next((r for r in (_tc09_leg(lg, ctx.places) for lg in ctx.rec.legs) if r), Verdict("pass"))
 
 
 def _employers(obj) -> list[str]:

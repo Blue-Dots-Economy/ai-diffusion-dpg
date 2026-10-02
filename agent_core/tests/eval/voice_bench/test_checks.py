@@ -244,3 +244,21 @@ def test_tc09_placeholder_values_not_known():
     assert v("TC09", rec((age_empty_array, "bot"))) == "pass"
 
 
+
+
+def test_tc09_reask_after_caller_answered():
+    """TC09: bot re-asks a field the caller already answered, even if the session never stored it."""
+    z = {"age": "0"}
+    live = [T(0, "नमस्ते", "नमस्ते।", session=z), T(1, "जी", "आपकी उम्र क्या है?", session=z),
+            T(2, "मेरी उम्र 24 साल है।", "ठीक है।", session=z), T(3, "जी", "आपकी उम्र क्या है?", session=z)]
+    r = DETERMINISTIC["TC09"](CheckCtx(rec((live, "bot")), P["T01"], PLACES, False))
+    assert r.status == "fail" and r.reason == "asked age again after the caller answered (turn 2)"
+    assert r.quote == "आपकी उम्र क्या है?"
+    unsure = [live[0], live[1], T(2, "पता नहीं", "ठीक है।", session=z), live[3]]
+    assert v("TC09", rec((unsure, "bot"))) == "pass"
+    city = [T(0, "हाँ", "आप कहाँ रहते हैं?"), T(1, "लखनऊ", "ठीक है।"), T(2, "जी", "आपका शहर कौन सा है?")]
+    assert v("TC09", rec((city, "bot"))) == "fail"
+    corrected = [live[0], live[1], live[2], T(3, "गलत, उम्र पच्चीस है", "आपकी उम्र क्या है?", session=z)]
+    assert v("TC09", rec((corrected, "bot"))) == "pass"
+    word = [live[0], live[1], T(2, "पच्चीस", "ठीक है।", session=z), live[3]]
+    assert v("TC09", rec((word, "bot"))) == "fail"
