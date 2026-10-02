@@ -774,6 +774,12 @@ class PredispatchArg(BaseModel):
             raise ValueError("predispatch arg 'from: literal' needs 'value'")
         if self.template is not None and not self.template.strip():
             raise ValueError("predispatch arg 'template' must be non-empty")
+        if self.from_ == "literal" and self.key is not None:
+            raise ValueError("predispatch arg 'from: literal' must not set 'key'")
+        if self.from_ == "session" and self.value is not None:
+            raise ValueError("predispatch arg 'from: session' must not set 'value'")
+        if self.template is not None and (self.key is not None or self.value is not None):
+            raise ValueError("predispatch arg 'template' must not set 'key' or 'value'")
         return self
 
 
@@ -1310,10 +1316,12 @@ class MergedConfig(BaseModel):
                         raise ValueError(f"{where}: on_intent '{intent}' is not produced by any act_intents row")
                 for name, arg in rule.args.items():
                     names = []
-                    if isinstance(arg.normalise, str):
+                    if arg.template is not None:
+                        if arg.normalise is not None and not isinstance(arg.normalise, dict):
+                            raise ValueError(f"{where}.args.{name}: normalise on a template must be a dict")
+                        names += [v for v in (arg.normalise or {}).values() if isinstance(v, str)]
+                    elif isinstance(arg.normalise, str):
                         names.append(arg.normalise)
-                    elif isinstance(arg.normalise, dict):
-                        names += [v for v in arg.normalise.values() if isinstance(v, str)]
                     if arg.reject:
                         names.append(arg.reject)
                     for n in names:
