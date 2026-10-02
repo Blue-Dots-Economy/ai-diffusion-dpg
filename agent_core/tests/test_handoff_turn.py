@@ -475,3 +475,25 @@ def test_blue_dots_bridge_has_a_hold_phrase_for_request_human():
     reach = yaml.safe_load((BLUE_DOTS / "reach_layer.yaml").read_text(encoding="utf-8"))
     phrases = reach["reach_layer"]["channels"]["bridge"]["tool_status_phrases"]
     assert phrases["request_human"] == "एक मिनट।"
+
+
+# ── Spec E: a handoff turn never pre-dispatches ──────────────────────────────
+# job_match ships a fetch_jobs pre-dispatch rule; the human_request handler
+# answers before routing, so no tool may run on that turn on either path.
+
+@pytest.mark.asyncio
+async def test_human_request_turn_does_not_predispatch():
+    t = _Turn()
+    t.agent._predispatch_async = AsyncMock(wraps=t.agent._predispatch_async)
+    text, _ = await t.stream()
+    assert text == SPOKEN["delivered"]
+    t.agent._predispatch_async.assert_not_awaited()
+    t.agent._async_gateway.execute.assert_not_awaited()
+
+
+def test_sync_human_request_turn_does_not_predispatch():
+    t = _Turn()
+    t.agent._predispatch_sync = MagicMock(wraps=t.agent._predispatch_sync)
+    result = t.sync()
+    assert result.response_text == SPOKEN["delivered"]
+    t.agent._predispatch_sync.assert_not_called()
