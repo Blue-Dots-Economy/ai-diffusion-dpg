@@ -5925,12 +5925,14 @@ class AgentCore(AgentCoreBase):
                 "  STREAM TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
                 "  model=%s  total_latency=%dms  next_subagent=%s  sentences=%d\n"
                 "  llm_ttft=%sms  first_token=%sms  first_sentence=%sms\n"
+                "  llm_calls=%s  predispatch_tool=%s  predispatch_outcome=%s  predispatch_ms=%s\n"
                 "  response: %r\n"
                 "═══════════════════════════════════════════════════════════════",
                 session_id, nlu_result.intent, was_tool_used,
                 model_used, latency_ms, next_subagent_id, sentence_index,
                 _timings["llm_ttft_ms"], _timings["first_token_ms"],
                 _timings["first_sentence_ms"],
+                _llm_calls, _pd.tool, _pd.outcome, _pd.ms,
                 full_response_text.strip()[:200],
             )
 

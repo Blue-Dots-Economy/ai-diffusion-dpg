@@ -100,6 +100,7 @@ Sole orchestrator and sole LLM caller. Stateless between turns.
 - Dialogue-act NLU (internal — `understanding/`, `TurnUnderstander`). Resolves the pending question from the session, builds a frame (`pending`, `known_fields`, `recent_turns`), makes one strict-schema LLM call returning dialogue acts and typed slots, then post-processing derives the routing intent from the `act_intents` table and `SlotWriter` plans the session writes. `NLUResult` (intent, entities, confidence — 1.0 derived, 0.0 fallback — and optional `user_state`) is the routing contract. A structured summary of the understanding (acts, relation, resolved option, slot updates, signals) is rendered into the main LLM's prompt as `<caller_turn>`.
 - Pre-LLM guardrail assembly via Trust Layer `/assemble_constraints` — returns prompt constraints, required disclosures, and action gates.
 - Manager Agent routing: select active subagent and tool list based on `current_subagent_id` + NLU intent, following routing rules defined in `dev-kit/configs/<domain>/agent_core.yaml`.
+- Tool pre-dispatch (internal, optional): after routing and before the main LLM, a subagent's `predispatch` rule can run its tool when the NLU result and session already determine the call. The result is handed to LLM call #1 as a normal tool exchange, so the main LLM speaks it in one call. Same guards as a model-initiated call; any failure falls back to the normal path.
 - Assemble retrieval context via Knowledge Engine (passes NLU results + session state in body).
 - LLM call #1 — system prompt = subagent prompt + guardrail constraints + required disclosures.
 - Tool-use loop if `tool_use` block returned: route to Action Gateway → append `tool_result` → LLM call #2. Bounded by `max_tool_rounds`. Tool list filtered by `action_gates`.
@@ -470,6 +471,9 @@ Agent Core: Manager Agent selects subagent + tools        [current_subagent_id +
   │  build_system_prompt(): subagent_prompt + guardrail_constraints + required_disclosures
   │  (KE chunks, when fetched, are appended via the knowledge_retrieval tool result — not pre-assembled by KE)
   │  tool list filtered by action_gates
+  ▼
+Agent Core: tool pre-dispatch (optional)                  [predispatch rule → guards → Action Gateway /execute]
+  │  result handed to LLM call #1 as a tool exchange; failure falls back to the normal path
   ▼
 Agent Core: LLM call #1 (ChatProviderBase)
   │

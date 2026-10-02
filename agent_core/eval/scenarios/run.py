@@ -4,22 +4,28 @@ Drives the bridge streaming path turn by turn, runs the automatic checks on each
 reply and writes a JSON report. Replies live only in the report, never on stdout.
 
 Known gaps (Spec D §9.3 metrics the bridge does not expose; listed under ``not_collected`` in
-the report summary): llm_ttft_ms, LLM call count, input tokens and the digit-rewrite rate. They
-live in the agent_core ``orchestrator.stream_turn_complete`` log extras (``digits_rewritten``,
+the report summary): llm_ttft_ms, input tokens and the digit-rewrite rate. They live in the
+agent_core ``orchestrator.stream_turn_complete`` log extras (``digits_rewritten``,
 ``foreign_script_words``) and in the OTel metrics.
+
+With ``--agent-container`` the runner also reads ``llm_calls``, ``predispatch_tool`` and
+``predispatch_outcome`` (Spec E §10) from that container's logs after each turn. agent_core's log
+format does not render ``extra=`` fields, so they are read from the "STREAM TURN COMPLETE"
+message. A failed scrape records None and never fails the run; replies are never printed.
 
 An order check result of None means skipped (no spoken-pay marker in the reply); it is counted
 under ``skipped_counts``, never as a pass.
 
 Usage:
     python -m eval.scenarios.run --bridge http://127.0.0.1:18008 \
-        --scenarios eval/scenarios/blue_dots.yaml --out report.json [--redis-container dpg_redis]
+        --scenarios eval/scenarios/blue_dots.yaml --out report.json [--redis-container dpg_redis] [--agent-container dpg_agent_core]
 """
 from __future__ import annotations
 
 import argparse
 import json
 import random
+import re
 import statistics
 import subprocess
 import time
@@ -34,11 +40,63 @@ from eval.scenarios.checks import foreign_script_words, run_checks
 
 NOT_COLLECTED = [
     "llm_ttft_ms: OTel metrics (agent_core), not exposed by the bridge",
-    "llm_calls: OTel metrics (agent_core), not exposed by the bridge",
     "input_tokens: OTel metrics (agent_core), not exposed by the bridge",
     "digit_rewrite_rate: `orchestrator.stream_turn_complete` log extras `digits_rewritten` / "
     "`foreign_script_words`, and OTel `agent_core.output_guard.digits_rewritten_total`",
 ]
+
+
+_EXTRAS_LINE = re.compile(
+    r"llm_calls=(\S+)\s+predispatch_tool=(\S+)\s+predispatch_outcome=(\S+)\s+predispatch_ms=(\S+)")
+
+
+def _val(raw: str) -> str | None:
+    return None if raw == "None" else raw
+
+
+def parse_turn_extras(log_text: str) -> dict:
+    """Return the last turn-complete record's llm_calls, predispatch_tool and predispatch_outcome.
+
+    Args:
+        log_text: Agent container log text.
+
+    Returns:
+        Dict with those three keys; any missing or ``None`` value is None. ``llm_calls`` is an int.
+    """
+    out: dict = {"llm_calls": None, "predispatch_tool": None, "predispatch_outcome": None}
+    matches = _EXTRAS_LINE.findall(log_text or "")
+    if not matches:
+        return out
+    calls, tool, outcome, _ms = matches[-1]
+    try:
+        out["llm_calls"] = int(calls)
+    except ValueError:
+        pass
+    out["predispatch_tool"] = _val(tool)
+    out["predispatch_outcome"] = _val(outcome)
+    return out
+
+
+def _scrape_turn_extras(container: str, since_epoch: float) -> dict:
+    """Read the extras for the turn that started at ``since_epoch``; all None on any error."""
+    try:
+        res = subprocess.run(["docker", "logs", "--since", str(int(since_epoch)), container],
+                             capture_output=True, text=True, timeout=10, check=False)
+        return parse_turn_extras(res.stdout + res.stderr)
+    except Exception:  # noqa: BLE001 - the scrape must never fail the run
+        return parse_turn_extras("")
+
+
+def _split_by_outcome(turns: list[dict]) -> dict:
+    """p50/p95 first_sentence_ms for turns where pre-dispatch fired vs not."""
+    out = {}
+    for name, fired in (("fired", True), ("not_fired", False)):
+        vals = [t["first_sentence_ms"] for t in turns
+                if t.get("first_sentence_ms") is not None
+                and (t.get("predispatch_outcome") == "fired") is fired]
+        out[name] = {"n": len(vals), "p50": int(statistics.median(vals)) if vals else None,
+                     "p95": _pct(vals, 0.95)}
+    return out
 
 
 def _stream_turn(client: httpx.Client, bridge: str, line: str, phone: str, call_id: str) -> tuple[str, int | None, int]:
@@ -110,7 +168,8 @@ def _pct(values: list[int], q: float) -> int | None:
     return s[min(len(s) - 1, int(round(q * (len(s) - 1))))]
 
 
-def run(bridge: str, scenarios: list[dict], redis_container: str | None) -> dict:
+def run(bridge: str, scenarios: list[dict], redis_container: str | None,
+        agent_container: str | None = None) -> dict:
     """Run every scenario and return the report dict."""
     phones: dict[str, str] = {}
     results: list[dict] = []
@@ -125,17 +184,20 @@ def run(bridge: str, scenarios: list[dict], redis_container: str | None) -> dict
             call_id = f"scn-{sid}-{uuid.uuid4().hex[:8]}"
             turns = []
             for line in sc["lines"]:
+                turn_start = time.time()
                 try:
                     reply, first_ms, total_ms = _stream_turn(client, bridge, line, phone, call_id)
                 except httpx.HTTPError as exc:
                     turns.append({"line": line, "error": type(exc).__name__})
                     break
                 facts = _session_facts(redis_container, phone, call_id)
+                extras = _scrape_turn_extras(agent_container, turn_start) if agent_container else {}
                 if first_ms is not None:
                     first_ms_all.append(first_ms)
-                turns.append({"line": line, "reply": reply, "first_sentence_ms": first_ms, "total_ms": total_ms,
+                turns.append({"line": line, "reply": reply, "first_sentence_ms": first_ms, "total_ms": total_ms, **extras,
                               "checks": run_checks(reply, facts), "foreign_script_words": None if sc.get("language") == "english" else foreign_script_words(reply)})
-            results.append({"id": sid, "phone": phone, "call_id": call_id, "turns": turns})
+            results.append({"id": sid, "phone": phone, "call_id": call_id, "turns": turns,
+                            "llm_calls": [t.get("llm_calls") for t in turns]})
     checked = [t for r in results for t in r["turns"] if "checks" in t]
     names = sorted({k for t in checked for k in t["checks"]})
     return {
@@ -149,6 +211,7 @@ def run(bridge: str, scenarios: list[dict], redis_container: str | None) -> dict
             "not_collected": NOT_COLLECTED,
             "first_sentence_ms_p50": int(statistics.median(first_ms_all)) if first_ms_all else None,
             "first_sentence_ms_p95": _pct(first_ms_all, 0.95),
+            "first_sentence_ms_by_predispatch": _split_by_outcome(checked),
         },
     }
 
@@ -159,9 +222,11 @@ def main() -> None:
     ap.add_argument("--scenarios", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--redis-container", default=None)
+    ap.add_argument("--agent-container", default=None,
+                    help="agent_core container; reads llm_calls and the pre-dispatch outcome from its logs")
     a = ap.parse_args()
     scenarios = yaml.safe_load(Path(a.scenarios).read_text(encoding="utf-8"))
-    report = run(a.bridge.rstrip("/"), scenarios, a.redis_container)
+    report = run(a.bridge.rstrip("/"), scenarios, a.redis_container, a.agent_container)
     Path(a.out).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report["summary"], indent=2))
 
