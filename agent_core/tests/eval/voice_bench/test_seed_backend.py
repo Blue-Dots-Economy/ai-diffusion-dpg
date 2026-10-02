@@ -97,15 +97,21 @@ _SNAP = {"items": [{"item_id": "11111111-1111-1111-1111-111111111111", "item_sta
          "users": [{"id": "usr_t13", "name": "x", "updated_at": "2026-10-02T09:00:00"}]}
 
 
+_OTHER_KEY = "sk_signals_" + "cd" * 24
+
+
 def _bootstrap_out(with_key=True):
     key_line = f"  apikey:    {_KEY}\n" if with_key else "  apikey:    (existing — capture from first-run logs)\n"
-    return ("\naggregator-dpg:\n  org_id:    org_abc-123\n  user_id:   usr_svc-1\n  member_id: mem_1\n"
+    other = ("\nmatch-engine:\n  org_id:    org_other\n  user_id:   usr_other\n  member_id: mem_0\n"
+             f"  apikey:    {_OTHER_KEY}\n")                   # a service printed BEFORE aggregator-dpg
+    return (other + "\naggregator-dpg:\n  org_id:    org_abc-123\n  user_id:   usr_svc-1\n  member_id: mem_1\n"
             + key_line + "\nseed complete.\n")
 
 
 class FakeRun:
-    def __init__(self, with_key=True, rc=0):
+    def __init__(self, with_key=True, rc=0, existing_providers=0, indexed=60):
         self.calls, self.with_key, self.rc = [], with_key, rc
+        self.existing_providers, self.indexed = existing_providers, indexed
 
     def __call__(self, args, input=None, **kw):
         self.calls.append((list(args), input))
@@ -114,8 +120,10 @@ class FakeRun:
             out = _bootstrap_out(self.with_key)
         elif "psql" in args:
             sql = input or ""
-            if "count(*)" in sql:
-                out = "60\n"
+            if "count(*) FROM item_search" in sql:
+                out = f"{self.indexed}\n"
+            elif "count(*) FROM items" in sql:
+                out = f"{self.existing_providers}\n"
             elif "item_instance_url" in sql:
                 out = "http://signals-api:2742\n"
             elif "created_by" in sql and "json_build_object" not in sql:
@@ -195,15 +203,9 @@ def test_seed_post_failure_reports_status_not_body(tmp_path):
 
 
 def test_seed_index_wait_times_out(tmp_path):
-    class Slow(FakeRun):
-        def __call__(self, args, input=None, **kw):
-            cp = super().__call__(args, input, **kw)
-            if input and "count(*)" in input:
-                cp.stdout = "12\n"
-            return cp
     t = iter(range(0, 100000, 100))
     cfg = BackendCfg(signals_dir=tmp_path, signals_url="http://signals", search_url="http://search")
-    b = Backend(cfg, tmp_path / "results", run=Slow(), http=_http([]), sleep=lambda s: None,
+    b = Backend(cfg, tmp_path / "results", run=FakeRun(indexed=12), http=_http([]), sleep=lambda s: None,
                 clock=lambda: next(t))
     with pytest.raises(TimeoutError, match="item_search"):
         b.seed()
@@ -273,3 +275,45 @@ def test_up_unmasks_location_writes_override_and_waits_for_health(tmp_path):
     assert args[-7:] == ["postgres", "redis", "signals-bootstrap", "signals-api", "tei-embeddings",
                          "signals-search-api", "signals-search-worker"]
     assert "http://signals/health" in hits and "http://search/health" in hits
+
+
+def test_seed_refuses_when_provider_items_already_exist(tmp_path):
+    posts, run = [], FakeRun(existing_providers=7)
+    b = _backend(tmp_path, run, _http(posts))
+    with pytest.raises(RuntimeError, match=r"seed data already present: reset the backend volumes \(backend down -v\)"):
+        b.seed()
+    assert posts == [] and not any("db:seed:services" in " ".join(a) for a, _ in run.calls)
+
+
+def test_seed_index_wait_rejects_more_than_seeded(tmp_path):
+    clock = iter(range(100000))
+    cfg = BackendCfg(signals_dir=tmp_path, signals_url="http://signals", search_url="http://search")
+    b = Backend(cfg, tmp_path / "results", run=FakeRun(indexed=61), http=_http([]), sleep=lambda s: None,
+                clock=lambda: next(clock))
+    with pytest.raises(RuntimeError, match="61 live providers, expected exactly 60"):
+        b.seed()
+    assert next(clock) < 5                                      # raised immediately, no polling to the timeout
+
+
+def test_seed_parses_the_aggregator_dpg_block_only(tmp_path):
+    posts = []
+    b = _backend(tmp_path, FakeRun(), _http(posts))
+    b.seed()
+    assert b.state["service_user_id"] == "usr_svc-1" and _OTHER_KEY not in Path(b.state["api_key_env_file"]).read_text()
+    assert {p.headers["x-acting-org-id"] for p in posts} == {"org_abc-123"}
+
+
+def test_seed_already_minted_ignores_other_services_key(tmp_path):
+    b = _backend(tmp_path, FakeRun(with_key=False), _http([]))
+    with pytest.raises(RuntimeError, match="service key already minted"):
+        b.seed()
+
+
+def test_down_removes_volumes_only_on_request(tmp_path):
+    run = FakeRun()
+    b = _backend(tmp_path, run)
+    b.down()
+    b.down(volumes=True)
+    (a1, _), (a2, _) = run.calls
+    assert a1[:2] == ["docker", "compose"] and a1[-1] == "down" and "-v" not in a1
+    assert a2[-2:] == ["down", "-v"]

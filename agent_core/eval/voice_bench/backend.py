@@ -31,6 +31,8 @@ _NETWORK_MOUNTS = {
     "signals-search-worker": "/networks/network.json",
 }
 _KEY_RE = re.compile(r"sk_signals_[0-9a-f]{48}")
+# seed_service_users.ts prints one block per service: "<slug>:" then indented "org_id:", "user_id:", "apikey:".
+_SERVICE_BLOCK_RE = re.compile(r"^aggregator-dpg:[ \t]*\n((?:[ \t]+.*(?:\n|$))*)", re.M)
 _ORG_RE = re.compile(r"^\s*org_id:\s+([A-Za-z0-9_-]+)\s*$", re.M)
 _USER_RE = re.compile(r"^\s*user_id:\s+([A-Za-z0-9_-]+)\s*$", re.M)
 _ENV_KEY_RE = re.compile(r"^BLUE_DOTS_API_KEY=(sk_signals_[0-9a-f]{48})$", re.M)
@@ -107,9 +109,13 @@ class Backend:
         for url in (self.cfg.signals_url, self.cfg.search_url):
             self._wait_health(url.rstrip("/") + "/health")
 
-    def down(self) -> None:
-        """Stop the stack (volumes are kept)."""
-        self._check(self._compose() + ["down"], "docker compose down")
+    def down(self, volumes: bool = False) -> None:
+        """Stop the stack.
+
+        Args:
+            volumes: Also remove the named volumes (``down -v``): wipes the Signals DB, so the next seed is clean.
+        """
+        self._check(self._compose() + ["down"] + (["-v"] if volumes else []), "docker compose down")
 
     def _write_network_json(self) -> None:
         src = Path(self.cfg.signals_dir) / "examples" / "schemas" / "blue_dot" / "network.json"
@@ -145,11 +151,15 @@ class Backend:
         Idempotent: returns at once when state.json already has this SEED_VERSION.
 
         Raises:
-            RuntimeError: the service key was already minted and no env file holds it; a POST is non-2xx.
+            RuntimeError: provider items already exist (a partial earlier seed); the service key was already
+                minted and no env file holds it; a POST is non-2xx; item_search has more live providers than seeded.
             TimeoutError: the 60 jobs did not reach item_search in time.
         """
         if self.state.get("seed_version") == SEED_VERSION:
             return
+        # POSTs without item_id always insert, so seeding over existing data would duplicate the jobs.
+        if int(self.psql("SELECT count(*) FROM items WHERE item_domain='provider';").strip() or 0) > 0:
+            raise RuntimeError("seed data already present: reset the backend volumes (backend down -v) before seeding")
         self.dir.mkdir(parents=True, exist_ok=True)
         org_id, service_user_id, key = self._service_identity()
         headers = {"x-api-key": key, "x-acting-org-id": org_id}
@@ -180,10 +190,11 @@ class Backend:
                        capture_output=True, text=True, check=False)
         if cp.returncode != 0:
             raise RuntimeError(f"db:seed:services failed (exit {cp.returncode})")
-        out = cp.stdout or ""
+        block = _SERVICE_BLOCK_RE.search(cp.stdout or "")
+        out = block.group(1) if block else ""
         org, usr = _ORG_RE.search(out), _USER_RE.search(out)
         if not org or not usr:
-            raise RuntimeError("db:seed:services output has no org_id/user_id")
+            raise RuntimeError("db:seed:services output has no aggregator-dpg org_id/user_id")
         key_m = _KEY_RE.search(out)
         if key_m:
             key = key_m.group(0)
@@ -215,8 +226,11 @@ class Backend:
         deadline = self._clock() + self._index_timeout_s
         while True:
             n = int(self.psql(sql).strip() or 0)
-            if n >= expected:
+            if n == expected:
                 return
+            if n > expected:
+                raise RuntimeError(f"item_search has {n} live providers, expected exactly {expected}: reset the "
+                                   "backend volumes (backend down -v) and re-seed")
             if self._clock() >= deadline:
                 raise TimeoutError(f"item_search has {n}/{expected} live providers after "
                                    f"{self._index_timeout_s:.0f}s")
