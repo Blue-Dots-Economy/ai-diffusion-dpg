@@ -340,6 +340,27 @@ def _dialogue_act_routing_rules(ac: dict) -> list[str]:
     return errors
 
 
+def _handoff_rules(ac: dict) -> list[str]:
+    """``identity.human_handoff: request`` needs a ``handoff`` block and a ``handoff`` subagent.
+
+    Mirrors the runtime ``MergedConfig`` cross-check (identity/handoff spec §7).
+
+    Args:
+        ac: The ``agent_core`` block dict.
+
+    Returns:
+        A one-element error list when the rule fails, else empty.
+    """
+    identity = ac.get("identity") if isinstance(ac.get("identity"), dict) else {}
+    if identity.get("human_handoff") != "request":
+        return []
+    subagents = ((ac.get("agent_workflow") or {}).get("subagents")) or []
+    has_phase = any(isinstance(s, dict) and s.get("id") == "handoff" for s in subagents)
+    if ac.get("handoff") and has_phase:
+        return []
+    return ["agent_core.identity.human_handoff=request needs a handoff block and a 'handoff' subagent"]
+
+
 def _intent_filter_rules(ac: dict, ke: dict) -> list[str]:
     """Check KE ``intent_filters`` keys against the routing intent set the NLU can derive.
 
@@ -466,6 +487,7 @@ def validate_cross_block(
     # (mirrors the runtime _check_dialogue_act_rules). Tied to the workflow phase.
     if applicable_after("workflow"):
         errors.extend(_dialogue_act_routing_rules(ac))
+        errors.extend(_handoff_rules(ac))
 
     # 4. knowledge_retrieval must be in connectors.internal (not connectors.read).
     # Tied to tools phase (when connectors.internal is populated) but only
