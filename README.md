@@ -13,7 +13,7 @@ The reference use case is Blue Dots (`dev-kit/configs/blue-dots/`).
 | Memory Layer | 8002 | Session state, profile graph, saved tool results, audit. |
 | Trust Layer | 8003 | Input and output checks, consent, constraints, human handoff; fails closed. |
 | Observability Layer | 8004 | Traces, metrics, turn and outcome events (async). |
-| Reach Layer | 8005–8008 | Channels (web, voice/telephony, MCP, VoicERA bridge). |
+| Reach Layer | 8005–8008 | Channels: web, voice (telephony) and CLI. Optional integrations: an MCP server and a bridge to [VoicERA](https://github.com/COSS-India/VoicEra), an external DPG voice service. |
 | Action Gateway | 9999 | Calls external systems through declared tools. |
 
 `dev-kit` (8080) is a configuration tool, not a runtime block.
@@ -30,8 +30,6 @@ BLUE_DOTS_API_KEY=<your Signals service key>
 BLUE_DOTS_SEARCH_API_KEY=<your Signals service key>
 BLUE_DOTS_ORG_ID=<your Signals organisation id>
 TOOL_RESULT_KEY_SECRET=<output of: openssl rand -hex 32>
-REACH_SESSION_SECRET=<output of: openssl rand -hex 32>
-GOOGLE_CLIENT_ID=<your Google OAuth client id>
 DOMAIN=blue-dots
 DPG_IMAGE_TAG=<short git sha>
 ENV
@@ -42,7 +40,9 @@ curl -s localhost:8005/health
 
 This exact sequence was not exercised end to end. The verified path, against a local Signals, is the [local setup guide](https://docs.bluedotseconomy.org/guides/installation/local-setup/ai-diffusion-dpg/).
 
-`/health` means the service is up, not that chat works. The web chat needs a real Google OAuth client, otherwise `/chat` returns 401. `REACH_SESSION_SECRET` and `GOOGLE_CLIENT_ID` are still required, or `reach_layer_web` won't boot.
+`/health` means the service is up, not that chat works. Open http://localhost:8005 for the web chat. Blue Dots runs it without login: enter a phone number with the country code (for example `919876543210`), which is the user ID the tools use.
+
+Google sign-in for the web chat is optional. To turn it on, set `reach_layer.channels.web.auth.enabled: true` in `dev-kit/configs/blue-dots/reach_layer.yaml` and add `GOOGLE_CLIENT_ID` (your Google OAuth client id) and `REACH_SESSION_SECRET` (output of `openssl rand -hex 32`) to `.env`.
 
 Pass `DOMAIN=blue-dots` on the command line: a `DOMAIN` already set in your shell overrides `.env`. The dev compose file has no `build:` sections, so it uses the images built in the previous step (`DPG_IMAGE_TAG` must equal the `GIT_SHA` you built with).
 
@@ -58,7 +58,7 @@ The Blue Dots configuration in this checkout sets its Signals URLs as `${SIGNALS
 - `knowledge_engine/` - Knowledge Engine: retrieval and glossary mapping.
 - `memory_layer/` - Memory Layer: sessions, profiles, saved tool results, audit.
 - `observability_layer/` - Observability Layer: traces, metrics and outcome events.
-- `reach_layer/` - Reach Layer: web, voice, MCP and VoicERA bridge channels.
+- `reach_layer/` - Reach Layer: the web, voice and CLI channels, plus the optional MCP server and VoicERA bridge.
 - `trust_layer/` - Trust Layer: checks, consent, constraints and handoff.
 
 ## Documentation
@@ -72,7 +72,7 @@ The Blue Dots configuration in this checkout sets its Signals URLs as `${SIGNALS
 
 ## Contributing
 
-- Open branches as pull requests into `deploy/voicera-vm`.
+- Open pull requests into `main`.
 - A runtime schema change must update the dev-kit mirror; see `.claude/rules/runtime-devkit-sync.md`.
 - Run each block's tests with `cd <block> && uv run --extra dev pytest`.
 

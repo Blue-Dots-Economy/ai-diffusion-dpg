@@ -27,10 +27,17 @@ docker compose -f docker-compose.dev.yml logs -f knowledge_engine
 docker compose -f docker-compose.dev.yml ps
 ```
 
-The channels are the web, voice, MCP and VoicERA bridge Reach Layer services.
-The web channel needs `REACH_SESSION_SECRET` and `GOOGLE_CLIENT_ID` set. A
-`DOMAIN` exported in your shell overrides the one in `.env`, so unset it if you
-want the `.env` value.
+The Reach Layer channels are web, voice (telephony) and CLI. The MCP server
+and the bridge to [VoicERA](https://github.com/COSS-India/VoicEra), an external
+DPG voice service, are optional integrations.
+
+Google sign-in for the web chat is optional. Blue Dots runs the web chat
+without login (`reach_layer.channels.web.auth.enabled: false`), so it needs
+neither `GOOGLE_CLIENT_ID` nor `REACH_SESSION_SECRET`. To turn sign-in on, set
+`enabled: true` and provide both.
+
+A `DOMAIN` exported in your shell overrides the one in `.env`, so unset it if
+you want the `.env` value.
 
 ---
 
@@ -71,8 +78,9 @@ docker compose -f docker-compose.dev.yml -f local-signals.override.yml up -d
 
 The override moves dev-kit to 8081 and Loki to 3101 (Signals uses 8080 and
 3100), points `KE_DEVKIT_CALLBACK_URL` at 8081, lets Action Gateway reach the
-host through `host.docker.internal`, publishes the bridge on `127.0.0.1:8008`
-and mounts the bridge's `dpg.yaml`. The full walkthrough is in the
+host through `host.docker.internal`, and publishes the bridge on
+`127.0.0.1:8008` with its `dpg.yaml` mounted, for the optional VoicERA path.
+You only need to start the bridge if you use VoicERA. The full walkthrough is in the
 [local setup guide](https://docs.bluedotseconomy.org/guides/installation/local-setup/ai-diffusion-dpg/).
 
 ---
