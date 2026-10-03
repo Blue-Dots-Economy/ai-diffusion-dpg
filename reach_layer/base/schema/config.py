@@ -3,7 +3,7 @@ MergedConfig — strict schema for the Reach Layer merged runtime config.
 
 Merged config = dev-kit/dpg/reach_layer.yaml (framework defaults, infra
                 ports / endpoints / adapter keys) deep-merged with a
-                domain YAML (e.g. dev-kit/configs/kkb/reach_layer.yaml,
+                domain YAML (e.g. dev-kit/configs/blue-dots/reach_layer.yaml,
                 which carries UI strings, voice language, SSO policy).
 
 Every model sets ``extra="forbid"``: unknown keys at any nesting level
@@ -400,6 +400,14 @@ class BridgeChannelConfig(BaseModel):
     server: BridgeServerConfig = Field(default_factory=BridgeServerConfig)
     agent_core_url: str = "http://agent_core:8000"
     terminal_word: str = ""
+    # Client-offered tool the bridge calls (as a ``tool_calls`` response) when
+    # Agent Core ends the session, so the client hangs up. Only called when the
+    # request's ``tools`` declares it. Empty disables hanging up.
+    hangup_tool_name: str = ""
+    # Tool name -> line spoken (streamed as content) while that tool runs.
+    # At most one per turn and only before the reply starts. Unmapped tools
+    # say nothing.
+    tool_status_phrases: dict[str, str] = Field(default_factory=dict)
     timeout_s: float = Field(default=60.0, gt=0)
 
 

@@ -39,8 +39,8 @@ def build(
         pydantic_schemas: Pre-rendered Pydantic class source code for schemas
             backing the pending fields. Injected verbatim.
         cross_phase_refs: Pre-rendered string of already-set values from prior
-            phases for the LLM to reference. Crucially includes the NLU
-            intents declared in the language phase (for intent_filters sync).
+            phases for the LLM to reference. Includes any hand-authored
+            ``act_intents`` intent names (for intent_filters keys).
         intake_state: Current IntakeState. Used to gate this phase and to
             suggest the default collection_name.
 
@@ -72,8 +72,8 @@ You are configuring the agent's knowledge base. {kb_gate}
 
 The KB collection name defaults to `{default_collection}`; the user can
 override it. `doc_types` are domain-specific labels used to filter retrieval.
-`intent_filters` map NLU intents to `doc_types` — keys MUST match the intents
-declared in the previous step (visible in the references section below).
+`intent_filters` map routing intent names to `doc_types` — see the
+CRITICAL rule below for which keys are valid.
 
 {_common_rules()}
 
@@ -129,12 +129,15 @@ Do NOT use the block/section/values form here — `connectors.internal` is
 a list, and FIELD_RULES has no entries for `agent_core.connectors.internal.<key>`;
 the path-with-filter syntax above is the only valid shape.
 
-**CRITICAL — NLU intents and intent_filters must stay in sync:**
-Every key in `intent_filters` MUST appear in
-`agent_core.preprocessing.nlu_processor.intents`. When you add
-`intent_filters`, pair the write with a matching NLU intents update in the
-SAME message. Read the current NLU intents from the references section
-below before constructing the update.
+**CRITICAL — intent_filters keys must be routing intent names the NLU derives:**
+Each key in `intent_filters` must be an intent from
+`agent_core.preprocessing.nlu_processor.act_intents` (shown in the references
+section below when present), `any_input`, `off_track` or
+`language_switch_request`. NLU slots, act→intent rows and pending questions
+are authored by hand in agent_core.yaml for now (see spec §16), so never
+write `act_intents` yourself. If no `act_intents` are listed yet, key the
+filters only on `any_input` (or write `intent_filters: {{}}`) — a key that
+the NLU never derives never matches a query.
 
 **Conversation style:**
 1. Ask: "What topics or information do your documents cover?" (content,

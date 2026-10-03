@@ -1,0 +1,23 @@
+id: T02
+title: Numbers caller
+language: hi
+facts:
+  name: सुनीता
+  age: 31
+  trade: डेटा एंट्री
+  city: नोएडा
+  pincode: '201301'
+  sector: सेक्टर 62
+goal: find data-entry work near your pin code.
+quirks:
+- give your age as digits-style words like 'इकतीस'
+- give the pin code 201301 when asked where you live
+- ask the bot to read your pin code back to you
+ends_when: when the bot says goodbye, or when you have what you came for and say thank you
+feeds:
+- TC08
+- TC09
+- TC15
+legs:
+- goal: find data-entry work near your pin code.
+  opening_line: नमस्ते

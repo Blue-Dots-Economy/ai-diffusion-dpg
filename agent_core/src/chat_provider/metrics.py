@@ -145,3 +145,84 @@ def record_call_metrics(
     except Exception:  # noqa: BLE001
         # Metrics must never fail an LLM call; swallow instrumentation errors.
         pass
+
+
+_SPEC_D_COUNTERS: dict | None = None
+_PREDISPATCH_COUNTER = None
+
+
+def _spec_d_counters() -> dict:
+    """Initialise (once) the output-guard and result-shaping counters."""
+    global _SPEC_D_COUNTERS
+    if _SPEC_D_COUNTERS is None:
+        meter = otel_metrics.get_meter(__name__)
+        _SPEC_D_COUNTERS = {
+            "digits": meter.create_counter(
+                "agent_core.output_guard.digits_rewritten_total",
+                description="Digit runs the output guard rewrote to words in model text.",
+            ),
+            "foreign": meter.create_counter(
+                "agent_core.output_guard.foreign_script_words_total",
+                description="Words in a script foreign to the contract language, counted by the output guard.",
+            ),
+            "guard_errors": meter.create_counter(
+                "agent_core.output_guard.errors_total",
+                description="Output-guard internal errors (text passed through unchanged).",
+            ),
+            "shaping_errors": meter.create_counter(
+                "agent_core.result_shaping.errors_total",
+                description="Result-shaping internal errors (result passed through unshaped), tagged by tool.",
+            ),
+        }
+    return _SPEC_D_COUNTERS
+
+
+def _predispatch_counter():
+    """Initialise (once) the predispatch outcomes counter."""
+    global _PREDISPATCH_COUNTER
+    if _PREDISPATCH_COUNTER is None:
+        meter = otel_metrics.get_meter(__name__)
+        _PREDISPATCH_COUNTER = meter.create_counter(
+            "agent_core.predispatch.outcomes_total",
+            description="Pre-dispatch outcomes, tagged by tool and outcome.",
+        )
+    return _PREDISPATCH_COUNTER
+
+
+def record_output_guard(channel: str, language: str, digits: int, foreign: int) -> None:
+    """Record one turn's output-guard counts. Never raises."""
+    try:
+        c = _spec_d_counters()
+        attrs = {"channel": channel or "", "language": language or ""}
+        if digits:
+            c["digits"].add(digits, attrs)
+        if foreign:
+            c["foreign"].add(foreign, attrs)
+    except Exception:  # noqa: BLE001 — metrics must never fail a turn
+        pass
+
+
+def record_output_guard_error() -> None:
+    """Count an output-guard internal error. Never raises."""
+    try:
+        _spec_d_counters()["guard_errors"].add(1)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def record_result_shaping_error(tool: str) -> None:
+    """Count a result-shaping internal error for ``tool``. Never raises."""
+    try:
+        _spec_d_counters()["shaping_errors"].add(1, {"tool": tool or ""})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def record_predispatch(tool: str | None, outcome: str) -> None:
+    """Record a predispatch outcome by tool and outcome name. Never raises."""
+    try:
+        counter = _predispatch_counter()
+        if counter is not None:
+            counter.add(1, {"tool": tool or "", "outcome": outcome or ""})
+    except Exception:  # noqa: BLE001 — metrics must never fail a turn
+        pass

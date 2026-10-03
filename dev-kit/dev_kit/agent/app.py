@@ -2067,6 +2067,10 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
 
     all_valid = all(len(errs) == 0 for errs in block_errors.values()) and not invariant_errors
 
+    # Spec D §10: advisory only; warnings never affect ``valid``.
+    from dev_kit.schemas.spoken_copy_lint import lint_spoken_copy
+    warnings: list[str] = lint_spoken_copy(merged.get("agent_core") or {})
+
     issue_count = sum(len(errs) for errs in block_errors.values()) + len(invariant_errors)
     validator = "runtime_baked" if docker_mode else "host_mirror"
     if all_valid:
@@ -2109,6 +2113,7 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
         "valid": all_valid,
         "block_errors": block_errors,
         "invariant_errors": invariant_errors,
+        "warnings": warnings,
         "merged_configs": display_merged,
         "validator": validator,
         # Map of {block_name: human-readable reason}. Blocks listed
@@ -2643,7 +2648,7 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
         secrets = decrypt_secrets_dict(encrypted_secrets) if encrypted_secrets else body.get("secrets", {})
 
         raw = COMPOSE_FILE.read_text() if COMPOSE_FILE.exists() else "# docker-compose.dev.yml not found"
-        content = raw.replace("${DOMAIN:-kkb}", slug).replace("${DOMAIN}", slug)
+        content = raw.replace("${DOMAIN:-blue-dots}", slug).replace("${DOMAIN}", slug)
         resources = body.get("resources", {})
         if resources:
             content = _apply_resources_to_compose(content, resources)
@@ -3065,7 +3070,7 @@ async def _run_docker_deploy(
     try:
         # Read compose file, apply domain and resources
         raw = COMPOSE_FILE.read_text()
-        content = raw.replace("${DOMAIN:-kkb}", slug).replace("${DOMAIN}", slug)
+        content = raw.replace("${DOMAIN:-blue-dots}", slug).replace("${DOMAIN}", slug)
         if resources:
             content = _apply_resources_to_compose(content, resources)
 

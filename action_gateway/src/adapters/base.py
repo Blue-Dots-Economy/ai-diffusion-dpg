@@ -59,6 +59,7 @@ class ToolAdapter(ABC):
         params: dict,
         session_id: str,
         user_id: str = "",
+        session_values: dict | None = None,
     ) -> ToolResult:
         """Execute a tool call and return a normalised result.
 

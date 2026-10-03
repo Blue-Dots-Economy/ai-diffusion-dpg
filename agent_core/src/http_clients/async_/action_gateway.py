@@ -83,6 +83,7 @@ class AsyncActionGatewayHttpClient(AsyncActionGatewayBase):
         tool_call: ToolCall,
         session_id: str,
         user_id: str = "",
+        session_values: dict | None = None,
     ) -> ToolResult:
         """Execute a single tool call via the Action Gateway.
 
@@ -104,6 +105,7 @@ class AsyncActionGatewayHttpClient(AsyncActionGatewayBase):
             "input_params": tool_call.input_params,
             "session_id": session_id,
             "user_id": user_id,
+            "session_values": session_values or {},
         }
 
         try:
@@ -125,9 +127,25 @@ class AsyncActionGatewayHttpClient(AsyncActionGatewayBase):
                 result=data.get("result", {}),
                 success=data.get("success", True),
                 result_text=data.get("result_text", ""),
+                session_values=data.get("session_values") or {},
+                projected=bool(data.get("projected", False)),
                 error=data.get("error"),
             )
 
+        except httpx.TimeoutException:
+            # Same tag as the sync client, so a timed-out call reads the same on both paths.
+            logger.error(
+                "async_action_gateway.execution_failed",
+                extra={"tool_name": tool_call.tool_name, "error": "timeout"},
+            )
+            return ToolResult(
+                tool_use_id=tool_call.tool_use_id,
+                tool_name=tool_call.tool_name,
+                result={},
+                success=False,
+                result_text="",
+                error=f"gateway_timeout: {tool_call.tool_name}",
+            )
         except Exception as e:
             logger.error(
                 "async_action_gateway.execution_failed",

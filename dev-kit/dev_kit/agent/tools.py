@@ -156,7 +156,7 @@ DEVKIT_TOOL_SCHEMAS: list[dict] = [
                     "description": (
                         "Subagent definition. Must include 'id' (str) and typically "
                         "'name', 'description', 'is_start', 'is_terminal', "
-                        "'opening_phrase', 'system_prompt', 'valid_intents', 'routing'."
+                        "'opening_phrase', 'system_prompt', 'routing'."
                     ),
                 },
             },
@@ -198,7 +198,7 @@ DEVKIT_TOOL_SCHEMAS: list[dict] = [
                 },
                 "intent": {
                     "type": "string",
-                    "description": "Intent name (must subset nlu_processor.intents) or '*' wildcard.",
+                    "description": "Routing intent (an act_intents intent, any_input, off_track) or '*' wildcard.",
                 },
                 "to_subagent_id": {
                     "type": "string",

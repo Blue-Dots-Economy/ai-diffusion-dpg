@@ -177,12 +177,19 @@ class McpAdapter(ToolAdapter):
         params: dict,
         session_id: str,
         user_id: str = "",
+        session_values: dict | None = None,
     ) -> ToolResult:
         """Execute a tool call on the MCP server and return a normalised result.
 
         Strips the namespace prefix from tool_name before forwarding to the
         MCP server. Returns a failed ToolResult for unknown tools or any
         exception raised during the call. Never raises.
+
+
+        ``source: session`` params are a REST-connector feature; MCP tools
+        take their arguments from the model. ``session_values`` is accepted
+        to keep the adapter contract identical across adapters and is
+        deliberately unused here.
 
         Args:
             tool_name: Namespaced tool name (e.g. 'my_mcp.search').

@@ -68,9 +68,11 @@ class TrustLayerBase(ABC):
         escalation_reason: str,
         user_message: str,
         workflow_step: str,
+        handoff: dict | None = None,
     ) -> dict:
         """
         Submit escalation event to HiTL queue.
 
-        Returns dict with queued (bool), ticket_id (str), holding_message (str).
+        Returns dict with queued (bool), delivered (bool), reason (str), ticket_id (str),
+        holding_message (str). handoff is an optional human-handoff payload.
         """

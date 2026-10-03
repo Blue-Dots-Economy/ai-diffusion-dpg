@@ -155,3 +155,32 @@ class MemoryLayerBase(ABC):
         Returns:
             List of turn dicts sorted by timestamp ascending. Returns [] on failure.
         """
+
+    @abstractmethod
+    def apply_tool_results(self, session_id: str, user_id: str, batch: dict) -> None:
+        """Apply a tool-result batch: invalidate tools, then store puts.
+
+        Args:
+            session_id: Session owner.
+            user_id: User owner.
+            batch: ``{"invalidate": [tool, ...], "puts": [entry, ...]}``.
+
+        Never raises; failures are logged.
+        """
+
+    @abstractmethod
+    def write_strict(self, session_id: str, user_id: str, scope: str, key: str,
+                     value: Any) -> tuple[bool, str]:
+        """Write a field and report whether Memory Layer accepted it.
+
+        Args:
+            session_id: Session owner.
+            user_id: User owner.
+            scope: ``session`` or ``user``.
+            key: Field key.
+            value: Field value.
+
+        Returns:
+            ``(accepted, reason)``. ``(False, "memory layer unavailable")`` on
+            transport failure. Never raises.
+        """

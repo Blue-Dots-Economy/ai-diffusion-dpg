@@ -8,6 +8,7 @@ No business logic. No imports from within agent_core/.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional, Union
@@ -67,6 +68,7 @@ class SegmentInput:
     caller_agent_id: Optional[str] = None  # unique identifier of calling agent (GH-338)
     locale: Optional[str] = None
     metadata: Optional[dict] = None
+    fresh: bool = False  # request adapter: caller wants a clean session (no adoption)
 
 
 # ---------------------------------------------------------------------------
@@ -102,11 +104,14 @@ class ContextBundle:
                    ...promoted session fields from merge_on_session_end config...
                  }
                  None for new users.
+
+        tool_results: Unexpired tool-result entries from Memory Layer (spec §6).
     """
 
     session: dict
     profile: dict
     journey: dict | None = None
+    tool_results: list[dict] = field(default_factory=list)
 
     @staticmethod
     def empty() -> ContextBundle:
@@ -124,7 +129,7 @@ class UserStateClassification:
     """
     Classification output for the user's mental state dimension.
 
-    Populated by NLU Processor when the domain declares conversation.user_state_model.
+    Populated by the dialogue-act NLU when the domain declares conversation.user_state_model.
     None on NLUResult when the model is disabled or absent.
     """
 
@@ -135,15 +140,13 @@ class UserStateClassification:
 @dataclass
 class NLUResult:
     """
-    Combined output of Language Normalisation and NLU Processor steps run in Agent Core.
+    Output of the dialogue-act understanding step run in Agent Core.
     Produced before the Knowledge Engine call and passed as parameters to KE's retrieve().
     """
 
-    intent: str                              # classified intent label from config intents list
-    entities: dict[str, Any]                 # extracted entity key→value pairs
-    sentiment: str                           # one of the configured sentiment classes
-    confidence: float                        # 0.0–1.0; below threshold triggers early exit
-    active_risks: list[str] | None = None    # risk signals from NLU; None if not classified
+    intent: str                              # routing intent derived from act_intents (or any_input / off_track)
+    entities: dict[str, Any]                 # accepted slots keyed by state key
+    confidence: float                        # 1.0 for a derived intent, 0.0 for a fallback result
     user_state: UserStateClassification | None = None   # classified user mental state (GH-139); None when model disabled
 
 
@@ -185,6 +188,13 @@ class ToolResult:
     success: bool
     result_text: str = ""
     error: Optional[str] = None
+    # Values the connector's `session_mapping` lifted out of the response, to
+    # be written to session state. Routing reads session ∪ profile, so without
+    # this a workflow cannot gate on anything a tool returned — the gap behind
+    # consent_response, profile_setup_done and the participant fetch alike.
+    session_values: dict[str, Any] = field(default_factory=dict)
+    # True when the Action Gateway applied the connector's projection to the result.
+    projected: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +268,10 @@ class SignalEvent:
     status: str = ""    # "start" | "complete" | "skipped"
     detail: str = ""    # optional human-readable info
     turn_id: str = ""
+    # tool_start only: names of the tools about to run, in call order. Lets a
+    # channel tell the caller what is happening ("looking up jobs") during the
+    # tool round trip. Empty on every other stage.
+    tools: list[str] = field(default_factory=list)
 
     def to_sse(self) -> str:
         """Serialise to SSE data line."""
@@ -299,10 +313,45 @@ class DoneEvent:
     session_ended: bool = False
     error_type: Optional[str] = None
     error_message: Optional[str] = None
+    interrupted_at_stage: Optional[str] = None  # last SignalEvent stage of an interrupted turn
 
     def to_sse(self) -> str:
         """Serialise to SSE data line."""
         return f"data: {json.dumps(asdict(self))}\n\n"
+
+
+@dataclass
+class TurnRecord:
+    """Mutable per-turn ledger shared by the TurnAssembler and ``stream_turn``.
+
+    The TurnAssembler creates one per Turn and reads it after an interruption.
+    ``stream_turn`` fills it as the turn runs, so what an interrupted turn did is
+    known without waiting for its end-of-turn memory write.
+
+    Attributes:
+        captured_exchanges: Tool rounds completed this turn (#193 shape).
+        prior_exchanges: ``recent_tool_exchanges`` as read at turn start; the
+            interrupted-turn persist falls back to it only if its re-read fails.
+        max_items: The ``recent_tool_exchanges`` cap in force.
+        segments: User utterances this turn answers, after folding.
+        fold_ran: True once the carry-over fold has run for this turn.
+        last_stage: Stage of the last SignalEvent emitted.
+        write_carryover: False when policy says an interruption must not carry
+            the utterances forward (``on_new_input: replace``).
+        persist_task: Background task persisting an interrupted turn, if any.
+        spoken: Sentences emitted to the caller so far (for interrupted-turn
+            persistence).
+    """
+
+    captured_exchanges: list[dict] = field(default_factory=list)
+    prior_exchanges: list[dict] = field(default_factory=list)
+    max_items: int = 0
+    segments: list[str] = field(default_factory=list)
+    fold_ran: bool = False
+    last_stage: str = ""
+    write_carryover: bool = True
+    persist_task: Optional["asyncio.Task"] = None
+    spoken: list[str] = field(default_factory=list)
 
 
 StreamEvent = Union[SignalEvent, SentenceEvent, DoneEvent]

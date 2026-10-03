@@ -1,0 +1,19 @@
+id: T13
+title: Two back-to-back calls
+language: hi
+facts:
+  name: दिनेश
+  age: 28
+  trade: ड्राइवर
+  city: लखनऊ
+goal: two calls with different needs
+quirks: []
+ends_when: when the bot says goodbye, or when you have what you came for and say thank you
+feeds:
+- TC11
+seeded_phone: '919900013000'
+legs:
+- goal: ask for driver jobs in Lucknow, hear the options, do not apply, end the call
+  opening_line: नमस्ते
+- goal: 'a new call: ask whether there are security guard jobs in Kanpur; you did not ask about earlier jobs'
+  opening_line: नमस्ते

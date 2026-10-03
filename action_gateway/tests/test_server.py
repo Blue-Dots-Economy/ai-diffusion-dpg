@@ -99,6 +99,20 @@ class TestExecuteTool:
         assert body["tool_use_id"] == "tu_001"
         assert body["result"] == {"answer": 42}
 
+    def test_execute_reports_projected_flag(self):
+        result = ToolResult(
+            tool_use_id="", tool_name="t", result={}, success=True, projected=True
+        )
+        adapter = _make_adapter(["t"], execute_result=result)
+        registry = _build_registry((["t"], adapter))
+        client = TestClient(create_app(registry))
+        response = client.post(
+            "/execute",
+            json={"tool_name": "t", "tool_use_id": "tu_p", "input_params": {}},
+        )
+        assert response.status_code == 200
+        assert response.json()["projected"] is True
+
     def test_execute_unknown_tool_returns_error(self):
         registry = AdapterRegistry()
         client = TestClient(create_app(registry))

@@ -2,7 +2,7 @@
 agent_core/tests/test_orchestrator.py
 
 Unit tests for AgentCore (orchestrator).
-All 6 DPG interfaces, ManagerAgent, LanguageNormaliser, NLUProcessor, and AgentWorkflow
+All 6 DPG interfaces, ManagerAgent, LanguageNormaliser, the turn understander, and AgentWorkflow
 are mocked.
 
 Coverage:
@@ -36,6 +36,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock, ANY, patch
 
 from src.orchestrator import AgentCore
+from src.tool_results import ToolResultPolicies, TurnToolCache, args_hash
 from src.models import (
     ContextBundle,
     NLUResult,
@@ -45,6 +46,8 @@ from src.models import (
     SignalEvent,
     SentenceEvent,
     DoneEvent,
+    ToolCall,
+    ToolResult,
 )
 from src.chat_provider.base import ChatProviderBase
 from src.chat_provider.types import (
@@ -56,6 +59,8 @@ from src.chat_provider.types import (
     ToolDefinition,
     ToolUseBlock,
 )
+from src.understanding.models import StateWrite
+from tests.fakes import fake_understander
 
 
 # ---------------------------------------------------------------------------
@@ -79,9 +84,7 @@ VALID_CONFIG = {
         "output_blocked_message": "Output blocked.",
     },
     "preprocessing": {
-        "nlu_processor": {
-            "confidence_threshold": 0.5,
-        },
+        "nlu_processor": {},
         "language_normalisation": {
             "default_language": "hindi",
         },
@@ -96,19 +99,16 @@ ESCALATE = TrustCheckResult(passed=False, action="escalate", reason="escalation 
 _DEFAULT_NLU = NLUResult(
     intent="market_truth_query",
     entities={"location": "Hubli"},
-    sentiment="neutral",
     confidence=0.9,
 )
 _UNKNOWN_NLU = NLUResult(
     intent="unknown",
     entities={},
-    sentiment="neutral",
     confidence=0.2,
 )
 _TERMINATION_NLU = NLUResult(
     intent="termination_intent",
     entities={},
-    sentiment="neutral",
     confidence=0.95,
 )
 
@@ -157,10 +157,16 @@ def _make_workflow(
     wf.subagents = subagents
     wf.global_routing = global_routing or []
     wf.default_fallback_subagent_id = subagent_id
-    wf.nlu_intent_set = {subagent_id: ["market_truth_query"]}
     wf.tool_defs = {}
     wf.agent_system_prompt = ""
     return wf
+
+
+def _nlu_provider_mock() -> MagicMock:
+    """A dedicated-NLU provider stand-in (never called once the understander is faked)."""
+    p = MagicMock()
+    p.capabilities.supports_prompt_cache = False
+    return p
 
 
 def _make_agent(
@@ -177,8 +183,8 @@ def _make_agent(
     """
     Build an AgentCore with all external dependencies mocked.
 
-    LanguageNormaliser and NLUProcessor are replaced on the instance after
-    construction so their LLM calls do not interfere with the primary LLM mock.
+    LanguageNormaliser and the turn understander are replaced on the instance
+    after construction so their LLM calls do not interfere with the primary LLM mock.
     """
     session = (
         session_data if session_data is not None
@@ -233,14 +239,14 @@ def _make_agent(
         manager_agent=manager,
         learning=learning,
         workflow=workflow,
+        nlu_chat_provider=_nlu_provider_mock(),
     )
 
-    # Replace Language Normaliser and NLU Processor with controlled mocks
+    # Replace Language Normaliser and the understander with controlled mocks
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("Hello", "english")
 
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = nlu_result or _DEFAULT_NLU
+    agent._understander = fake_understander(nlu_result or _DEFAULT_NLU)
 
     return agent
 
@@ -270,9 +276,20 @@ def test_raises_on_none_workflow():
         )
 
 
+def test_understanding_runs_without_a_mode_key():
+    """Single NLU path: no ``mode`` key still builds the understander and runs it once per turn."""
+    assert "mode" not in VALID_CONFIG["preprocessing"]["nlu_processor"]
+    agent = _make_agent()
+    assert agent._understander is not None
+    assert not hasattr(agent, "_nlu_processor")
+    agent.process_turn(_turn_input())
+    agent._understander.understand.assert_called_once()
+
+
 class TestHelperProviderConstruction:
-    """Per-helper provider override (NLU + language_normalisation can run on
-    a different provider than agent.provider) — see #287 follow-up."""
+    """Helper providers: language_normalisation may reuse the primary provider
+    (#287 follow-up); the dialogue-act NLU always gets its own dedicated one
+    with the NLU timeout/retry policy (spec §9.1)."""
 
     def _build_agent_core(self, config: dict):
         return AgentCore(
@@ -296,29 +313,57 @@ class TestHelperProviderConstruction:
             **overrides,
         }
 
-    def test_helper_with_no_model_reuses_primary(self):
-        agent = self._build_agent_core({"agent": self._agent_block(), "preprocessing": {}})
-        assert agent._nlu_chat_provider is agent._llm
-        assert agent._lang_chat_provider is agent._llm
+    def _build_capturing(self, config: dict):
+        """Build with build_chat_provider patched; returns (agent, captured configs)."""
+        captured: list[dict] = []
 
-    def test_helper_with_matching_provider_and_model_reuses_primary(self):
+        def _fake_build(cfg):
+            captured.append(dict(cfg))
+            return _nlu_provider_mock()
+
+        with patch("src.orchestrator.build_chat_provider", side_effect=_fake_build):
+            agent = self._build_agent_core(config)
+        return agent, captured
+
+    def test_lang_helper_with_no_model_reuses_primary(self):
+        agent, _ = self._build_capturing({"agent": self._agent_block(), "preprocessing": {}})
+        assert agent._lang_chat_provider is agent._llm
+        assert not hasattr(agent, "_nlu_chat_provider")
+
+    def test_dialogue_act_provider_is_dedicated_even_when_model_matches(self):
         cfg = {
             "agent": self._agent_block(),
             "preprocessing": {
                 "nlu_processor": {
                     "provider": "openai",
                     "model": "gpt-4o-2024-08-06",
+                    "timeout_ms": 1800,
+                    "retry_attempts": 1,
                 },
             },
         }
-        agent = self._build_agent_core(cfg)
-        assert agent._nlu_chat_provider is agent._llm
+        agent, captured = self._build_capturing(cfg)
+        assert len(captured) == 1
+        nlu_cfg = captured[0]
+        assert nlu_cfg["provider"] == "openai"
+        assert nlu_cfg["primary_model"] == "gpt-4o-2024-08-06"
+        assert nlu_cfg["timeout_ms"] == 1800
+        assert nlu_cfg["retry_attempts"] == 1
+        assert nlu_cfg["sdk_max_retries"] == 0
+        assert nlu_cfg["retry_on_timeout"] is False
+        assert agent._understander._nlu._provider is not agent._llm
 
-    def test_helper_with_different_provider_builds_dedicated_provider(self):
-        """Regression: the production bug where deployment had agent.provider=openai
-        but nlu_processor.model was a Claude model — without per-helper provider
-        override, build_chat_provider would build an OpenAI provider with a Claude
-        model name and fail at SDK call time.
+    def test_dialogue_act_provider_defaults_to_agent_provider_and_model(self):
+        agent, captured = self._build_capturing({"agent": self._agent_block(), "preprocessing": {}})
+        assert len(captured) == 1
+        assert captured[0]["provider"] == "openai"
+        assert captured[0]["primary_model"] == "gpt-4o-2024-08-06"
+        assert captured[0]["sdk_max_retries"] == 0
+        assert captured[0]["retry_on_timeout"] is False
+
+    def test_dialogue_act_provider_with_different_provider_builds_that_provider(self):
+        """Regression: agent.provider=openai with a Claude NLU model must build an
+        Anthropic provider for the NLU call, not an OpenAI one with a Claude model.
         """
         cfg = {
             "agent": self._agent_block(),  # agent.provider=openai, primary_model=gpt-4o
@@ -331,12 +376,12 @@ class TestHelperProviderConstruction:
         }
         with patch("anthropic.Anthropic"), patch("anthropic.AsyncAnthropic"):
             agent = self._build_agent_core(cfg)
-        # Different provider class → different instance (not self._llm).
-        assert agent._nlu_chat_provider is not agent._llm
-        assert type(agent._nlu_chat_provider).__name__ == "AnthropicChatProvider"
-        assert agent._nlu_chat_provider.get_active_model() == "claude-haiku-4-5-20251001"
+        provider = agent._understander._nlu._provider
+        assert provider is not agent._llm
+        assert type(provider).__name__ == "AnthropicChatProvider"
+        assert provider.get_active_model() == "claude-haiku-4-5-20251001"
 
-    def test_helper_with_only_model_override_inherits_agent_provider(self):
+    def test_dialogue_act_provider_with_only_model_override_inherits_agent_provider(self):
         cfg = {
             "agent": self._agent_block(),  # agent.provider=openai
             "preprocessing": {
@@ -344,11 +389,9 @@ class TestHelperProviderConstruction:
                 "nlu_processor": {"model": "gpt-4o-mini-2024-07-18"},
             },
         }
-        with patch("openai.OpenAI"), patch("openai.AsyncOpenAI"):
-            agent = self._build_agent_core(cfg)
-        assert agent._nlu_chat_provider is not agent._llm
-        assert type(agent._nlu_chat_provider).__name__ == "OpenAIChatProvider"
-        assert agent._nlu_chat_provider.get_active_model() == "gpt-4o-mini-2024-07-18"
+        agent, captured = self._build_capturing(cfg)
+        assert captured[0]["provider"] == "openai"
+        assert captured[0]["primary_model"] == "gpt-4o-mini-2024-07-18"
 
 
 def test_raises_on_none_turn_input():
@@ -442,16 +485,17 @@ def test_language_normaliser_skipped_when_disabled():
     agent._language_normaliser.normalise.assert_not_called()
 
 
-def test_nlu_processor_called_with_normalised_input():
+def test_understander_gets_raw_caller_text_not_normalised_input():
+    """Understanding reads the raw caller text, for parity with stream (spec §8)."""
     agent = _make_agent()
     agent._language_normaliser.normalise.return_value = ("kaam chahiye normalised", "hinglish")
     agent.process_turn(_turn_input("kaam chahiye"))
-    call_args = agent._nlu_processor.process.call_args
-    assert call_args[1].get("normalised_input") == "kaam chahiye normalised"
+    ctx = agent._understander.understand.call_args.args[0]
+    assert ctx.segments == ["kaam chahiye"]
 
 
-def test_nlu_processor_called_with_raw_input_when_ln_disabled():
-    """When LN is disabled, NLU receives the raw user message (#313)."""
+def test_understander_gets_raw_caller_text_when_ln_disabled():
+    """When LN is disabled, understanding still receives the raw user message (#313)."""
     config = {
         **VALID_CONFIG,
         "preprocessing": {
@@ -465,8 +509,8 @@ def test_nlu_processor_called_with_raw_input_when_ln_disabled():
     agent = _make_agent()
     agent._config = config
     agent.process_turn(_turn_input("kaam chahiye"))
-    call_args = agent._nlu_processor.process.call_args
-    assert call_args[1].get("normalised_input") == "kaam chahiye"
+    ctx = agent._understander.understand.call_args.args[0]
+    assert ctx.segments == ["kaam chahiye"]
 
 
 def test_manager_run_turn_called_with_ke_context():
@@ -495,8 +539,10 @@ def test_current_subagent_id_written_synchronously():
 
 
 def test_entity_written_synchronously():
-    """Entities extracted by NLU are persisted synchronously before result is returned."""
+    """Understanding writes are persisted synchronously before result is returned."""
     agent = _make_agent(nlu_result=_DEFAULT_NLU)
+    agent._understander = fake_understander(
+        _DEFAULT_NLU, writes=[StateWrite("persistent", "location", "Hubli")])
     agent.process_turn(_turn_input())
     agent._memory.write.assert_any_call(
         SESSION_ID, SESSION_ID, "persistent", "location", "Hubli"
@@ -534,7 +580,7 @@ def test_unknown_intent_falls_through_to_llm():
 
 def test_low_confidence_valid_intent_still_calls_llm():
     """Low confidence alone does NOT skip the LLM when intent is known."""
-    low_valid = NLUResult(intent="market_truth_query", entities={}, sentiment="neutral", confidence=0.3)
+    low_valid = NLUResult(intent="market_truth_query", entities={}, confidence=0.3)
     agent = _make_agent(nlu_result=low_valid)
     agent.process_turn(_turn_input())
     agent._llm.call.assert_called_once()
@@ -556,7 +602,6 @@ def test_termination_intent_routed_via_global_routing():
         extra_subagents={"ended": ended_sa},
     )
     wf.default_fallback_subagent_id = "greeting"
-    wf.nlu_intent_set = {"greeting": ["termination_intent"]}
 
     agent = _make_agent(
         nlu_result=_TERMINATION_NLU,
@@ -867,11 +912,11 @@ def _make_agent_with_consent(
         manager_agent=manager,
         learning=learning,
         workflow=_make_workflow(),
+        nlu_chat_provider=_nlu_provider_mock(),
     )
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("Hello", "english")
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = _DEFAULT_NLU
+    agent._understander = fake_understander(_DEFAULT_NLU)
     return agent, memory, trust
 
 
@@ -1083,7 +1128,6 @@ async def test_termination_short_circuit_below_threshold_falls_through():
     low_conf = NLUResult(
         intent="termination_intent",
         entities={},
-        sentiment="neutral",
         confidence=0.4,
     )
     agent = _make_stream_agent(
@@ -1232,14 +1276,12 @@ def test_language_preference_set_from_detection_on_first_turn():
 _SWITCH_NLU = NLUResult(
     intent="language_switch_request",
     entities={"language_preference": "kannada"},
-    sentiment="neutral",
     confidence=0.95,
 )
 
 _SWITCH_UNSUPPORTED_NLU = NLUResult(
     intent="language_switch_request",
     entities={"language_preference": "french"},
-    sentiment="neutral",
     confidence=0.95,
 )
 
@@ -1266,6 +1308,8 @@ def test_language_switch_to_supported_language_updates_preference():
         nlu_result=_SWITCH_NLU,
         session_data={"current_subagent_id": "market_truth", "language_preference": "hindi"},
     )
+    agent._understander = fake_understander(
+        _SWITCH_NLU, writes=[StateWrite("persistent", "language_preference", "kannada")])
     agent._config = VALID_CONFIG_WITH_LANG
     agent.process_turn(_turn_input("Kannada mein baat karo"))
 
@@ -1424,6 +1468,7 @@ def test_agentcore_init_user_state_enabled_caches_guidance():
         manager_agent=MagicMock(),
         learning=MagicMock(),
         workflow=_make_workflow(),
+        nlu_chat_provider=_nlu_provider_mock(),
     )
 
     assert agent._user_state_enabled is True
@@ -1445,6 +1490,7 @@ def test_agentcore_init_user_state_disabled_empty_cache():
         manager_agent=MagicMock(),
         learning=MagicMock(),
         workflow=_make_workflow(),
+        nlu_chat_provider=_nlu_provider_mock(),
     )
 
     assert agent._user_state_enabled is False
@@ -1457,11 +1503,16 @@ def test_agentcore_init_user_state_disabled_empty_cache():
 # ---------------------------------------------------------------------------
 
 
-def _config_with_session_end_eval(enabled: bool, prompt: str = "") -> dict:
+def _config_with_session_end_eval(
+    enabled: bool, prompt: str = "", subagents: list | None = None
+) -> dict:
     """Clone VALID_CONFIG and inject conversation.session_end_eval."""
     cfg = {k: (v.copy() if isinstance(v, dict) else v) for k, v in VALID_CONFIG.items()}
     conv = dict(cfg.get("conversation", {}))
-    conv["session_end_eval"] = {"enabled": enabled, "prompt": prompt}
+    block = {"enabled": enabled, "prompt": prompt}
+    if subagents is not None:
+        block["subagents"] = subagents
+    conv["session_end_eval"] = block
     cfg["conversation"] = conv
     return cfg
 
@@ -1505,11 +1556,11 @@ def _make_agent_with_config(config: dict, workflow: MagicMock = None) -> AgentCo
         manager_agent=manager,
         learning=learning,
         workflow=workflow,
+        nlu_chat_provider=_nlu_provider_mock(),
     )
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("Hello", "english")
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = _DEFAULT_NLU
+    agent._understander = fake_understander(_DEFAULT_NLU)
     return agent
 
 
@@ -1780,13 +1831,13 @@ def _make_stream_agent(
         workflow=workflow,
         async_memory=async_memory,
         async_trust=async_trust,
+        nlu_chat_provider=_nlu_provider_mock(),
     )
 
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("Hello", "english")
 
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = nlu_result or _DEFAULT_NLU
+    agent._understander = fake_understander(nlu_result or _DEFAULT_NLU)
 
     return agent
 
@@ -2016,3 +2067,556 @@ class TestProcessTurnToolReplay:
         assert "recent_tool_exchanges" in src, (
             "process_turn must persist exchanges for the next turn"
         )
+
+
+# ---------------------------------------------------------------------------
+# session_end_eval.subagents — scope the hang-up tool to closing phases.
+#
+# Without a scope, end_session is offered to EVERY subagent and its own
+# description ("task completed") invites the model to fire it the instant a
+# journey succeeds. Measured on a live local call: it fired 9 ms after a 201
+# Created apply, again on routine thanks, and once while the agent's own reply
+# was still asking a question — each of which hangs up on a real caller.
+# ---------------------------------------------------------------------------
+
+
+def test_end_session_scoped_to_allowlisted_subagents_only():
+    """With an allowlist, only the named subagents are offered end_session."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p", subagents=["ended"])
+    wf = _make_workflow()
+    wf.tool_defs = {
+        "ended": [{"name": "existing_tool"}],
+        "apply_confirm": [{"name": "apply_job"}],
+    }
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    assert "end_session" in {t["name"] for t in wf.tool_defs["ended"]}
+    # The phase that submits the application must NOT be able to hang up.
+    assert "end_session" not in {t["name"] for t in wf.tool_defs["apply_confirm"]}
+
+
+def test_end_session_allowlist_leaves_global_tool_defs_alone():
+    """An allowlist must not leak the tool via the shared global list.
+
+    global_tool_defs is visible to every subagent, so appending there would
+    silently defeat the allowlist.
+    """
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p", subagents=["ended"])
+    wf = _make_workflow()
+    wf.global_tool_defs = [{"name": "shared_tool"}]
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    assert "end_session" not in {t["name"] for t in wf.global_tool_defs}
+
+
+def test_end_session_empty_allowlist_keeps_original_behaviour():
+    """No allowlist configured — every subagent still gets the tool."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p", subagents=[])
+    wf = _make_workflow()
+    wf.tool_defs = {"market_truth": [], "other": []}
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    assert "end_session" in {t["name"] for t in wf.tool_defs["market_truth"]}
+    assert "end_session" in {t["name"] for t in wf.tool_defs["other"]}
+
+
+def test_end_session_allowlist_ignores_unknown_subagent_ids():
+    """An id that matches no subagent is inert, not an error."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p", subagents=["nope"])
+    wf = _make_workflow()
+    wf.tool_defs = {"market_truth": [{"name": "existing_tool"}]}
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    assert "end_session" not in {t["name"] for t in wf.tool_defs["market_truth"]}
+
+
+# ---------------------------------------------------------------------------
+# opening_phrase_emitted must mean the same thing on both execution paths.
+#
+# process_turn latches it in its opening_phrase gate, which returns before
+# routing. stream_turn has no such gate, and its only other latch sits on the
+# post-consent branch — so for a domain that never takes that branch the flag
+# stayed unset forever and every routing rule guarded by it was dead. Measured:
+# a streaming call answered consent, age, trade and city and never left the
+# opening phase, because all three consent rules were guarded by this flag.
+# ---------------------------------------------------------------------------
+
+
+def test_stream_turn_latches_opening_phrase_emitted_after_routing():
+    """The streaming routing block writes the flag when it is not already set."""
+    import inspect
+    # stream_turn is a thin ledger wrapper since the request-mode
+    # TurnAssembler change; the pipeline body lives in _stream_turn_impl.
+    src = inspect.getsource(AgentCore._stream_turn_impl)
+    assert 'session", "opening_phrase_emitted", True' in src, (
+        "stream_turn must latch opening_phrase_emitted, or routing rules "
+        "guarded by it can never fire on the streaming path"
+    )
+    # It must be latched WITH the routing writes, not only on the older
+    # post-consent branch (which appears earlier in the source and is the one
+    # that never ran). "After routing resolves" also matters on its own: on
+    # turn 1 the rules must not yet see the flag, or a consent answer persisted
+    # from an earlier call would fire before this caller was asked anything.
+    flag = 'session", "opening_phrase_emitted", True'
+    assert src.rindex(flag) > src.index("routing_writes.append"), (
+        "the latch must also appear in the routing block, after routing resolves"
+    )
+
+
+def test_both_streaming_tool_sites_apply_the_grounding_guard():
+    """stream_turn has its own tool loop and never calls ManagerAgent.run_turn.
+
+    The guard lived only inside run_turn, so it was dead on the streaming path
+    — the one a voice client uses. Measured: apply_job went out on streaming
+    with a fabricated job_item_id and the guard never evaluated.
+    """
+    import inspect
+    # stream_turn is a thin ledger wrapper since the request-mode
+    # TurnAssembler change; the pipeline body lives in _stream_turn_impl.
+    src = inspect.getsource(AgentCore._stream_turn_impl)
+    executes = src.count("self._async_gateway.execute(")
+    # Cap, grounding, consent and cache are one decision, check_tool_call
+    # (tool_guard); a site that skips it dispatches unguarded.
+    guards = src.count("check_tool_call(")
+    assert executes >= 1, "expected gateway execution sites in stream_turn"
+    assert guards >= executes, (
+        f"{executes} streaming execution site(s) but only {guards} check_tool_call "
+        "call(s) - every site that dispatches a tool must run the shared guard first"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool-result persistence (sync path)
+# ---------------------------------------------------------------------------
+
+_POL = ToolResultPolicies.from_config({"connectors": {"read": [
+    {"name": "get_balance", "cache": {"scope": "session", "ttl_seconds": 600}}]}})
+
+
+def _entry():
+    return {"tool": "get_balance", "args_hash": args_hash({"account": "12345"}),
+            "data": {"balance": 100}, "fetched_at": time.time(), "expires_at": 9e12,
+            "origin": "turn", "scope": "session"}
+
+
+def _make_cached_agent():
+    agent = _make_agent()
+    agent._tool_policies = _POL
+    agent._memory.context_bundle.return_value = ContextBundle(
+        session={"current_subagent_id": "market_truth"}, profile={}, journey=None,
+        tool_results=[_entry()],
+    )
+    return agent
+
+
+def test_process_turn_passes_tool_cache_and_known_facts():
+    agent = _make_cached_agent()
+    agent.process_turn(_turn_input())
+    assert isinstance(agent._manager_agent.run_turn.call_args.kwargs["tool_cache"], TurnToolCache)
+    assert "get_balance" in agent._manager_agent.build_system_prompt.call_args.kwargs["known_facts"]
+
+
+def test_process_turn_persists_pending_tool_results_once():
+    agent = _make_cached_agent()
+    live = ToolResult(tool_use_id="tu_1", tool_name="get_balance", result={}, success=True,
+                      result_text='{"balance": 5}', projected=True)
+    tc = ToolCall(tool_name="get_balance", tool_use_id="tu_1", input_params={"account": "999"})
+
+    def _run_turn(*args, **kwargs):
+        kwargs["tool_cache"].after_call(tc, live)
+        return ("ok", [tc], [live])
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    agent.process_turn(_turn_input())
+    agent._memory.apply_tool_results.assert_called_once()
+    sid, uid, batch = agent._memory.apply_tool_results.call_args.args
+    assert sid == SESSION_ID and batch["puts"]
+
+
+def test_process_turn_skips_apply_when_nothing_pending():
+    agent = _make_cached_agent()
+    agent.process_turn(_turn_input())
+    agent._memory.apply_tool_results.assert_not_called()
+
+
+def test_process_turn_apply_failure_logs_exception_class_only(caplog):
+    agent = _make_cached_agent()
+    live = ToolResult(tool_use_id="tu_1", tool_name="get_balance", result={}, success=True,
+                      result_text='{"balance": 5}', projected=True)
+    tc = ToolCall(tool_name="get_balance", tool_use_id="tu_1", input_params={"account": "999"})
+
+    def _run_turn(*args, **kwargs):
+        kwargs["tool_cache"].after_call(tc, live)
+        return ("ok", [tc], [live])
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    agent._memory.apply_tool_results.side_effect = RuntimeError("secret detail")
+    agent.process_turn(_turn_input())
+    errs = [r for r in caplog.records if r.message == "orchestrator.apply_tool_results_error"]
+    assert errs and errs[0].error == "RuntimeError"
+
+
+def test_process_turn_persists_invalidation_when_run_turn_raises():
+    """A write that completed before the turn failed must still invalidate the cache."""
+    agent = _make_cached_agent()
+    agent._tool_policies = ToolResultPolicies.from_config({"connectors": {
+        "read": [{"name": "get_balance", "cache": {"scope": "session", "ttl_seconds": 600}}],
+        "write": [{"name": "transfer", "invalidates": ["get_balance"]}]}})
+    tc = ToolCall(tool_name="transfer", tool_use_id="tu_w", input_params={})
+    done = ToolResult(tool_use_id="tu_w", tool_name="transfer", result={}, success=True,
+                      result_text="{}")
+
+    def _run_turn(*args, **kwargs):
+        kwargs["tool_cache"].after_call(tc, done)
+        raise RuntimeError("follow-up LLM call failed")
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    with pytest.raises(RuntimeError, match="follow-up LLM call failed"):
+        agent.process_turn(_turn_input())
+    agent._memory.apply_tool_results.assert_called_once()
+    sid, _uid, batch = agent._memory.apply_tool_results.call_args.args
+    assert sid == SESSION_ID and batch["invalidate"] == ["get_balance"]
+
+
+def test_process_turn_run_turn_error_survives_apply_failure():
+    """If persisting fails too, the original run_turn exception still propagates."""
+    agent = _make_cached_agent()
+    agent._tool_policies = ToolResultPolicies.from_config({"connectors": {
+        "read": [{"name": "get_balance", "cache": {"scope": "session", "ttl_seconds": 600}}],
+        "write": [{"name": "transfer", "invalidates": ["get_balance"]}]}})
+    tc = ToolCall(tool_name="transfer", tool_use_id="tu_w", input_params={})
+    done = ToolResult(tool_use_id="tu_w", tool_name="transfer", result={}, success=True,
+                      result_text="{}")
+
+    def _run_turn(*args, **kwargs):
+        kwargs["tool_cache"].after_call(tc, done)
+        raise RuntimeError("follow-up LLM call failed")
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    agent._memory.apply_tool_results.side_effect = ConnectionError("down")
+    with pytest.raises(RuntimeError, match="follow-up LLM call failed"):
+        agent.process_turn(_turn_input())
+
+
+def test_sync_remember_value_visible_to_later_session_params_in_same_turn():
+    """A session-scope remember must reach the ManagerAgent's per-turn session values."""
+    from src.remember import RememberTool
+    agent = _make_cached_agent()
+    agent._remember = RememberTool.from_config({"memory_tool": {"name": "remember", "fields": {
+        "profile_action": {"scope": "session"}}}})
+    agent._memory.write_strict.return_value = (True, "")
+    seen = {}
+
+    def _run_turn(*args, **kwargs):
+        # ManagerAgent._reset_turn_flags installs the per-turn dict first.
+        agent._manager_agent._session_values = dict(kwargs["session_values"])
+        r = kwargs["remember_handler"](ToolCall(
+            tool_name="remember", tool_use_id="tu_r",
+            input_params={"field": "profile_action", "value": "use_existing"}), [])
+        seen["ok"] = r.success
+        seen["values"] = dict(agent._manager_agent._session_values)
+        return ("ok", [], [])
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    agent.process_turn(_turn_input())
+    assert seen["ok"] is True
+    assert seen["values"]["profile_action"] == "use_existing"
+
+
+def test_build_profile_context_adds_listed_session_fields_only():
+    agent = _make_agent()
+    agent._prompt_session_fields = ["profile_item_id", "stored_trade"]
+    b = ContextBundle(session={"profile_item_id": "p1", "stored_trade": "", "stored_location": "Pune",
+                               "trade": "Welding"}, profile={"name": "Asha"}, journey=None)
+    ctx = agent._build_profile_context(b, {"trade": "trade"})
+    assert ctx["profile_item_id"] == "p1"
+    assert "stored_trade" not in ctx            # empty value skipped
+    assert "stored_location" not in ctx         # not listed
+    assert ctx["trade"] == "Welding" and ctx["name"] == "Asha"
+
+
+def test_build_profile_context_does_not_override_existing():
+    agent = _make_agent()
+    agent._prompt_session_fields = ["name"]
+    b = ContextBundle(session={"name": "Other"}, profile={"name": "Asha"}, journey=None)
+    assert agent._build_profile_context(b, {})["name"] == "Asha"
+
+
+# ---------------------------------------------------------------------------
+# Session bootstrap wiring (session-bootstrap spec §5) — sync path
+# ---------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
+
+from src.session_bootstrap import LATCH, SessionBootstrap  # noqa: E402
+
+_BOOT_CONFIG = {
+    "connectors": {"read": [{"name": "fetch_profile", "cache": {"scope": "session", "ttl_seconds": 1800}}]},
+    "session_bootstrap": {"timeout_ms": 1500, "steps": [{"type": "tool", "tool": "fetch_profile"}]},
+}
+
+
+def _boot_result(**session_values):
+    return ToolResult(tool_use_id="bootstrap-0", tool_name="fetch_profile", result={}, success=True,
+                      result_text=_json.dumps({"items": [{"item_id": "p1"}]}), projected=True,
+                      session_values=session_values)
+
+
+def _boot_agent(result=None, side_effect=None):
+    """_make_agent with a configured bootstrap; returns (agent, order)."""
+    agent = _make_agent()
+    agent._tool_policies = ToolResultPolicies.from_config(_BOOT_CONFIG)
+    agent._bootstrap = SessionBootstrap.from_config(_BOOT_CONFIG, agent._tool_policies)
+    order: list[str] = []
+    gw = MagicMock()
+
+    def _execute(tc, *a, **kw):
+        order.append("bootstrap_execute")
+        if side_effect is not None:
+            raise side_effect
+        return result or _boot_result(has_age=True)
+
+    gw.execute.side_effect = _execute
+    agent._manager_agent._gateway = gw
+    run_turn_rv = agent._manager_agent.run_turn.return_value
+
+    def _run_turn(*a, **kw):
+        order.append("run_turn")
+        return run_turn_rv
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    return agent, order
+
+
+def test_init_builds_bootstrap_from_config():
+    agent = _make_agent()
+    assert agent._bootstrap is None
+    built = AgentCore(
+        config={**VALID_CONFIG, **_BOOT_CONFIG}, chat_provider=MagicMock(spec=ChatProviderBase),
+        memory=MagicMock(), trust=MagicMock(), knowledge_engine=MagicMock(),
+        tool_registry=MagicMock(), manager_agent=MagicMock(), learning=MagicMock(),
+        workflow=_make_workflow(),
+        nlu_chat_provider=_nlu_provider_mock(),
+    )
+    assert isinstance(built._bootstrap, SessionBootstrap)
+
+
+def test_sync_bootstrap_runs_once_before_llm_and_writes_latch():
+    agent, order = _boot_agent()
+    agent.process_turn(_turn_input())
+
+    gw = agent._manager_agent._gateway
+    gw.execute.assert_called_once()
+    tc = gw.execute.call_args.args[0]
+    assert isinstance(tc, ToolCall) and tc.tool_name == "fetch_profile"
+    assert gw.execute.call_args.args[1] == SESSION_ID
+    assert "session_values" in gw.execute.call_args.kwargs
+    assert order.index("bootstrap_execute") < order.index("run_turn")
+    keys = [c.args[3] for c in agent._memory.write.call_args_list]
+    assert LATCH in keys and "has_age" in keys
+    assert keys.index(LATCH) < keys.index("has_age")
+    agent._memory.apply_tool_results.assert_called_once()
+
+    # Second turn: the bundle session now carries the latch → no re-run.
+    assert agent._memory.context_bundle.return_value.session[LATCH] is True
+    agent.process_turn(_turn_input())
+    gw.execute.assert_called_once()
+
+
+def test_sync_bootstrap_entry_reaches_known_facts():
+    agent, _order = _boot_agent()
+    agent.process_turn(_turn_input())
+    facts = agent._manager_agent.build_system_prompt.call_args.kwargs["known_facts"]
+    assert "fetch_profile" in facts and "p1" in facts
+
+
+def test_sync_no_bootstrap_when_not_configured():
+    agent, order = _boot_agent()
+    agent._bootstrap = None
+    agent.process_turn(_turn_input())
+    agent._manager_agent._gateway.execute.assert_not_called()
+    assert "bootstrap_execute" not in order
+
+
+def test_sync_bootstrap_exception_never_breaks_the_turn():
+    agent, _order = _boot_agent(side_effect=RuntimeError("upstream down"))
+    result = agent.process_turn(_turn_input())
+    assert isinstance(result, TurnResult)
+    assert result.response_text == "Final response."
+    agent._manager_agent.run_turn.assert_called_once()
+
+
+def test_sync_bootstrap_run_error_is_contained():
+    agent, _order = _boot_agent()
+    agent._bootstrap = MagicMock()
+    agent._bootstrap.needed.return_value = True
+    agent._bootstrap.run_sync.side_effect = RuntimeError("bug")
+    result = agent.process_turn(_turn_input())
+    assert isinstance(result, TurnResult) and result.response_text == "Final response."
+
+
+class _OrderHandler(__import__("logging").Handler):
+    """Appends a marker to ``order`` when the STEP 1 completion line is logged."""
+
+    def __init__(self, order):
+        super().__init__()
+        self._order = order
+
+    def emit(self, record):
+        if "[STEP 1] Memory context_bundle  ✓" in record.getMessage():
+            self._order.append("step1_logged")
+
+
+def test_sync_step1_log_precedes_bootstrap():
+    """Memory-read latency excludes the bootstrap (ruling R7)."""
+    import logging
+    agent, order = _boot_agent()
+    log = logging.getLogger("src.orchestrator")
+    handler, prev = _OrderHandler(order), log.level
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    try:
+        agent.process_turn(_turn_input())
+    finally:
+        log.removeHandler(handler)
+        log.setLevel(prev)
+    assert order.index("step1_logged") < order.index("bootstrap_execute") < order.index("run_turn")
+
+
+def test_sync_bootstrap_skipped_without_gateway_logs_debug(caplog):
+    import logging
+    agent, _order = _boot_agent()
+    agent._manager_agent = MagicMock(spec=[])            # no _gateway attribute
+    with caplog.at_level(logging.DEBUG, logger="src.orchestrator"):
+        agent._run_session_bootstrap_sync(ContextBundle(session={}, profile={}, journey=None),
+                                          SESSION_ID, "u1")
+    recs = [r for r in caplog.records if r.message == "orchestrator.session_bootstrap_skipped"]
+    assert len(recs) == 1 and recs[0].levelno == logging.DEBUG
+    assert not hasattr(recs[0], "session_id")
+
+
+# ── User-state resolution through the turn path (single-mode NLU) ────────────
+
+def _usm_agent(user_state=None, session=None) -> AgentCore:
+    """An agent with user_state_model enabled and a fake understander returning ``user_state``."""
+    agent = _make_agent_with_config(_make_usm_config(enabled=True))
+    agent._memory.context_bundle.return_value = ContextBundle(
+        session={"current_subagent_id": "market_truth", **(session or {})}, profile={}, journey=None)
+    agent._understander = fake_understander(NLUResult(
+        intent="any_input", entities={}, confidence=1.0, user_state=user_state))
+    return agent
+
+
+def test_turn_context_previous_user_state_prefers_session_id():
+    agent = _usm_agent()
+    bundle = ContextBundle(session={"user_state": {"id": "aware"}}, profile={}, journey=None)
+    ctx = agent._turn_context(bundle, "market_truth", ["hi"], MagicMock())
+    assert ctx.previous_user_state == "aware"
+
+
+def test_turn_context_previous_user_state_falls_back_to_default():
+    agent = _usm_agent()
+    bundle = ContextBundle(session={}, profile={}, journey=None)
+    assert agent._turn_context(bundle, "market_truth", ["hi"], MagicMock()).previous_user_state == "fog"
+
+
+def test_turn_context_previous_user_state_none_when_model_disabled():
+    agent = _make_agent()
+    bundle = ContextBundle(session={}, profile={}, journey=None)
+    assert agent._turn_context(bundle, "market_truth", ["hi"], MagicMock()).previous_user_state is None
+
+
+def test_sync_turn_resolves_and_persists_user_state():
+    from src.models import UserStateClassification
+    agent = _usm_agent(UserStateClassification(id="aware", confidence=0.9))
+    agent.process_turn(_turn_input())
+    ctx = agent._understander.understand.call_args.args[0]
+    assert ctx.previous_user_state == "fog"
+    writes = [c.args for c in agent._memory.write.call_args_list if c.args[3] == "user_state"]
+    assert len(writes) == 1
+    scope, payload = writes[0][2], writes[0][4]
+    assert scope == "session" and payload["id"] == "aware" and payload["confidence"] == 0.9
+
+
+# ---------------------------------------------------------------------------
+# Spec D: <state> / <recent> in the prompt, shaper wiring
+# ---------------------------------------------------------------------------
+
+def test_prompt_gets_state_and_recent():
+    agent = _make_agent(session_data={
+        "current_subagent_id": "market_truth", "applications_submitted": 0,
+        "recent_turns": [{"caller": "हाँ", "bot": "आपकी उम्र?", "interrupted": False}]})
+    agent._state_fields = ["applications_submitted"]
+    agent._agent_history_turns = 2
+    agent.process_turn(_turn_input())
+    kw = agent._manager_agent.build_system_prompt.call_args.kwargs
+    assert kw["recent"] == "caller: हाँ\nbot: आपकी उम्र?"
+    assert kw["state"].startswith("phase: market_truth") and "status: applications_submitted=0" in kw["state"]
+
+
+def test_prompt_session_fields_reach_state():
+    agent = _make_agent(session_data={"current_subagent_id": "market_truth", "profile_item_id": "p1"})
+    agent._prompt_session_fields = ["profile_item_id"]
+    agent.process_turn(_turn_input())
+    assert "profile_item_id=p1" in agent._manager_agent.build_system_prompt.call_args.kwargs["state"]
+
+
+def test_recent_turns_retention_follows_agent_history_turns():
+    agent = _make_agent(session_data={
+        "current_subagent_id": "market_truth",
+        "recent_turns": [{"caller": f"c{i}", "bot": f"b{i}", "interrupted": False} for i in range(3)]})
+    agent._recent_keep = 4
+    agent.process_turn(_turn_input())
+    writes = [c.args[4] for c in agent._memory.write.call_args_list if c.args[3] == "recent_turns"]
+    assert len(writes) == 1 and len(writes[0]) == 4
+
+
+def test_agent_history_turns_config_sets_recent_keep():
+    cfg = {**VALID_CONFIG, "agent": {"history_turns": 4}}
+    agent = AgentCore(config=cfg, chat_provider=MagicMock(spec=ChatProviderBase), memory=MagicMock(),
+                      trust=MagicMock(), knowledge_engine=MagicMock(), tool_registry=MagicMock(),
+                      manager_agent=MagicMock(), learning=MagicMock(), workflow=_make_workflow(),
+                      nlu_chat_provider=_nlu_provider_mock())
+    assert agent._agent_history_turns == 4 and agent._recent_keep == 4
+
+
+def test_process_turn_hands_the_shaper_to_run_turn():
+    agent = _make_agent()
+    agent.process_turn(_turn_input())
+    assert agent._manager_agent.run_turn.call_args.kwargs["result_shaper"] == agent._result_shaper.shape
+
+
+def test_orchestrator_bootstrap_receives_the_shaper():
+    cfg = {**VALID_CONFIG,
+           "connectors": {"read": [{"name": "fetch_profile", "cache": {"scope": "session", "ttl_seconds": 60}}]},
+           "session_bootstrap": {"steps": [{"type": "tool", "tool": "fetch_profile"}]}}
+    agent = AgentCore(config=cfg, chat_provider=MagicMock(spec=ChatProviderBase), memory=MagicMock(),
+                      trust=MagicMock(), knowledge_engine=MagicMock(), tool_registry=MagicMock(),
+                      manager_agent=MagicMock(), learning=MagicMock(), workflow=_make_workflow(),
+                      nlu_chat_provider=_nlu_provider_mock())
+    assert agent._bootstrap is not None
+    assert agent._bootstrap._shape == agent._result_shaper.shape
+
+
+def test_state_phase_is_the_post_routing_subagent():
+    """<state> is built for the subagent the prompt is for, not the one the turn started in."""
+    rule = MagicMock()
+    rule.intent = "termination_intent"
+    rule.next_subagent_id = "ended"
+    rule.condition = None
+    rule.conditions = None
+    rule.session_writes = None
+    wf = _make_workflow(subagent_id="greeting", global_routing=[rule],
+                        extra_subagents={"ended": _make_subagent("ended")})
+    agent = _make_agent(nlu_result=_TERMINATION_NLU, workflow=wf,
+                        session_data={"current_subagent_id": "greeting"})
+    agent.process_turn(_turn_input())
+    state = agent._manager_agent.build_system_prompt.call_args.kwargs["state"]
+    assert state.startswith("phase: ended")
+
+
+def test_sync_turn_still_writes_current_question_after_spec_d():
+    """Spec D dropped the "[Last question asked: …]" prompt line, but
+    current_question must still reach the session each turn: job_match's
+    submit_confirm pending (#439) is keyed on it."""
+    agent = _make_agent(manager_text="क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?")
+    agent.process_turn(_turn_input())
+    writes = [c.args for c in agent._memory.write.call_args_list if c.args[3] == "current_question"]
+    assert writes and writes[-1][2] == "session"
+    assert writes[-1][4] == "क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"

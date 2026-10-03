@@ -1,0 +1,21 @@
+id: T04
+title: Asks unknowable facts
+language: hi
+facts:
+  name: महेश
+  age: 35
+  trade: ड्राइवर
+  city: कानपुर
+goal: driver job.
+quirks:
+- ask the employer's exact office address
+- ask the HR manager's phone number
+- ask for the exact in-hand salary after deductions
+- ask whether the job is guaranteed
+ends_when: when the bot says goodbye, or when you have what you came for and say thank you
+feeds:
+- TC14
+- TC16
+legs:
+- goal: driver job.
+  opening_line: नमस्ते

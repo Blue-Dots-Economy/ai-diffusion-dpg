@@ -63,7 +63,7 @@ def test_unknown_channel_is_still_rejected():
 
 
 @pytest.mark.parametrize("domain", [
-    "kkb", "blue-dots", "blue-dots-economy", "poem-bot", "tourism-bot",
+    "blue-dots", "poem-bot", "tourism-bot",
 ])
 def test_every_existing_domain_still_validates(domain):
     """The regression that matters: no shipped domain config may break."""

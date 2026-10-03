@@ -118,7 +118,7 @@ Validates the loaded `ObservabilityConfig` against the Pydantic v2 schema and re
 
 **Response:**
 ```json
-{ "status": "ok", "domain": "kkb" }
+{ "status": "ok", "domain": "blue-dots" }
 ```
 
 ---
@@ -255,7 +255,6 @@ Requires Python 3.11+.
 
 - **PII field filtering not enforced in code.** The `observability.audit.pii_fields_excluded` and `observability.telemetry.pii_fields_excluded` config fields define what DPGs must not include in span attributes and log fields for DPDP Act compliance, but enforcement at each DPG's instrumentation point is not yet applied.
 - **`OutcomeTracker.trigger_condition` not evaluated.** The `trigger_condition` field is parsed from config but currently ignored; any invocation of `trigger_tool` transitions the state.
-- **Grafana dashboard provisioning.** The provisioning directory structure exists under `automation/docker/grafana/provisioning/` but dashboards are not yet provisioned.
 
 ### Audit trail
 

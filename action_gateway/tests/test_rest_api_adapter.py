@@ -278,6 +278,19 @@ class TestRestApiAdapterExecute:
         assert full_params.get("params", {}).get("location") == "Delhi"
 
     @pytest.mark.asyncio
+    async def test_projected_flag_false_without_projection(self, rest_tool_config):
+        """A successful call with no response.projection reports projected=False."""
+        adapter = RestApiAdapter(rest_tool_config)
+        mock_resp = make_mock_response(200, {"temp": 22})
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            result = await adapter.execute("test_weather", {"location": "Delhi"}, "sess-1")
+
+        assert result.success is True
+        assert result.projected is False
+
+    @pytest.mark.asyncio
     async def test_post_request(self, rest_write_tool_config):
         """POST request sends params as JSON body."""
         adapter = RestApiAdapter(rest_write_tool_config)
@@ -409,7 +422,7 @@ class TestRestApiAdapterExecute:
 class TestRestApiAdapterProjectionInvariant:
     """Regression guard for the projection-on-raw-dict invariant (GH #198).
 
-    Mirrors the KKB ``onest_market_lookup`` shape: a payload whose serialised
+    Mirrors the Blue Dots ``onest_market_lookup`` shape: a payload whose serialised
     size exceeds ``max_size_chars`` and whose projected fields live deep
     inside list items pulled via a ``list_key``. Pins the contract that
     ``_apply_projection`` always sees the full raw dict and that truncation
@@ -463,7 +476,7 @@ class TestRestApiAdapterProjectionInvariant:
 
     @staticmethod
     def _build_oversized_payload(num_items: int = 50) -> dict:
-        """Build a deeply-nested KKB-shaped payload that exceeds 4000 chars.
+        """Build a deeply-nested Blue Dots-shaped payload that exceeds 4000 chars.
 
         Each item carries a ``noise`` blob to bloat the serialised form well
         past ``max_size_chars`` so the deepest fields fall beyond the
@@ -487,6 +500,17 @@ class TestRestApiAdapterProjectionInvariant:
                 }
             )
         return {"data": {"items": items}}
+
+    @pytest.mark.asyncio
+    async def test_projected_flag_true_when_projection_applied(self, rest_projection_config):
+        """A successful call shaped by response.projection reports projected=True."""
+        adapter = RestApiAdapter(rest_projection_config)
+        mock_resp = make_mock_response(200, {"results": [{"name": "a", "extra": 1}]})
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            result = await adapter.execute("test_market_lookup", {"q": "x"}, "sess-proj-1")
+        assert result.success is True
+        assert result.projected is True
 
     @pytest.mark.asyncio
     async def test_projection_runs_on_full_raw_dict_when_response_exceeds_max_size_chars(
@@ -1299,3 +1323,173 @@ class TestRestApiAdapterBodyTemplateSessionIdentity:
         sent_body = mock_client.request.call_args.kwargs["json"]
         assert sent_body == {"phoneNumber": "+919999900001"}
 
+
+
+class TestRestApiAdapterSessionSourcedParams:
+    """``source: session`` params are filled by the framework, not the LLM.
+
+    Added for the age bug: ``age`` was declared ``source: agent`` with a
+    description telling the model to always send it. The model cannot see the
+    caller's age — it lives in profile state — so it supplied ``0``, which the
+    participant API reads as a real age and rejects as under-18. The agent then
+    relayed that to adult callers.
+    """
+
+    @pytest.fixture
+    def rest_save_config(self):
+        """Write connector with one agent param and one session param."""
+        return {
+            "id": "save_profile",
+            "type": "rest_api",
+            "category": "write",
+            "description": "Create or update a seeker profile.",
+            "base_url": "http://upstream:9000",
+            "endpoints": [
+                {
+                    "name": "save_profile",
+                    "method": "POST",
+                    "path": "/participant",
+                    "body_template": {"name": "{name}", "age": "{age}"},
+                    "params": [
+                        {"name": "name", "source": "agent", "type": "string",
+                         "required": True, "description": "Caller's name."},
+                        {"name": "age", "source": "session", "type": "integer",
+                         "required": False, "description": "From turn state."},
+                    ],
+                }
+            ],
+            "response": {"max_size_chars": 3000},
+        }
+
+    @staticmethod
+    def _body(mock_client):
+        return mock_client.request.call_args.kwargs["json"]
+
+    @pytest.mark.asyncio
+    async def test_session_value_fills_the_param(self, rest_save_config):
+        from unittest.mock import AsyncMock, patch
+        from src.adapters.rest_api import RestApiAdapter
+
+        adapter = RestApiAdapter(rest_save_config)
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=make_mock_response(200, {"ok": True}))
+            result = await adapter.execute(
+                "save_profile", {"name": "Rahul"}, "sess-1", "919876543210",
+                session_values={"age": 26},
+            )
+
+        assert result.success is True
+        assert self._body(mock_client) == {"name": "Rahul", "age": 26}
+
+    @pytest.mark.asyncio
+    async def test_session_value_overrides_a_model_supplied_value(self, rest_save_config):
+        """The framework's state wins over whatever the model reconstructed.
+
+        This is the actual bug: the model sent age=0 while state held 26.
+        """
+        from unittest.mock import AsyncMock, patch
+        from src.adapters.rest_api import RestApiAdapter
+
+        adapter = RestApiAdapter(rest_save_config)
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=make_mock_response(200, {"ok": True}))
+            await adapter.execute(
+                "save_profile", {"name": "Rahul", "age": 0}, "sess-1", "919876543210",
+                session_values={"age": 26},
+            )
+
+        assert self._body(mock_client)["age"] == 26
+
+    @pytest.mark.asyncio
+    async def test_empty_session_value_does_not_blank_a_model_value(self, rest_save_config):
+        """An absent state value must not erase a field the model did fill.
+
+        The caller may have given the value on this very turn, before it
+        reached state.
+        """
+        from unittest.mock import AsyncMock, patch
+        from src.adapters.rest_api import RestApiAdapter
+
+        adapter = RestApiAdapter(rest_save_config)
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=make_mock_response(200, {"ok": True}))
+            await adapter.execute(
+                "save_profile", {"name": "Rahul", "age": 31}, "sess-1", "919876543210",
+                session_values={"age": ""},
+            )
+
+        assert self._body(mock_client)["age"] == 31
+
+    @pytest.mark.asyncio
+    async def test_no_session_values_at_all_is_safe(self, rest_save_config):
+        """Callers that pass nothing behave exactly as before the feature."""
+        from unittest.mock import AsyncMock, patch
+        from src.adapters.rest_api import RestApiAdapter
+
+        adapter = RestApiAdapter(rest_save_config)
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=make_mock_response(200, {"ok": True}))
+            result = await adapter.execute(
+                "save_profile", {"name": "Rahul"}, "sess-1", "919876543210",
+            )
+
+        assert result.success is True
+        # {age} had no value from either source — the renderer drops the field
+        # rather than sending a placeholder or a zero.
+        assert "age" not in self._body(mock_client)
+
+    @pytest.mark.asyncio
+    async def test_string_state_value_is_cast_to_the_declared_type(self, rest_save_config):
+        """Memory Layer stores NLU entities as strings; the API wants an int.
+
+        The second half of the age bug. With age sourced from state, `"27"`
+        reached the participant endpoint as a JSON string and was rejected:
+        400 INVALID_ITEM_STATE "Invalid item_state: must be integer".
+        """
+        from unittest.mock import AsyncMock, patch
+        from src.adapters.rest_api import RestApiAdapter
+
+        adapter = RestApiAdapter(rest_save_config)
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=make_mock_response(200, {"ok": True}))
+            await adapter.execute(
+                "save_profile", {"name": "Rahul"}, "sess-1", "919876543210",
+                session_values={"age": "27"},          # a STRING, as state holds it
+            )
+
+        sent = self._body(mock_client)["age"]
+        assert sent == 27 and isinstance(sent, int), f"sent {sent!r} ({type(sent).__name__})"
+
+    @pytest.mark.asyncio
+    async def test_uncastable_state_value_is_omitted_not_sent(self, rest_save_config):
+        """A value that cannot be cast is dropped, not passed through.
+
+        An absent field produces a clear upstream error; a wrong-typed one
+        produces a confusing one.
+        """
+        from unittest.mock import AsyncMock, patch
+        from src.adapters.rest_api import RestApiAdapter
+
+        adapter = RestApiAdapter(rest_save_config)
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=make_mock_response(200, {"ok": True}))
+            await adapter.execute(
+                "save_profile", {"name": "Rahul"}, "sess-1", "919876543210",
+                session_values={"age": "बाईस"},        # words, not digits
+            )
+
+        assert "age" not in self._body(mock_client)
+
+    @pytest.mark.asyncio
+    async def test_session_params_are_hidden_from_the_llm_schema(self, rest_save_config):
+        """Only ``source: agent`` params reach the tool schema.
+
+        This is what stops the model inventing a value: it cannot pass a
+        parameter it was never offered.
+        """
+        from src.adapters.rest_api import RestApiAdapter
+
+        adapter = RestApiAdapter(rest_save_config)
+        schema = adapter.get_tool_definitions()[0].input_schema
+        assert "name" in schema["properties"]
+        assert "age" not in schema["properties"]

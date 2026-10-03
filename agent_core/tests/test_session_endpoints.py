@@ -31,7 +31,7 @@ def _make_mock_agent_core():
         session_id="s1", turn_id="t1", response_text="Hi",
     ))
 
-    async def mock_stream(ti):
+    async def mock_stream(ti, **kwargs):
         yield DoneEvent(turn_status="completed")
 
     agent.stream_turn = mock_stream
@@ -260,7 +260,12 @@ class TestExistingEndpointsWithAssembler:
 
     def test_stream_turn_works_with_assembler(self):
         agent = _make_mock_agent_core()
-        assembler = _make_mock_assembler()
+
+        async def mock_stream(ti, **kwargs):
+            yield DoneEvent(turn_status="completed")
+
+        agent.stream_turn = mock_stream
+        assembler = TurnAssembler(agent_core=agent, config={"reach_layer": {}, "channels": {}})
         app = create_orchestration_app(agent, turn_assembler=assembler)
         client = TestClient(app)
 

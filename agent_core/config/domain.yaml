@@ -48,38 +48,34 @@ conversation:
 channels:
   voice:
     system_prompt_suffix: ""  # Appended to the main system prompt for this channel.
-    tts_rules:                # Required when voice is declared. TTS formatting rules.
-      numbers: ""             # How to write numeric values for speech (e.g. "write as Hindi words").
-      money: ""               # How to write monetary values for speech.
-      dates: ""               # How to write date values for speech.
-      time: ""                # How to write time values for speech.
-      phone: ""               # How to speak phone numbers.
-      abbreviations: ""       # How to expand abbreviations for speech.
-      output_script: ""       # Script to use for TTS output (e.g. Devanagari).
-      english_loanwords: ""   # How to handle English loanwords in TTS output.
+    output_contract:          # Optional. Spoken-output contract rendered into the prompt and enforced by the guard (Spec D).
+      default_language: english
+      languages:
+        english:
+          script: latin
+          numbers: words
+          rules:
+            - "Spell out dates, times and amounts the way they are spoken."
+      guard:
+        rewrite_digits: true
+        strip_markdown: true
+        count_foreign_script: false
     terminal_word: ""         # Required when voice is declared. Word that signals call end.
     turn_assembler:
-      semantic_gate:
-        enabled: false
-        confidence_threshold: 0.75
       silence_trigger:
         silence_ms: 400
       max_wait_ceiling:
         max_wait_ms: 8000
   web:
     system_prompt_suffix: ""
-    tts_rules: null
     terminal_word: null
     turn_assembler:
-      semantic_gate: {enabled: false, confidence_threshold: 0.75}
       silence_trigger: {silence_ms: 1500}
       max_wait_ceiling: {max_wait_ms: 15000}
   cli:
     system_prompt_suffix: ""
-    tts_rules: null
     terminal_word: null
     turn_assembler:
-      semantic_gate: {enabled: false, confidence_threshold: 0.75}
       silence_trigger: {silence_ms: 200}
       max_wait_ceiling: {max_wait_ms: 5000}
 
@@ -110,15 +106,12 @@ preprocessing:
     code_switching: true
 
   nlu_processor:
-    model: ""                  # Required. Claude model ID for NLU classification.
-    confidence_threshold: 0.5  # Optional. Float 0–1. Intents below this are treated as unknown.
+    model: ""                  # Required. Model ID for the dialogue-act NLU.
     user_state_confidence_threshold: 0.4  # (GH-139) Below this, user-state stays sticky (previous state retained).
-    domain_instruction: ""     # Required. System instruction describing the domain to the NLU.
-    intents: []                # Required. List of intent string identifiers.
-    entities: []               # Required. List of entity string identifiers.
-    sentiment_classes: []      # Required. List of sentiment class strings.
-    signal_intents: {}         # (GH-140) Optional. Map of intent → signal_type written to ContextGraph Signal node.
+    signal_intents: {}         # (GH-140) Optional. Map of signal name → signal_type written to ContextGraph Signal node.
                                # Example: { pay_disappointment: objection, hang_up: dropoff_signal }
+    # Dialogue-act NLU blocks (topics, signals, slots, known_fields, examples,
+    # act_intents, termination_gate) — see dev-kit/configs/blue-dots/agent_core.yaml.
 
 entity_to_profile_field: {}  # Required. Map of entity name → UserProfile field name.
 
@@ -129,22 +122,20 @@ agent_workflow:
   workflow_id: ""                      # Required. Unique snake_case identifier for this workflow.
   version: ""                          # Required. Version string e.g. "1.0.0".
   agent_system_prompt: ""              # Required. Top-level system prompt for the orchestrating LLM.
-  global_intents: []                   # Required. Intent IDs handled globally regardless of current subagent.
-  global_routing: []                   # Required. Routing rules for global intents. Each: intent, next_subagent_id.
+  global_routing: []                   # Required. Routing rules applied before subagent routing. Each: intent, next_subagent_id.
   default_fallback_subagent_id: ""     # Required. Subagent to route to when no routing rule matches.
 
   subagents: []  # Required. List of subagent definitions. Each entry:
                  #   id, name, description, is_start, is_terminal,
                  #   opening_phrase (GH-137),  ← emitted on first session turn only (after consent)
-                 #   special_handler, valid_intents, tools, system_prompt, routing.
+                 #   special_handler, tools, system_prompt, routing, pending.
                  # See dev-kit/dev_kit/schemas/agent_core.yaml for full annotated example.
 
-# Optional. Per-channel turn-assembler tuning (semantic gate).
+# Optional. Per-channel turn-assembler tuning (silence trigger, max wait ceiling).
 # reach_layer:
 #   turn_assembler:
-#     semantic_gate:
-#       enabled: true
-#       confidence_threshold: 0.75
+#     silence_trigger:
+#       silence_ms: 400
 
 observability:
-  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").
+  domain: ""  # Required. Domain identifier (e.g. "blue-dots", "farmer_friendly").

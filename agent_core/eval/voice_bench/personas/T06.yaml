@@ -1,0 +1,19 @@
+id: T06
+title: Not interested (has a draft profile)
+language: hi
+facts:
+  name: गीता
+  age: 40
+  city: धारवाड़
+goal: you are not interested in a job now.
+quirks:
+- say you are busy and not interested
+- 'when asked again, say a firm no: ''नहीं, मुझे नहीं चाहिए'''
+ends_when: when the bot says goodbye, or when you have what you came for and say thank you
+feeds:
+- TC05
+- TC09
+seeded_phone: '919900090000'
+legs:
+- goal: you are not interested in a job now.
+  opening_line: नमस्ते

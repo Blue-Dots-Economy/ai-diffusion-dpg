@@ -137,6 +137,7 @@ class OllamaChatProvider(ChatProviderBase):
         Args:
             config: Provider configuration dict. Must contain primary_model,
                 base_url, timeout_ms, and retry_attempts.
+                ``sdk_max_retries`` / ``retry_on_timeout`` are not honoured by this provider.
 
         Raises:
             ProviderConfigError: If any required config key is missing or invalid.

@@ -1,0 +1,37 @@
+# Copy to voice_bench.yaml and edit. CLI flags override these values.
+# Secrets (OPENAI_API_KEY, Signals service key) come from env or --env-file; never put them here.
+suite_version: 1
+targets:                                    # what to measure
+  - name: M0-baseline
+    git_ref: edf7ec8                        # build + run this commit
+    # compose: automation/deploy/shared-vm/docker-compose.yml   # optional; default automation/docker/docker-compose.yml
+    # redis_container: redis                # default; session Redis is read via docker exec
+    # agent_container: agent_core           # default; scraped for llm_calls / predispatch_* banner fields
+    # no_idle_handling: false               # true => TC06 is n/a for this target
+  - name: M1
+    git_ref: 6b38e48
+  - name: M2
+    git_ref: cf794ef
+  - name: M3-head
+    git_ref: spec/tool-predispatch
+  # - name: vm
+  #   bridge_url: http://127.0.0.1:8008     # an already-running bridge: no build
+  #   redis_container: dpg_redis
+  #   agent_container: dpg_agent_core
+models:
+  caller: { provider: openai, model: gpt-4.1, temperature: 0.3 }
+  judge:  { provider: openai, model: gpt-4.1, temperature: 0 }
+backend:
+  # Relative paths here (signals_dir, network_json, env_file, results_dir) resolve against the CWD: run from agent_core/.
+  signals_dir: ../../Signals-DPG
+  network_json: ../../bluedots-schemas/blue_dot/up-gzb/network.json   # UP-Ghaziabad schema the local backend runs
+  signals_url: http://localhost:2742
+  search_url: http://localhost:3100
+  tap_port: 18742
+  postgres_container: signals-postgres
+  env_file: null
+runs: 1                                     # default runs per scenario
+runs_per_scenario: { T01: 3, T12: 3, T14: 3 }   # extra runs where a wrong verdict costs most (apply, consent, returning-caller apply)
+max_turns: 14
+phone_prefix: "9199000"                     # reserved test range; never a real user's number
+results_dir: eval_results/voice_bench

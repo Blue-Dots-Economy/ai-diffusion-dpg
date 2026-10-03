@@ -53,7 +53,7 @@ from src.http_clients.trust_layer import TrustLayerHttpClient
 from src.http_clients.observability_layer import ObservabilityLayerHttpClient
 from src.http_clients.action_gateway import ActionGatewayHttpClient
 from src.tool_registry import ToolRegistry
-from src.manager_agent import ManagerAgent
+from src.manager_agent import ManagerAgent, zero_seed_fields
 from src.orchestrator import AgentCore
 from src.workflow_loader import AgentWorkflowLoader
 from src.servers.orchestration_server import create_orchestration_app
@@ -179,6 +179,34 @@ def _build_app():
     # Workflow Loader -- parse and validate agent_workflow block at startup
     workflow = AgentWorkflowLoader().load(config=config, tool_registry=tool_registry)
 
+    # connectors.<category>[].invocation_rules.grounded_params -> {tool: [param]}
+    grounded_params: dict[str, list[str]] = {}
+    for _conns in (config.get("connectors") or {}).values():
+        for _conn in _conns or []:
+            if not isinstance(_conn, dict):
+                continue
+            _names = ((_conn.get("invocation_rules") or {}).get("grounded_params")) or []
+            if isinstance(_names, dict):
+                grounded_params[str(_conn.get("name"))] = {
+                    str(k): [str(t) for t in (v or [])] for k, v in _names.items()
+                }
+            elif _names:
+                grounded_params[str(_conn.get("name"))] = [str(n) for n in _names]
+    if grounded_params:
+        logger.info("startup.grounded_params %s", grounded_params)
+
+    # connectors.<category>[].invocation_rules.max_calls_per_turn -> {tool: n}
+    tool_call_caps: dict[str, int] = {}
+    for _conns in (config.get("connectors") or {}).values():
+        for _conn in _conns or []:
+            if not isinstance(_conn, dict):
+                continue
+            _cap = (_conn.get("invocation_rules") or {}).get("max_calls_per_turn")
+            if isinstance(_cap, int) and _cap > 0:
+                tool_call_caps[str(_conn.get("name"))] = _cap
+    if tool_call_caps:
+        logger.info("startup.tool_call_caps %s", tool_call_caps)
+
     manager = ManagerAgent(
         chat_provider=llm,
         tool_registry=tool_registry,
@@ -186,6 +214,12 @@ def _build_app():
         knowledge_engine=ke,
         trust_layer=trust,
         max_tool_rounds=agent_cfg.get("max_tool_rounds", 1),
+        grounded_params=grounded_params,
+        tool_call_caps=tool_call_caps,
+        identity=config.get("identity"),
+        zero_seed_fields=zero_seed_fields(
+            ((config.get("preprocessing") or {}).get("nlu_processor") or {}).get("slots")
+        ),
     )
 
     # Async clients — required for stream_turn() / session mode

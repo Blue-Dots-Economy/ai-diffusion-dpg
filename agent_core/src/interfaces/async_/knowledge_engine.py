@@ -22,7 +22,6 @@ class AsyncKnowledgeEngineBase(ABC):
         session: dict,
         intent: str = "unknown",
         entities: Optional[dict[str, Any]] = None,
-        sentiment: str = "neutral",
         confidence: float = 0.0,
         normalised_input: str = "",
         detected_language: str = "",

@@ -97,7 +97,6 @@ class RetrievalRequest:
     session: dict = field(default_factory=dict)    # Session state from ContextBundle
     intent: str = "unknown"
     entities: dict = field(default_factory=dict)
-    sentiment: str = "neutral"
     confidence: float = 0.0
     normalised_input: str = ""
     detected_language: str = ""

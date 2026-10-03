@@ -1,7 +1,7 @@
 """
 ObservabilityConfig — the domain config schema for the Observability Layer.
 
-Domain implementors (e.g. KKB) fill in this schema via YAML. The framework
+Domain implementors (e.g. blue-dots) fill in this schema via YAML. The framework
 validates it at startup via Pydantic v2. Invalid config raises at startup,
 never at runtime.
 
@@ -159,7 +159,7 @@ class ObservabilityConfig(BaseModel):
     invalid config raises, never at request time.
 
     Args:
-        domain: Domain identifier (e.g. "kkb").
+        domain: Domain identifier (e.g. "blue-dots").
         otel: OTel exporter and sampling settings.
         outcomes: Domain outcome lifecycle and metric definitions.
         sli: SLI thresholds.

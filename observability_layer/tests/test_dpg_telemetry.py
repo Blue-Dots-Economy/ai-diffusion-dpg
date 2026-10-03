@@ -4,11 +4,11 @@ import pytest
 
 def test_build_resource_sets_service_name():
     from dpg_telemetry.resource import build_resource
-    resource = build_resource("trust_layer", {"observability": {"domain": "kkb"}})
+    resource = build_resource("trust_layer", {"observability": {"domain": "blue-dots"}})
     attrs = resource.attributes
     assert attrs["service.name"] == "trust_layer"
     assert attrs["dpg.block"] == "trust_layer"
-    assert attrs["dpg.domain"] == "kkb"
+    assert attrs["dpg.domain"] == "blue-dots"
 
 
 def test_build_resource_defaults_domain_to_unknown():

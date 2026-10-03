@@ -1,0 +1,46 @@
+# One Discord contact point per severity.
+#
+# Each webhook URL is a secret, read from an environment variable on the
+# Grafana container: DISCORD_WEBHOOK_CRITICAL, _WARNING and _INFO. They are
+# never committed; Compose passes them through from .env (see the README), and
+# a deployment can fill them from its own secret store. Grafana refuses to start on an empty
+# Discord URL, so Compose supplies an unroutable placeholder when one is not
+# set: alerts then show in Grafana only, and delivery fails visibly in its log.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: discord-critical
+    receivers:
+      - uid: discord-critical
+        type: discord
+        disableResolveMessage: false
+        settings:
+          url: ${DISCORD_WEBHOOK_CRITICAL}
+          title: '{{ template "dpg.discord.title" . }}'
+          message: '{{ template "dpg.discord.message" . }}'
+          use_discord_username: false
+
+  - orgId: 1
+    name: discord-warning
+    receivers:
+      - uid: discord-warning
+        type: discord
+        disableResolveMessage: false
+        settings:
+          url: ${DISCORD_WEBHOOK_WARNING}
+          title: '{{ template "dpg.discord.title" . }}'
+          message: '{{ template "dpg.discord.message" . }}'
+          use_discord_username: false
+
+  - orgId: 1
+    name: discord-info
+    receivers:
+      - uid: discord-info
+        type: discord
+        disableResolveMessage: false
+        settings:
+          url: ${DISCORD_WEBHOOK_INFO}
+          title: '{{ template "dpg.discord.title" . }}'
+          message: '{{ template "dpg.discord.message" . }}'
+          use_discord_username: false

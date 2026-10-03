@@ -765,6 +765,7 @@ class TestDeployValidatorMode:
         assert body.get("validator") == "host_mirror"
         assert "block_errors" in body
         assert "invariant_errors" in body
+        assert isinstance(body.get("warnings"), list)
 
     def test_docker_mode_returns_runtime_baked_validator(
         self, client_with_project, monkeypatch

@@ -41,6 +41,8 @@ MINIMAL_CONFIG = {
             "ttl_minutes": 60,
             "schema": {
                 "trade": {"default": ""},
+                "status": {"type": "enum", "values": ["a", "b"]},
+                "count": {"type": "int"},
                 "loop_count": {"default": 0},
                 "options_presented": {"default": []},
             },
@@ -49,7 +51,7 @@ MINIMAL_CONFIG = {
             "graph": {
                 "subnodes": {
                     "UserProfile": {
-                        "declared_fields": ["trade", "education"]
+                        "declared_fields": ["trade", "education", "name"]
                     },
                     "JourneyHistory": {
                         "child": {
@@ -81,7 +83,11 @@ def _make_layer() -> tuple[MemoryLayer, dict]:
         patch("src.memory_layer.GraphContextStore") as MockContext,
         patch("src.memory_layer.SQLiteAuditStore") as MockAudit,
         patch("src.memory_layer.GraphDatabase") as MockGDB,
+        patch("src.memory_layer.ToolResultStore") as MockTRS,
     ):
+        mock_trs = MagicMock()
+        mock_trs.read.return_value = []
+        MockTRS.return_value = mock_trs
         mock_redis = MagicMock()
         mock_user = MagicMock()
         mock_journey = MagicMock()
@@ -102,6 +108,7 @@ def _make_layer() -> tuple[MemoryLayer, dict]:
         "journey": mock_journey,
         "context": mock_context,
         "audit": mock_audit,
+        "tool_results": mock_trs,
     }
     return layer, stores
 
@@ -278,6 +285,32 @@ def test_context_bundle_adoption_preserves_is_returning_for_returning_user():
     assert result["session"]["is_returning"] == "true"
 
 
+def test_context_bundle_adoption_skips_session_lifecycle_fields():
+    """Session lifecycle fields (opening_phrase_emitted, bootstrap_done) must not be adopted."""
+    layer, stores = _make_layer()
+    stores["user"].user_exists.return_value = True       # returning user
+    stores["user"].get_profile.return_value = {}
+    stores["journey"].get_last_journey_summary.return_value = None
+
+    # new-sess does not exist; old-sess does exist (will be adopted)
+    stores["redis"].session_exists.side_effect = lambda s: s == "old-sess"
+    stores["redis"].get_user_sessions.return_value = {"old-sess": "2024-01-01T10:00:00Z"}
+    # old session has lifecycle fields that should be skipped
+    stores["redis"].get_session.return_value = {
+        "opening_phrase_emitted": "true",
+        "bootstrap_done": "true",
+        "trade": "welder",
+    }
+
+    result = layer.context_bundle("new-sess", "user-1")
+
+    # After adoption, lifecycle fields must not be present
+    assert "opening_phrase_emitted" not in result["session"]
+    assert "bootstrap_done" not in result["session"]
+    # But regular fields like trade should be adopted
+    assert result["session"]["trade"] == "welder"
+
+
 # ---------------------------------------------------------------------------
 # context_bundle — existing session (hot path)
 # ---------------------------------------------------------------------------
@@ -315,20 +348,20 @@ def test_context_bundle_existing_session_skips_graph_creation():
 def test_context_bundle_empty_session_id_returns_empty_bundle():
     layer, stores = _make_layer()
     result = layer.context_bundle("", "user-1")
-    assert result == {"session": {}, "profile": {}, "journey": None}
+    assert result == {"session": {}, "profile": {}, "journey": None, "tool_results": []}
 
 
 def test_context_bundle_empty_user_id_returns_empty_bundle():
     layer, stores = _make_layer()
     result = layer.context_bundle("sess-1", "")
-    assert result == {"session": {}, "profile": {}, "journey": None}
+    assert result == {"session": {}, "profile": {}, "journey": None, "tool_results": []}
 
 
 def test_context_bundle_redis_error_returns_empty_bundle():
     layer, stores = _make_layer()
     stores["redis"].session_exists.side_effect = ConnectionError("redis down")
     result = layer.context_bundle("sess-1", "user-1")
-    assert result == {"session": {}, "profile": {}, "journey": None}
+    assert result == {"session": {}, "profile": {}, "journey": None, "tool_results": []}
 
 
 # ---------------------------------------------------------------------------
@@ -636,3 +669,177 @@ def test_build_scope_map_always_includes_infrastructure_keys():
     assert scope_map["journey_id"] == "session"
     assert scope_map["is_returning"] == "session"
     assert scope_map["signal"] == "signal"
+
+
+def test_context_bundle_includes_tool_results_existing_session():
+    layer, stores = _make_layer()
+    stores["redis"].session_exists.return_value = True
+    stores["redis"].get_session.return_value = {}
+    stores["tool_results"].read.return_value = [{"tool": "t"}]
+    bundle = layer.context_bundle("s1", "u1")
+    assert bundle["tool_results"] == [{"tool": "t"}]
+    stores["tool_results"].read.assert_called_once_with("s1", "u1")
+
+
+def test_context_bundle_includes_tool_results_new_session():
+    layer, stores = _make_layer()
+    stores["redis"].session_exists.return_value = False
+    stores["tool_results"].read.return_value = [{"tool": "t"}]
+    bundle = layer.context_bundle("s1", "u1")
+    assert bundle["tool_results"] == [{"tool": "t"}]
+
+
+def test_context_bundle_error_fallback_has_empty_tool_results():
+    layer, stores = _make_layer()
+    stores["redis"].session_exists.side_effect = RuntimeError("x")
+    assert layer.context_bundle("s1", "u1")["tool_results"] == []
+
+
+def test_apply_tool_results_invalidates_both_scopes_then_puts():
+    layer, stores = _make_layer()
+    trs = stores["tool_results"]
+    layer.apply_tool_results("s1", "u1", ["fetch_profile"], [
+        {"scope": "user", "tool": "fetch_profile", "args_hash": "ab12", "data": {},
+         "ttl_seconds": 60, "origin": "turn"},
+        {"scope": "session", "tool": "fetch_jobs", "args_hash": "cd34", "data": [],
+         "ttl_seconds": 60, "origin": "turn"},
+    ])
+    names = [c[0] for c in trs.method_calls]
+    assert names == ["invalidate", "invalidate", "put", "put"]
+    trs.invalidate.assert_any_call("session", "s1", "fetch_profile")
+    trs.invalidate.assert_any_call("user", "u1", "fetch_profile")
+    trs.put.assert_any_call("user", "u1", "fetch_profile", "ab12", {}, 60, origin="turn")
+    trs.put.assert_any_call("session", "s1", "fetch_jobs", "cd34", [], 60, origin="turn")
+
+
+def test_apply_tool_results_never_raises():
+    layer, stores = _make_layer()
+    stores["tool_results"].invalidate.side_effect = RuntimeError("x")
+    layer.apply_tool_results("s1", "u1", ["t"], [])  # no exception
+
+
+def test_flush_session_deletes_session_tool_results():
+    layer, stores = _make_layer()
+    stores["redis"].get_session.return_value = {}
+    layer.flush_session("s1", "u1", "done")
+    stores["tool_results"].delete_owner.assert_called_once_with("session", "s1")
+
+
+def test_delete_user_deletes_user_tool_results():
+    layer, stores = _make_layer()
+    layer.delete_user("u1")
+    stores["tool_results"].delete_owner.assert_called_once_with("user", "u1")
+
+
+@pytest.mark.parametrize("scope,key,value,ok", [
+    ("session", "status", "a", True),
+    ("session", "status", "zzz", False),
+    ("session", "count", "7", True),
+    ("session", "count", "seven", False),
+    ("session", "undeclared", "x", False),
+    ("persistent", "name", "Asha", True),
+    ("persistent", "undeclared", "x", False),
+    ("signal", "status", "a", False),
+])
+def test_write_strict(scope, key, value, ok):
+    layer, stores = _make_layer()
+    accepted, reason = layer.write_strict("s1", "u1", scope, key, value)
+    assert accepted is ok
+    assert (reason == "") is ok
+    if ok:
+        assert stores["redis"].set_session_field.called or stores["user"].upsert_profile_field.called
+        if key == "count":
+            stores["redis"].set_session_field.assert_called_once_with("s1", "count", 7)
+    else:
+        stores["redis"].set_session_field.assert_not_called()
+        stores["user"].upsert_profile_field.assert_not_called()
+
+
+def test_write_strict_reports_store_failure_session():
+    layer, stores = _make_layer()
+    stores["redis"].set_session_field.side_effect = RuntimeError("boom")
+    assert layer.write_strict("s1", "u1", "session", "status", "a") == (False, "write failed")
+
+
+def test_write_strict_reports_store_failure_persistent():
+    layer, stores = _make_layer()
+    stores["user"].upsert_profile_field.side_effect = RuntimeError("boom")
+    assert layer.write_strict("s1", "u1", "persistent", "name", "Asha") == (False, "write failed")
+
+
+@pytest.mark.parametrize("sid,uid", [("", "u1"), ("s1", "")])
+def test_write_strict_rejects_empty_ids(sid, uid):
+    layer, stores = _make_layer()
+    ok, reason = layer.write_strict(sid, uid, "session", "status", "a")
+    assert ok is False and reason
+    stores["redis"].set_session_field.assert_not_called()
+
+
+def test_delete_user_erases_tool_results_even_if_graph_delete_fails():
+    layer, stores = _make_layer()
+    stores["user"].delete_user.side_effect = RuntimeError("graph down")
+    layer.delete_user("u1")
+    stores["tool_results"].delete_owner.assert_called_once_with("user", "u1")
+
+
+# ---------------------------------------------------------------------------
+# _coerce_session_types — declared int fields
+# ---------------------------------------------------------------------------
+
+def test_context_bundle_coerces_declared_int_fields_to_int():
+    # Redis stores every session value as a string. A declared int field must
+    # come back as an int, so a seeded "0" compares equal to 0 in routing and
+    # pending conditions.
+    layer, stores = _make_layer()
+    stores["redis"].session_exists.return_value = True
+    stores["redis"].get_session.return_value = {"count": "0", "trade": "24", "loop_count": "3"}
+    stores["user"].get_profile.return_value = {}
+
+    session = layer.context_bundle("sess-1", "user-1")["session"]
+
+    assert session["count"] == 0 and isinstance(session["count"], int)
+    # Not declared int: left as stored.
+    assert session["trade"] == "24"
+    assert session["loop_count"] == "3"
+
+
+@pytest.mark.parametrize("raw, expected", [("24", 24), ("-3", -3), ("", ""), ("abc", "abc"), ("2.5", "2.5")])
+def test_coerce_session_types_int_field_values(raw, expected):
+    layer, _ = _make_layer()
+    assert layer._coerce_session_types({"count": raw})["count"] == expected
+
+
+def _adopt(last_state: dict) -> dict:
+    layer, stores = _make_layer()
+    stores["user"].user_exists.return_value = True
+    stores["user"].get_profile.return_value = {}
+    stores["journey"].get_last_journey_summary.return_value = None
+    stores["redis"].session_exists.side_effect = lambda s: s == "old-sess"
+    stores["redis"].get_user_sessions.return_value = {"old-sess": "2024-01-01T10:00:00Z"}
+    stores["redis"].get_session.return_value = last_state
+    return layer.context_bundle("new-sess", "user-1")["session"]
+
+
+def test_context_bundle_adoption_resets_handoff_state():
+    """A new call must not inherit the previous call's handoff cap or markers."""
+    session = _adopt({
+        "handoff_status": "delivered", "handoff_line": "delivered",
+        "handoff_ticket_id": "t-1", "handoff_pending_at": "1700000000000",
+        "current_subagent_id": "job_match", "trade": "welder",
+    })
+    for k in ("handoff_status", "handoff_line", "handoff_ticket_id", "handoff_pending_at"):
+        assert k not in session
+    assert session["current_subagent_id"] == "job_match"
+    assert session["trade"] == "welder"
+
+
+def test_context_bundle_adoption_from_handoff_phase_lands_on_close_return_to():
+    session = _adopt({"current_subagent_id": "handoff", "close_return_to": "job_match",
+                      "handoff_status": "delivered"})
+    assert session["current_subagent_id"] == "job_match"
+
+
+def test_context_bundle_adoption_from_handoff_phase_without_return_uses_start_phase():
+    """No close_return_to: drop the phase so Agent Core falls back to the workflow start."""
+    session = _adopt({"current_subagent_id": "handoff", "handoff_status": "failed"})
+    assert "current_subagent_id" not in session

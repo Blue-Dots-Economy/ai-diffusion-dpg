@@ -2,20 +2,39 @@
 # Blue Dots domain values for Action Gateway.
 # Merged with dev-kit/dpg/action_gateway.yaml by loader.py before deployment.
 #
-# Four tools back the voice-first job-seeker journey:
-#   fetch_profile  — GET  /mock/blue_dots/seeker_fetch  (seeker lookup by phone)
-#   fetch_jobs     — GET  /mock/blue_dots/job_fetch     (provider listings)
-#   onboard        — POST /mock/blue_dots/onboard       (create/update user+profile)
-#   apply_job      — POST /mock/blue_dots/apply         (submit application)
+# Four tools back the voice-first job-seeker journey. All of them call the
+# REAL Signals upstream — the in-process mocks this file once described are
+# long gone:
+#   fetch_profile  — GET  /api/v1/admin/participant   (seeker lookup by phone)
+#   fetch_jobs     — POST /signals-search/v1/search   (semantic job discovery)
+#   save_profile   — POST /api/v1/admin/participant   (create/update seeker)
+#   apply_job      — POST /api/v1/action/perform      (submit application)
 #
-# All four endpoints currently point at the in-process Action Gateway mocks
-# (http://action_gateway:9999/mock/blue_dots/*). Swap each tool's base_url
-# and path to the real upstream once the schemas are finalised.
+# WHICH CLUSTER. Set three env vars to point this config at a different
+# Signals cluster; no YAML edit is needed. The defaults are UAT.
 #
-# Auth (when we switch to the real services):
-#   - fetch_profile, fetch_jobs       — public, no key required
-#   - onboard, apply_job              — x-api-key header, shared secret
-#     (env var: BLUE_DOTS_API_KEY)
+#   SIGNALS_BASE_URL      base_url of fetch_profile, save_profile, apply_job
+#                         (default https://signals.bluedotseconomy.org)
+#   SIGNALS_SEARCH_URL    base_url of fetch_jobs
+#                         (default https://signals.bluedotseconomy.org/signals-search)
+#   SIGNALS_INSTANCE_URL  apply_job's static `instance_url` param, which
+#                         travels inside the apply body, not as a base_url
+#                         (default https://signals.bluedotseconomy.org)
+#
+# Move all three together: leaving instance_url behind points applications at
+# the wrong instance without failing loudly. A ${VAR} with no default and no
+# value fails startup.
+#
+# The keys and the acting-org id are environment-specific too and come from
+# the env, not this file: BLUE_DOTS_API_KEY, BLUE_DOTS_SEARCH_API_KEY (a
+# DIFFERENT key), BLUE_DOTS_ORG_ID. Pointing the URLs at one cluster while
+# the env still holds another's credentials yields 401/403, not a clear error.
+#
+# Auth:
+#   - every tool requires a key; none of these endpoints is public
+#   - fetch_profile, save_profile, apply_job — x-api-key: BLUE_DOTS_API_KEY,
+#     plus x-acting-org-id: BLUE_DOTS_ORG_ID
+#   - fetch_jobs                            — x-api-key: BLUE_DOTS_SEARCH_API_KEY
 
 tools:
 
@@ -47,7 +66,7 @@ tools:
       / Full-time / Flexible), help_needed (otherHelpNeeded: Training /
       Accommodation / Travel / Other). The trade field may be empty or
       noisy in older records — still ask the user to confirm.
-    base_url: "https://dev-signals.serveirc.com"
+    base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
     # The phone lookup moved off network/item/fetch_local: `item_state.phone`
     # is a masked PII field upstream, so filtering on it now matches nothing.
     # GET /admin/participant?phone_number= looks the caller up by their account
@@ -75,6 +94,37 @@ tools:
       # UUID only at the root as `user_id`; its items carry no `created_by`
       # (unlike fetch_local items), so a list_key projection could never
       # surface the owner that apply_job needs as acting_as_user_id.
+      # Lifted into session state so ROUTING can branch on them — routing
+      # reads session ∪ profile, and a tool response otherwise reaches only
+      # the LLM. These are the three facts the opening gate needs and used to
+      # ask the caller for even when they were already on file.
+      #
+      # `compliance` is a [{key, value}] array and `items` is newest-first
+      # (ITEMS_NEWEST_FIRST in signals-dpg), so the first `live` row is the
+      # current profile. items[0] is NOT safe — it can be `retired`.
+      #
+      # has_age reads the PARTICIPANT-level age. The profile's item_state.age
+      # is a different field and is deliberately not used here.
+      session_mapping:
+        - source: "compliance[key=has_age].value"
+          target: has_age
+        - source: "compliance[key=user_terms].value"
+          target: user_terms
+        - source: "compliance[key=user_privacy].value"
+          target: user_privacy
+        - source: "items[lifecycle_status=live].item_id"
+          target: profile_item_id
+        - source: "user_id"
+          target: acting_as_user_id
+        # What the caller told us LAST time. Kept under their own names, not
+        # `trade`/`location`, on purpose: those two hold what the caller says
+        # in THIS call and routing uses them to decide the search is ready.
+        # If the stored values landed there directly, profile_resolve would
+        # be skipped and the caller never offered the choice.
+        - source: "items[lifecycle_status=live].item_state.nameOfJobRolesInterestedIn"
+          target: stored_trade
+        - source: "items[lifecycle_status=live].item_state.location"
+          target: stored_location
       projection:
         fields:
           # Both names map to the same root value. The existing prompts refer
@@ -110,11 +160,12 @@ tools:
       stipend_min / stipend_max, or task_rate_min / task_rate_max.
       Read out whichever is populated. Hiring-manager contact
       details are intentionally not exposed to the LLM.
-    base_url: "https://dev-signals.serveirc.com/signals-search"
+    base_url: "${SIGNALS_SEARCH_URL:-https://signals.bluedotseconomy.org/signals-search}"
     # Job discovery moved off network/item/fetch_local to signals-search.
-    # `item_state.jobProviderLocation` is PII-masked upstream ("B***"), so the
-    # old server-side city filter matches nothing. Search is semantic instead:
-    # the trade and the city both travel inside query_text.
+    # Search is semantic: the trade and the city both travel inside query_text,
+    # not as a server-side filter. Note that semantic search RANKS by the city
+    # but does not FILTER on it — a query naming one city still returns jobs in
+    # others, so the location field below is what the agent must read.
     auth:
       type: api_key
       header: x-api-key
@@ -138,8 +189,22 @@ tools:
               textSearch: "{query_text}"
             pagination:
               limit: 5
-              offset: 0
+              # Optional. A placeholder whose value is absent drops the field,
+              # and the API treats a missing offset as 0 (verified), so a first
+              # search needs no offset at all and "और नौकरियाँ दिखाइए" can ask
+              # for the next page instead of re-reading the same one.
+              offset: "{offset}"
         params:
+          - name: offset
+            source: agent
+            type: integer
+            required: false
+            description: >
+              How many results to skip. OMIT on a first search. When the caller
+              asks for more jobs ("और नौकरियाँ दिखाइए", "और दिखाइए", "कुछ और
+              है?"), pass the number you have ALREADY read out to them, so the
+              next page continues rather than repeating. Re-running the same
+              search with no offset returns the same jobs again.
           - name: query_text
             source: agent
             type: string
@@ -158,6 +223,12 @@ tools:
           item_id: item_id
           role: item_state.role
           company: item_state.jobProviderName
+          # jobProviderLocation stopped being a masked PII field upstream, so
+          # the agent can finally be told where a job actually is. KNOWN GAP:
+          # rows created while it was masked still read back as "B***", and
+          # nothing yet stops the agent speaking one. Those rows are being
+          # cleaned up; revisit if they outlive the cleanup.
+          location: item_state.jobProviderLocation
           positions: item_state.positions
           nature_of_job: item_state.natureOfJob
           # Three pay models; only one is populated per posting.
@@ -173,20 +244,6 @@ tools:
           last_role_held: item_state.lastRoleHeld
           status: lifecycle_status
           match_score: score
-          # NOT projected: jobProviderLocation (masked upstream), all
-          # hiringManager* fields (PII), item_locations (GPS).
-
-  # ────────────────────────────────────────────────────────────────────
-  # WRITE — Create or update the seeker profile via the Signals
-  # /api/v1/admin/participant endpoint. The same call covers both
-  # CREATE and UPDATE: omit ``item_id`` to insert a new profile;
-  # include ``item_id`` (the existing profile's UUID) to update that
-  # one. The upstream does NOT support partial updates — pass the
-  # full ``item_state`` every time. Response carries the upserting
-  # participant's ``user_id`` (= acting_as_user_id for apply_job) and
-  # an ``items`` array containing the affected profile (1 item for
-  # UPDATE, all of the user's profiles for CREATE).
-  # ────────────────────────────────────────────────────────────────────
   - id: save_profile
     type: rest_api
     category: write
@@ -201,7 +258,7 @@ tools:
       array — for UPDATE it has just the updated profile; for CREATE it
       has all the user's profiles and the newly-created one is the last
       by created_at.
-    base_url: "https://dev-signals.serveirc.com"
+    base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
     auth:
       type: api_key
       header: x-api-key
@@ -271,6 +328,22 @@ tools:
             highestQualificationOrSkill: "{qualification}"
             natureOfJobsInterestedIn: "{job_nature}"
             otherHelpNeeded: "{help_needed}"
+        # `required: true` here is not documentation — it becomes the
+        # `required` list of the JSON Schema handed to the LLM, which the
+        # provider's function-calling validation enforces. Anything marked
+        # required is a field the model MUST extract before it can call the
+        # tool, which in practice means a question asked on the call.
+        #
+        # The live upstream schema
+        # (GET /api/v1/network/schema/blue_dot/seeker/profile_1.0) requires
+        # only ["name", "phone"]. gender, location, age and work_experience
+        # are optional. Marking them required here cost the caller four
+        # extra questions — three of them closed English enums over a phone
+        # line — and was the direct cause of the profile-question loop seen
+        # on the 24 Sep PoC calls.
+        #
+        # Only `name` is required now. phone is injected from the session,
+        # not asked. Everything else is sent when known and skipped when not.
         params:
           - name: name
             source: agent
@@ -280,30 +353,50 @@ tools:
           - name: gender
             source: agent
             type: string
-            required: true
+            required: false
             description: >
-              Gender. The upstream enum is CASE-SENSITIVE — send exactly one
-              of "Male", "Female", "Other", "Don't want to share". Capitalise
-              it: "male" is rejected with 400, and the caller will almost
-              always say it in lower case.
+              Optional. Only send it if the caller volunteered it — do NOT
+              ask. The upstream enum is CASE-SENSITIVE: send exactly one of
+              "Male", "Female", "Other", "Don't want to share". Capitalise
+              it; "male" is rejected with 400.
           - name: location
             source: agent
             type: string
-            required: true
-            description: "City the caller is in / wants to work."
+            required: false
+            description: >
+              Optional for the upstream, but usually already known —
+              profile_resolve captures the city the caller wants to work in.
+              Send it when you have it; never hold up the save to ask.
+          # source: session, NOT agent. The LLM does not see this parameter
+          # and cannot supply it; Agent Core fills it from turn state.
+          #
+          # It used to be an agent param described as "always send it". The
+          # model cannot always see it — the value lives in profile state,
+          # not in the conversation — and a model told to always send a field
+          # it cannot see invents one. It sent 0, and the participant endpoint
+          # reads 0 as a real age: 400 U18_NOT_ALLOWED, which the agent then
+          # relayed to adult callers as "you are under eighteen". Measured on
+          # 2026-09-25: age=0 -> U18_NOT_ALLOWED, age omitted -> AGE_REQUIRED,
+          # age=26 -> 200.
+          #
+          # Sourced from state, a missing age now omits the field and yields
+          # AGE_REQUIRED — an honest error instead of a false accusation.
           - name: age
-            source: agent
+            source: session
             type: integer
-            required: true
-            description: "Caller's age in years."
+            required: false
+            description: >
+              Caller's age in years, supplied by the framework from turn
+              state. The opening subagent collects it before the journey
+              starts. Not visible to the model.
           - name: work_experience
             source: agent
             type: string
-            required: true
+            required: false
             description: >
-              Must be EXACTLY one of: "Fresher", "Worked before",
-              "Returning after a break". Map the caller's words to the
-              closest enum value.
+              Optional. Only send it if the caller volunteered it — do NOT
+              ask. Must be EXACTLY one of: "Fresher", "Worked before",
+              "Returning after a break".
           - name: profile_item_id
             source: agent
             type: string
@@ -349,6 +442,24 @@ tools:
               "Travel", "Other".
     response:
       max_size_chars: 4000
+      # Lift the new profile's identity into session the moment it exists, so
+      # ROUTING can see that the profile is created — not only the LLM.
+      #
+      # Without this, nothing in session changes when a save succeeds.
+      # profile_setup's "profile_setup_done" rule was documented dead for
+      # exactly this reason, so a caller who had just been saved stayed in
+      # profile_setup — a phase with NO apply tool — and when they said
+      # "हाँ, भेज दीजिए" the model answered "आपका आवेदन भेज दिया गया है".
+      # Its own prompt forbids that sentence in that phase; it said it anyway.
+      # The profile was live upstream and no application existed.
+      #
+      # Same selectors as fetch_profile: the two endpoints return the same
+      # participant shape.
+      session_mapping:
+        - source: "items[lifecycle_status=live].item_id"
+          target: profile_item_id
+        - source: "user_id"
+          target: acting_as_user_id
       # Expose user_id (= acting_as_user_id for apply_job) and the items
       # array. For UPDATE the array has one element (the updated profile);
       # for CREATE it contains all the user's profiles and the new one
@@ -374,7 +485,7 @@ tools:
       (item_network, item_domain, item_type, item_instance_url,
       action_type) lives in body_template and never needs to be
       supplied by the LLM.
-    base_url: "https://dev-signals.serveirc.com"
+    base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
     auth:
       type: api_key
       header: x-api-key
@@ -424,7 +535,7 @@ tools:
           - name: instance_url
             source: static
             type: string
-            value: "https://dev-signals.serveirc.com"
+            value: "${SIGNALS_INSTANCE_URL:-https://signals.bluedotseconomy.org}"
           - name: profile_item_id
             source: agent
             type: string
@@ -433,22 +544,56 @@ tools:
               The chosen profile's item_id — from fetch_profile (use_existing
               path) or save_profile's response (create_new / update_existing).
           - name: acting_as_user_id
-            source: agent
+            # SESSION, not agent. Both producers write this field via their
+            # own session_mapping — fetch_profile and save_profile each map
+            # `user_id` to `acting_as_user_id` — so the value is always on
+            # hand and the model never has to recall it.
+            #
+            # It used to be agent-supplied, and the model got it wrong on
+            # every returning-caller apply measured against UAT: once by
+            # copying profile_item_id into it, then by inventing a
+            # well-formed UUID outright. The grounding guard caught each one
+            # and refused the apply, so the caller could not apply at all.
+            # Asking a model to echo a 36-character identifier from many
+            # turns back is the exact failure that guard was written for;
+            # the fix is to stop asking.
+            source: session
             type: string
             required: true
             description: >
-              The seeker's user UUID. From fetch_profile's
-              source_item_owner field (use_existing) or save_profile's
-              user_id (create_new / update_existing). The upstream rejects
-              the apply without it.
+              The seeker's user UUID. Injected from session state by the
+              adapter — do NOT supply it.
           - name: job_item_id
             source: agent
             type: string
             required: true
+            # Shape-checked before the call. Measured on the VM: the model
+            # sometimes sends what the CALLER said — "पहला वाला", "तीसरा" —
+            # instead of the id, and the upstream answers a bare
+            # 400 FST_ERR_VALIDATION "Invalid UUID" that gives it nothing to
+            # correct. Roughly one apply in four failed this way. Failing at
+            # the gateway returns a message naming the parameter instead.
+            format: uuid
             description: >
-              The chosen job's item_id from the prior fetch_jobs result.
+              The chosen job's item_id from the prior fetch_jobs result,
+              copied verbatim — the full hyphenated UUID, never the
+              caller's words for which job they picked.
     response:
       max_size_chars: 1000
+      # Record the outcome where ROUTING can see it, not only the LLM. Without
+      # this, apply_confirm could only end the call on a turn count, so a turn
+      # whose apply was refused or failed still counted as "done" and the
+      # caller was dropped with no application. Measured locally: apply_job
+      # was refused for an ungrounded id, the very next routing pass matched
+      # the exhaustion rule, and the call ended.
+      #
+      # `summary.succeeded` is 1 on a created application and 0 on any
+      # failure, so it is the honest test for "did an application happen".
+      session_mapping:
+        - source: "summary.succeeded"
+          target: applications_submitted
+        - source: "results[status=success].action_id"
+          target: last_application_id
       # Bulk envelope (Signals-DPG PR #55): { results: [ ... ], summary }.
       # apply_job sends one element, so `results` has one item; list_key
       # projects it into a single-element list the LLM reads.

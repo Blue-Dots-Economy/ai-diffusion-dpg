@@ -91,7 +91,7 @@ def test_context_bundle_empty_session_id_returns_empty_bundle(client, mock_memor
     response = client.post("/context_bundle", json={"session_id": "", "user_id": "user-1"})
     assert response.status_code == 200
     data = response.json()
-    assert data == {"session": {}, "profile": {}, "journey": None}
+    assert data == {"session": {}, "profile": {}, "journey": None, "tool_results": []}
     mock_memory.context_bundle.assert_not_called()
 
 
@@ -99,7 +99,7 @@ def test_context_bundle_empty_user_id_returns_empty_bundle(client, mock_memory):
     response = client.post("/context_bundle", json={"session_id": "sess-1", "user_id": ""})
     assert response.status_code == 200
     data = response.json()
-    assert data == {"session": {}, "profile": {}, "journey": None}
+    assert data == {"session": {}, "profile": {}, "journey": None, "tool_results": []}
     mock_memory.context_bundle.assert_not_called()
 
 
@@ -112,7 +112,7 @@ def test_context_bundle_memory_exception_returns_empty_bundle(client, mock_memor
     response = client.post("/context_bundle", json={"session_id": "sess-1", "user_id": "user-1"})
     assert response.status_code == 200
     data = response.json()
-    assert data == {"session": {}, "profile": {}, "journey": None}
+    assert data == {"session": {}, "profile": {}, "journey": None, "tool_results": []}
 
 
 # ---------------------------------------------------------------------------
@@ -436,4 +436,54 @@ def test_write_emits_memory_write_span(mock_memory):
     assert write_span.attributes.get("db.system") == "redis"
 
     _reset_for_testing()
+
+
+# ---------------------------------------------------------------------------
+# POST /tool_results/apply — normal execution
+# ---------------------------------------------------------------------------
+
+def test_apply_tool_results_forwards(client, mock_memory):
+    body = {"session_id": "s1", "user_id": "u1", "invalidate": ["fetch_profile"],
+            "puts": [{"scope": "user", "tool": "fetch_profile", "args_hash": "ab12",
+                      "data": {"a": 1}, "ttl_seconds": 60, "origin": "turn"}]}
+    r = client.post("/tool_results/apply", json=body)
+    assert r.status_code == 200 and r.json() == {"status": "ok"}
+    args = mock_memory.apply_tool_results.call_args[0]
+    assert args[0:3] == ("s1", "u1", ["fetch_profile"])
+    assert args[3][0]["tool"] == "fetch_profile"
+
+
+def test_apply_tool_results_rejects_bad_tool_name(client, mock_memory):
+    body = {"session_id": "s1", "user_id": "u1", "puts": [
+        {"scope": "user", "tool": "bad:tool", "args_hash": "ab12", "data": {}, "ttl_seconds": 60}]}
+    assert client.post("/tool_results/apply", json=body).status_code == 422
+    mock_memory.apply_tool_results.assert_not_called()
+
+
+def test_apply_tool_results_empty_ids_is_noop(client, mock_memory):
+    r = client.post("/tool_results/apply", json={"session_id": " ", "user_id": "u1"})
+    assert r.json() == {"status": "ok"}
+    mock_memory.apply_tool_results.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# POST /write_strict — normal execution and edge cases
+# ---------------------------------------------------------------------------
+
+def test_write_strict_ok_and_rejected(client, mock_memory):
+    mock_memory.write_strict.return_value = (True, "")
+    r = client.post("/write_strict", json={"session_id": "s1", "user_id": "u1",
+                                           "scope": "session", "key": "k", "value": "v"})
+    assert r.json() == {"status": "ok", "reason": ""}
+    mock_memory.write_strict.return_value = (False, "nope")
+    r = client.post("/write_strict", json={"session_id": "s1", "user_id": "u1",
+                                           "scope": "session", "key": "k", "value": "v"})
+    assert r.json() == {"status": "rejected", "reason": "nope"}
+
+
+def test_write_strict_exception_is_rejected(client, mock_memory):
+    mock_memory.write_strict.side_effect = RuntimeError("x")
+    r = client.post("/write_strict", json={"session_id": "s1", "user_id": "u1",
+                                           "scope": "session", "key": "k", "value": "v"})
+    assert r.json()["status"] == "rejected"
 

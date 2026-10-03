@@ -1,0 +1,20 @@
+id: T03
+title: Hinglish caller
+language: hi
+facts:
+  name: Arjun
+  age: 22
+  trade: delivery boy
+  city: गाज़ियाबाद
+goal: delivery job with incentive.
+quirks:
+- 'mix English words: delivery boy, fresher, incentive, salary'
+- say you are a fresher
+ends_when: when the bot says goodbye, or when you have what you came for and say thank you
+feeds:
+- TC07
+- TC08
+- TC09
+legs:
+- goal: delivery job with incentive.
+  opening_line: नमस्ते

@@ -360,4 +360,4 @@ def test_observability_section_domain_required():
 
 def test_observability_section_extra_forbidden():
     with pytest.raises(ValidationError):
-        ObservabilitySection(domain="kkb", typo="x")
+        ObservabilitySection(domain="blue-dots", typo="x")

@@ -1,0 +1,911 @@
+# DPG alert rules. Routed to Discord by the `severity` label (policies.yaml):
+# critical, warning or info.
+#
+# Every rule is the same three steps: A queries Prometheus or Loki, B reduces
+# each series to its last value, C compares it to the threshold. `for` is how
+# long C must hold before the alert fires, so short spikes do not page.
+#
+# Container rules use the cAdvisor series Prometheus keeps for this stack's
+# containers (prometheus.yml filters them by name), grouped by `service`.
+#
+# "Service down" and "Monitoring target down" only consider services that were
+# up at some point in the last 24 hours. Deployments run different subsets of
+# the stack (the dev-kit drops unused services, the monitoring profile is
+# optional), and a service that was never started is not an outage. A service
+# that crashes on start is caught by Crash-looping instead.
+#
+# Query failures raise Grafana's own DatasourceError alert on the same route,
+# so a broken datasource is one warning, not a flood of false "down" alerts.
+#
+# Rules are provisioned read-only. To change one, edit this file; Grafana
+# reloads provisioning on restart.
+apiVersion: 1
+groups:
+- orgId: 1
+  name: dpg-critical
+  folder: DPG alerts
+  interval: 30s
+  rules:
+  - uid: dpg-service-down
+    title: Service down
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: max by (service) (probe_success{job=~"service_status_.*"}) and on (service) (max by (service) (max_over_time(probe_success{job=~"service_status_.*"}[24h])) == 1)
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: lt
+            params:
+            - 1
+    noDataState: Alerting
+    execErrState: Error
+    for: 1m
+    labels:
+      severity: critical
+    annotations:
+      summary: '{{ $labels.service }} is down'
+      description: Its health check has failed for over a minute.
+      dashboard_url: '{{ externalURL }}d/dpg-service-status'
+    isPaused: false
+  - uid: dpg-crash-looping
+    title: Crash-looping
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: max by (service) (changes(container_start_time_seconds{name!=""}[10m]))
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 2
+    noDataState: OK
+    execErrState: Error
+    for: 0s
+    labels:
+      severity: critical
+    annotations:
+      summary: '{{ $labels.service }} is crash-looping'
+      description: Restarted {{ with $values.B }}{{ .Value }}{{ else }}n/a{{ end }} times in the last 10 minutes.
+      dashboard_url: '{{ externalURL }}d/dpg-containers'
+    isPaused: false
+  - uid: dpg-oom-killed
+    title: Out of memory
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: max by (service) (increase(container_oom_events_total{name!=""}[5m]))
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+    noDataState: OK
+    execErrState: Error
+    for: 0s
+    labels:
+      severity: critical
+    annotations:
+      summary: '{{ $labels.service }} was killed for running out of memory'
+      description: The kernel OOM-killed it in the last 5 minutes; check its memory limit and usage.
+      dashboard_url: '{{ externalURL }}d/dpg-containers'
+    isPaused: false
+  - uid: dpg-llm-failing
+    title: LLM calls failing
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-loki
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: sum(count_over_time({job="agent_core", level="ERROR"} |= "chat_provider" [5m]))
+        queryType: instant
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 5
+    noDataState: OK
+    execErrState: Error
+    for: 0s
+    labels:
+      severity: critical
+      service: agent_core
+    annotations:
+      summary: LLM provider calls are failing
+      description: '{{ with $values.B }}{{ .Value }}{{ else }}n/a{{ end }} provider errors in 5 minutes; turns return empty replies. Check the API key and provider status.'
+      dashboard_url: '{{ externalURL }}d/dpg-service-traffic'
+    isPaused: false
+- orgId: 1
+  name: dpg-warning
+  folder: DPG alerts
+  interval: 1m
+  rules:
+  - uid: dpg-container-memory-high
+    title: High memory
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: max by (service) (container_memory_working_set_bytes{name!=""} / (container_spec_memory_limit_bytes{name!=""} > 0))
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0.9
+    noDataState: OK
+    execErrState: Error
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ $labels.service }} is using {{ with $values.B }}{{ humanizePercentage .Value }}{{ else }}n/a{{ end }} of its memory limit'
+      description: Above 90% for 5 minutes; it will be OOM-killed if it reaches the limit.
+      dashboard_url: '{{ externalURL }}d/dpg-containers'
+    isPaused: false
+  - uid: dpg-host-memory-high
+    title: Host memory high
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: sum(container_memory_working_set_bytes{name!=""}) / max(machine_memory_bytes)
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0.85
+    noDataState: OK
+    execErrState: Error
+    for: 5m
+    labels:
+      severity: warning
+      service: host
+    annotations:
+      summary: The stack is using {{ with $values.B }}{{ humanizePercentage .Value }}{{ else }}n/a{{ end }} of host memory
+      description: All containers together have been above 85% of host memory for 5 minutes.
+      dashboard_url: '{{ externalURL }}d/dpg-containers'
+    isPaused: false
+  - uid: dpg-cpu-overload
+    title: Service overload (CPU)
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: max by (service) (rate(container_cpu_usage_seconds_total{name!=""}[5m]) / (container_spec_cpu_quota{name!=""} / container_spec_cpu_period{name!=""}))
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0.9
+    noDataState: OK
+    execErrState: Error
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ $labels.service }} is using {{ with $values.B }}{{ humanizePercentage .Value }}{{ else }}n/a{{ end }} of its CPU limit'
+      description: Above 90% of its CPU limit for 10 minutes; it is being throttled.
+      dashboard_url: '{{ externalURL }}d/dpg-containers'
+    isPaused: false
+  - uid: dpg-cpu-overload-unlimited
+    title: Service overload (CPU, no limit)
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: max by (service) (rate(container_cpu_usage_seconds_total{name!=""}[5m]) unless on (name) (container_spec_cpu_quota{name!=""} > 0))
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 1.5
+    noDataState: OK
+    execErrState: Error
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ $labels.service }} is using {{ with $values.B }}{{ printf "%.2f" .Value }}{{ else }}n/a{{ end }} CPU cores'
+      description: Above 1.5 cores for 10 minutes (no CPU limit set).
+      dashboard_url: '{{ externalURL }}d/dpg-containers'
+    isPaused: false
+  - uid: dpg-latency-high
+    title: Service overload (latency)
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: label_replace(histogram_quantile(0.95, sum by (le, exported_job) (rate(dpg_http_server_duration_milliseconds_bucket{http_target!="/health"}[5m]))), "service", "$1", "exported_job", "(.+)")
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 3000
+    noDataState: OK
+    execErrState: Error
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ $labels.service }} p95 latency is {{ with $values.B }}{{ printf "%.0f" .Value }}{{ else }}n/a{{ end }} ms'
+      description: Above 3 s for 10 minutes; the voice latency target is 0.8 to 1.2 s.
+      dashboard_url: '{{ externalURL }}d/dpg-service-traffic'
+    isPaused: false
+  - uid: dpg-error-rate-high
+    title: High 5xx error rate
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: label_replace((sum by (exported_job) (rate(dpg_http_server_duration_milliseconds_count{http_target!="/health", http_status_code=~"5.."}[5m])) / sum by (exported_job) (rate(dpg_http_server_duration_milliseconds_count{http_target!="/health"}[5m]))) and on (exported_job) (sum by (exported_job) (rate(dpg_http_server_duration_milliseconds_count{http_target!="/health"}[5m])) > 0.05), "service", "$1", "exported_job", "(.+)")
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0.05
+    noDataState: OK
+    execErrState: Error
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ $labels.service }} is returning {{ with $values.B }}{{ humanizePercentage .Value }}{{ else }}n/a{{ end }} 5xx responses'
+      description: Above 5% for 5 minutes (ignored below 0.05 req/s so a single failure cannot trigger it).
+      dashboard_url: '{{ externalURL }}d/dpg-service-traffic'
+    isPaused: false
+  - uid: dpg-probe-slow
+    title: Slow health checks
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: max by (service) (probe_duration_seconds{job=~"service_status_.*"})
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 2
+    noDataState: OK
+    execErrState: Error
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ $labels.service }} health checks take {{ with $values.B }}{{ printf "%.1f" .Value }}{{ else }}n/a{{ end }} s'
+      description: Above 2 s for 5 minutes; the service is up but struggling.
+      dashboard_url: '{{ externalURL }}d/dpg-service-status'
+    isPaused: false
+  - uid: dpg-error-log-spike
+    title: Error log spike
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-loki
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: label_replace(sum by (job) (count_over_time({level="ERROR"}[5m])), "service", "$1", "job", "(.+)")
+        queryType: instant
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 20
+    noDataState: OK
+    execErrState: Error
+    for: 0s
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ $labels.service }} logged {{ with $values.B }}{{ .Value }}{{ else }}n/a{{ end }} errors in 5 minutes'
+      description: More than 20 ERROR lines in 5 minutes.
+      dashboard_url: '{{ externalURL }}d/dpg-traces'
+    isPaused: false
+  - uid: dpg-telemetry-dropping
+    title: Telemetry dropping
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: sum by (exporter) (label_replace(rate(otelcol_exporter_send_failed_spans{job="otelcol"}[5m]), "signal", "spans", "", "") or label_replace(rate(otelcol_exporter_send_failed_metric_points{job="otelcol"}[5m]), "signal", "metrics", "", "") or label_replace(rate(otelcol_exporter_send_failed_log_records{job="otelcol"}[5m]), "signal", "logs", "", ""))
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+    noDataState: OK
+    execErrState: Error
+    for: 5m
+    labels:
+      severity: warning
+      service: otelcol
+    annotations:
+      summary: The collector is failing to export to {{ $labels.exporter }}
+      description: Traces, metrics or logs are being dropped for 5 minutes; dashboards may be incomplete.
+      dashboard_url: '{{ externalURL }}d/dpg-otel-collector'
+    isPaused: false
+  - uid: dpg-redis-memory-high
+    title: Redis memory high
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: sum(redis_memory_used_bytes) / (sum(redis_memory_max_bytes > 0) or sum(machine_memory_bytes))
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0.8
+    noDataState: OK
+    execErrState: Error
+    for: 5m
+    labels:
+      severity: warning
+      service: redis
+    annotations:
+      summary: Redis is using {{ with $values.B }}{{ humanizePercentage .Value }}{{ else }}n/a{{ end }} of its available memory
+      description: Above 80% for 5 minutes; session state lives here.
+      dashboard_url: '{{ externalURL }}d/dpg-redis'
+    isPaused: false
+  - uid: dpg-scrape-target-down
+    title: Monitoring target down
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: label_replace((min by (job) (up{job=~"otelcol|cadvisor|redis|dpg_metrics|service_status_.*"}) and on (job) (max by (job) (max_over_time(up{job=~"otelcol|cadvisor|redis|dpg_metrics|service_status_.*"}[24h])) == 1)), "service", "$1", "job", "(.+)")
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: lt
+            params:
+            - 1
+    noDataState: OK
+    execErrState: Error
+    for: 2m
+    labels:
+      severity: warning
+    annotations:
+      summary: Prometheus cannot scrape {{ $labels.service }}
+      description: Down for 2 minutes; alerts that depend on it are blind until it is back.
+      dashboard_url: '{{ externalURL }}d/dpg-service-status'
+    isPaused: false
+- orgId: 1
+  name: dpg-info
+  folder: DPG alerts
+  interval: 1m
+  rules:
+  - uid: dpg-container-restarted
+    title: Container restarted
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: max by (service) (changes(container_start_time_seconds{name!=""}[5m]))
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+    noDataState: OK
+    execErrState: Error
+    for: 0s
+    labels:
+      severity: info
+    annotations:
+      summary: '{{ $labels.service }} restarted'
+      description: Expected after a deploy or a manual restart; repeated restarts raise Crash-looping.
+      dashboard_url: '{{ externalURL }}d/dpg-containers'
+    isPaused: false
+- orgId: 1
+  name: dpg-heartbeat
+  folder: DPG alerts
+  interval: 1m
+  rules:
+  - uid: dpg-heartbeat
+    title: Heartbeat
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: dpg-prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        expr: vector(1)
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+    noDataState: Alerting
+    execErrState: Error
+    for: 0s
+    labels:
+      severity: info
+      service: grafana
+    annotations:
+      summary: Alerting is alive
+      description: Posted once a day. If this stops arriving, Grafana or the host is down and no other alert can be sent.
+      dashboard_url: '{{ externalURL }}d/dpg-service-status'
+    isPaused: false

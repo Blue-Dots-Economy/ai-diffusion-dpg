@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import AsyncIterator, Optional
 
-from .models import ContextBundle, DoneEvent, SegmentInput, StreamEvent
+from .models import ContextBundle, DoneEvent, SegmentInput, StreamEvent, TurnRecord
 
 
 class TurnStatus(str, Enum):
@@ -21,7 +21,8 @@ class TurnStatus(str, Enum):
         WAITING → INVOKED      (policy triggered, invocation task created)
         WAITING → ABANDONED    (cancel() while waiting)
         INVOKED → COMPLETED    (DoneEvent emitted naturally)
-        INVOKED → INTERRUPTED  (cancel() while LLM call in flight)
+        INVOKED → INTERRUPTED  (barge-in / cancel() while in flight; the
+                                invocation stops cooperatively at a safe point)
     """
 
     WAITING = "waiting"
@@ -54,9 +55,13 @@ class Turn:
     invocation_task: Optional[asyncio.Task] = None
     silence_task: Optional[asyncio.Task] = None
     ceiling_task: Optional[asyncio.Task] = None
+    # Streaming-lifecycle ledger filled by stream_turn (spec §4.3), and the
+    # interrupted turn this one must wait for before invoking (spec §4.4).
+    record: TurnRecord = field(default_factory=TurnRecord)
+    predecessor: Optional["Turn"] = None
 
-    # Context cache — fetched once on first add_segment() so the semantic gate
-    # has NLU context (current_question, current_subagent_id) without re-reading
+    # Context cache — fetched once on first add_segment() so the session context
+    # (current_question, current_subagent_id) is available without re-reading
     # Memory Layer on every segment.
     _context_fetched: bool = False
     context_bundle: Optional[ContextBundle] = None

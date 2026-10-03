@@ -1,0 +1,20 @@
+id: T11
+title: Angry, wants a human
+language: hi
+facts:
+  name: सुरेश
+  age: 38
+  trade: फिटर
+  city: गाज़ियाबाद
+goal: complain.
+quirks:
+- be angry that nobody called you back
+- demand to talk to a human
+- demand a callback tomorrow at 10
+ends_when: when the bot says goodbye, or when you have what you came for and say thank you
+feeds:
+- TC12
+- TC14
+legs:
+- goal: complain.
+  opening_line: नमस्ते

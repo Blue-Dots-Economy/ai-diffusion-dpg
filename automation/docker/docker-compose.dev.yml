@@ -1,6 +1,6 @@
 # automation/docker/docker-compose.yml
 #
-# Runs all 7 DPG services on a single machine using pre-built images from
+# Runs the DPG services (blocks, channels and dev-kit) on a single machine using pre-built images from
 # GHCR: ghcr.io/blue-dots-economy/ai-diffusion-dpg/<service>. The packages are
 # public, so no `docker login` is needed to pull them. All are linux/amd64.
 #
@@ -30,9 +30,10 @@
 #   Server starts only after ingest completes successfully.
 #
 # Prerequisites:
-#   1. export ANTHROPIC_API_KEY=sk-ant-...
+#   1. export OPENAI_API_KEY=sk-...   (Blue Dots config; ANTHROPIC_API_KEY is only needed
+#      when a provider is set to anthropic)
 #   2. docker compose up -d                    (runs ingest first, then starts all services)
-#   3. docker compose run --rm reach_layer_cli (interactive CLI session, opt-in via `cli` profile)
+#   3. docker compose ps                       (there is no CLI service; use the web, voice, MCP or bridge channels)
 #
 # Paths in this file are relative to the docker-compose.yml location.
 # ../../ resolves to the repository root.
@@ -51,8 +52,16 @@ services:
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
-      # Connector API keys are injected here at deploy time by dev-kit (e.g. ONEST_API_KEY=...).
-      # When running docker compose manually, add KEY=value lines to this section.
+      # Connector secrets and the Signals cluster. Empty values are fine for a domain that doesn't use them.
+      - BLUE_DOTS_API_KEY=${BLUE_DOTS_API_KEY:-}
+      - BLUE_DOTS_ORG_ID=${BLUE_DOTS_ORG_ID:-}
+      - BLUE_DOTS_SEARCH_API_KEY=${BLUE_DOTS_SEARCH_API_KEY:-}
+      - SIGNALS_BASE_URL=${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}
+      - SIGNALS_SEARCH_URL=${SIGNALS_SEARCH_URL:-https://signals.bluedotseconomy.org/signals-search}
+      - SIGNALS_INSTANCE_URL=${SIGNALS_INSTANCE_URL:-https://signals.bluedotseconomy.org}
+    volumes:
+      - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     # Per-domain connector secrets: one KEY=value line per auth.secret_env in
     # dev-kit/configs/<domain>/action_gateway.yaml. The file is gitignored; copy
     # secrets.env.example next to it. Optional, so dev-kit deploys (which inject
@@ -60,9 +69,6 @@ services:
     env_file:
       - path: ../../dev-kit/configs/${DOMAIN:-kkb}/secrets.env
         required: false
-    volumes:
-      - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -96,7 +102,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}       # set to DEBUG for chat_provider/orchestrator tracing
     volumes:
       - ../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/agent_core.yaml:/app/config/agent_core.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/agent_core.yaml:/app/config/agent_core.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -207,7 +213,7 @@ services:
     # The KE server starts immediately; documents are ingested when the user uploads via /upload.
     volumes:
       - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
       - ../../knowledge_engine/data:/app/data:ro   # source docs (read-only)
       - chroma_data:/app/chroma_db            # writable ChromaDB volume (CHROMA_PERSIST_DIR points here)
       - kb_data:/data/kb                      # upload staging area for KB documents
@@ -244,9 +250,10 @@ services:
       - MEMGRAPH_URI=bolt://memgraph:7687
       - MEMGRAPH_USER=memgraph
       - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-}
+      - TOOL_RESULT_KEY_SECRET=${TOOL_RESULT_KEY_SECRET:-}
     volumes:
       - ../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
     networks:
       - dpg_net
     depends_on:
@@ -278,7 +285,7 @@ services:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -306,6 +313,7 @@ services:
     image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-web:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: reach_layer_web
+    profiles: [web]   # optional channel; start with --profile web
     environment:
       - CONFIG_FOLDER=/app/config
       # routing_only = health + ingest proxy only (no SPA, no auth, no chat).
@@ -325,7 +333,7 @@ services:
       # Unified Reach Layer config: DPG defaults + per-domain overrides.
       # Loader scopes to the web channel via load_reach_config("web").
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -358,7 +366,7 @@ services:
   #     # Unified Reach Layer config: DPG defaults + per-domain overrides.
   #     # Loader scopes to the cli channel via load_reach_config("cli").
   #     - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-  #     - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+  #     - ../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
   #   networks:
   #     - dpg_net
   #   stdin_open: true
@@ -379,6 +387,7 @@ services:
     image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-voice:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: reach_layer_voice
+    profiles: [voice]   # optional channel; start with --profile voice
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
       - DOMAIN_CONFIG_PATH=/app/config/domain.yaml
@@ -392,7 +401,7 @@ services:
       # Unified Reach Layer config: DPG defaults + per-domain overrides.
       # Loader scopes to the voice channel via load_reach_config("voice").
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
       - ./recordings:/var/recordings
     ports:
       - "8006:8006"
@@ -430,11 +439,12 @@ services:
     image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-mcp:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: reach_layer_mcp
+    profiles: [mcp]   # optional channel; start with --profile mcp
     environment:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -479,7 +489,11 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+      # main.py reads the framework defaults from config/dpg.yaml under its
+      # workdir and ignores CONFIG_FOLDER for that file, so mount it there too
+      # (as docker-compose.yml and automation/deploy/shared-vm do).
+      - ../../dev-kit/dpg/reach_layer.yaml:/app/reach_layer/bridge/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -509,7 +523,7 @@ services:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -535,8 +549,25 @@ services:
       - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:-admin}
+      # Open on the service-status overview instead of an empty home page;
+      # every dashboard links to the others from its header.
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/service-status.json
+      # "Logs / App" (grafana.com 13639) still uses the legacy Angular graph
+      # panel. Migrate such panels to their React equivalents on load, so the
+      # dashboard keeps working once Angular support is removed.
+      - GF_FEATURE_TOGGLES_ENABLE=autoMigrateOldPanels
+      # Base of the dashboard links in alert messages.
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3000}
+      # Discord alert webhooks, one per severity. Secrets: set them in .env.
+      # Grafana will not start on an empty Discord URL, so an unset one falls
+      # back to an unroutable placeholder: alerts then show in Grafana only.
+      - DISCORD_WEBHOOK_CRITICAL=${DISCORD_WEBHOOK_CRITICAL:-http://127.0.0.1:9/discord-webhook-not-configured}
+      - DISCORD_WEBHOOK_WARNING=${DISCORD_WEBHOOK_WARNING:-http://127.0.0.1:9/discord-webhook-not-configured}
+      - DISCORD_WEBHOOK_INFO=${DISCORD_WEBHOOK_INFO:-http://127.0.0.1:9/discord-webhook-not-configured}
     volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning
+      # Datasources, dashboards (provider + JSON) and alerting (rules, routing,
+      # Discord).
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
     networks:
       - dpg_net
     deploy:
@@ -653,6 +684,7 @@ services:
   ngrok:
     image: ngrok/ngrok:latest
     container_name: ngrok
+    profiles: [voice]   # only with the voice channel
     # Tunnels the voice channel so Vobiz can reach /answer and /ws webhooks.
     # If NGROK_DOMAIN is set (paid ngrok fixed domain), --domain pins the URL so
     # PUBLIC_URL is known before voice starts. Otherwise the URL is random and must
@@ -718,6 +750,83 @@ services:
         limits:
           cpus: '0.1'
           memory: 256M
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Monitoring profile — the exporters behind the Grafana dashboards and alerts.
+  #
+  # Off by default: enable with `docker compose --profile monitoring up -d`
+  # (or COMPOSE_PROFILES=monitoring). Prometheus, Grafana and the collector run
+  # either way; without the profile the service-status, container and Redis
+  # dashboards have no data, and no alert pages for what was never started.
+  # No ports are published; Prometheus reaches them inside dpg_net.
+  # ---------------------------------------------------------------------------
+
+  # Probes every service's health endpoint (and Redis and Memgraph by TCP) on
+  # Prometheus's behalf. Most DPG blocks only push metrics through the
+  # collector, so without this nothing can say whether one is up.
+  blackbox_exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: blackbox_exporter
+    profiles: [monitoring]
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 64M
+    restart: unless-stopped
+
+  # Per-container CPU / memory / network / disk. Needs the host's cgroup and
+  # Docker state read-only; privileged is cAdvisor's documented requirement
+  # for reading every container's cgroup, which is why this is opt-in.
+  # Prometheus keeps only this stack's containers (see prometheus.yml).
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.6
+    container_name: cadvisor
+    profiles: [monitoring]
+    privileged: true
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=30s
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 256M
+    restart: unless-stopped
+
+  # Redis INFO as Prometheus metrics, for the Redis dashboard.
+  redis_exporter:
+    image: oliver006/redis_exporter:v1.92.1
+    container_name: redis_exporter
+    profiles: [monitoring]
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 64M
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------

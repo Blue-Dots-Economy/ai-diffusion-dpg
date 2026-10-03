@@ -6,7 +6,7 @@ Covers:
   - Session and Turn lifecycle
   - TurnAssemblerBase ABC enforcement
   - TurnAssembler: add_segment, subscribe, cancel, session_end
-  - Policy stack: silence trigger, max wait ceiling, semantic gate
+  - Policy stack: silence trigger, max wait ceiling
   - Invocation path: stream_turn() called directly with abort_event/turn_id
   - Memory consistency on cancellation (#83)
   - Edge cases: empty text, missing session, concurrent timers
@@ -39,8 +39,6 @@ from src.turn_assembler import (
 
 
 def _make_config(
-    semantic_enabled=False,
-    confidence_threshold=0.75,
     silence_ms=50,       # Short for fast tests
     max_wait_ms=200,     # Short for fast tests
     channel_overrides=None,
@@ -54,10 +52,6 @@ def _make_config(
     cfg = {
         "reach_layer": {
             "turn_assembler": {
-                "semantic_gate": {
-                    "enabled": semantic_enabled,
-                    "confidence_threshold": confidence_threshold,
-                },
                 "silence_trigger": {"silence_ms": silence_ms},
                 "max_wait_ceiling": {"max_wait_ms": max_wait_ms},
             },
@@ -78,7 +72,7 @@ def _make_mock_agent_core():
     """Create a mock AgentCore whose stream_turn yields a simple event sequence."""
     agent = MagicMock()
 
-    async def _stream(turn_input, *, abort_event=None, turn_id=""):
+    async def _stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
         yield SignalEvent(stage="memory_read", status="start")
         yield SentenceEvent(text="Hello!", sentence_index=0)
         yield DoneEvent(turn_id=turn_id or "t-1", turn_status="completed")
@@ -90,14 +84,12 @@ def _make_mock_agent_core():
 def _make_assembler(
     agent_core=None,
     config=None,
-    nlu_processor=None,
     workflow=None,
     async_memory=None,
 ):
     return TurnAssembler(
         agent_core=agent_core or _make_mock_agent_core(),
         config=config or _make_config(),
-        nlu_processor=nlu_processor,
         workflow=workflow,
         async_memory=async_memory,
     )
@@ -184,10 +176,13 @@ class TestTurnAssemblerConstruction:
         with pytest.raises(ValueError, match="config"):
             TurnAssembler(agent_core=MagicMock(), config=None)
 
+    def test_rejects_nlu_processor_param(self):
+        with pytest.raises(TypeError):
+            TurnAssembler(agent_core=MagicMock(), config={}, nlu_processor=MagicMock())
+
     def test_default_config_values(self):
         ta = _make_assembler(config={"reach_layer": {"turn_assembler": {}}})
         # Should use defaults without crashing
-        assert ta._default_config["semantic_gate"]["enabled"] is False
         assert ta._default_config["silence_trigger"]["silence_ms"] == 400
         assert ta._default_config["max_wait_ceiling"]["max_wait_ms"] == 8000
 
@@ -317,7 +312,7 @@ class TestAddSegment:
     async def test_cancel_and_fold_log_has_required_structured_fields(self, caplog):
         """When a new segment arrives during INVOKED, the cancel-and-fold log
         entry uses operation=turn_assembler.cancel_and_fold and carries
-        cancelled_turn_id + folded_segment_count fields per #200."""
+        cancelled_turn_id + seeded_segment_count fields per #200."""
         ta = _make_assembler(config=_make_config(silence_ms=5000, max_wait_ms=5000))
         await ta.add_segment("s1", _make_segment("first"))
         session = ta._sessions["s1"]
@@ -345,8 +340,10 @@ class TestAddSegment:
         assert rec.status == "success"
         assert rec.session_id == "s1"
         assert rec.cancelled_turn_id == cancelled_turn_id
-        # Folded segment count: only the triggering segment seeds today.
-        assert rec.folded_segment_count == 1
+        # The successor is seeded with the triggering segment only; what it
+        # folds from Memory Layer is logged by orchestrator.carryover_folded.
+        assert rec.seeded_segment_count == 1
+        assert not hasattr(rec, "folded_segment_count")
 
     @pytest.mark.asyncio
     async def test_segment_ignored_when_completed(self):
@@ -463,142 +460,6 @@ class TestMaxWaitCeiling:
         await ta.add_segment("s1", _make_segment("world"))
         # Ceiling task should be the same object — not recreated
         assert session.current_turn.ceiling_task is ceiling_task
-
-
-# ---------------------------------------------------------------------------
-# Semantic gate
-# ---------------------------------------------------------------------------
-
-
-class TestSemanticGate:
-
-    @pytest.mark.asyncio
-    async def test_gate_triggers_on_high_confidence(self):
-        """When NLU confidence >= threshold, invocation triggers immediately."""
-        nlu = MagicMock()
-        nlu.process.return_value = NLUResult(
-            intent="greeting", confidence=0.9, entities={}, sentiment="positive"
-        )
-
-        agent = _make_mock_agent_core()
-        ta = _make_assembler(
-            agent_core=agent,
-            config=_make_config(semantic_enabled=True, confidence_threshold=0.75, silence_ms=5000),
-            nlu_processor=nlu,
-            
-        )
-
-        await ta.add_segment("s1", _make_segment("hello"))
-        await asyncio.sleep(0.1)
-
-        session = ta._sessions.get("s1")
-        assert session is not None
-        assert session.current_turn is not None
-        assert session.current_turn.status in (TurnStatus.INVOKED, TurnStatus.COMPLETED)
-
-    @pytest.mark.asyncio
-    async def test_gate_falls_through_on_low_confidence(self):
-        """When NLU confidence < threshold, falls through to silence timer."""
-        nlu = MagicMock()
-        nlu.process.return_value = NLUResult(
-            intent="unknown", confidence=0.3, entities={}, sentiment="neutral"
-        )
-
-        ta = _make_assembler(
-            config=_make_config(semantic_enabled=True, confidence_threshold=0.75, silence_ms=5000, max_wait_ms=5000),
-            nlu_processor=nlu,
-            
-        )
-
-        await ta.add_segment("s1", _make_segment("hello"))
-        # Should NOT trigger immediately — falls through to timers
-        session = ta._sessions["s1"]
-        assert session.current_turn.status == TurnStatus.WAITING
-
-    @pytest.mark.asyncio
-    async def test_gate_falls_through_on_unknown_intent(self):
-        """High confidence but 'unknown' intent does not trigger."""
-        nlu = MagicMock()
-        nlu.process.return_value = NLUResult(
-            intent="unknown", confidence=0.95, entities={}, sentiment="neutral"
-        )
-
-        ta = _make_assembler(
-            config=_make_config(semantic_enabled=True, silence_ms=5000, max_wait_ms=5000),
-            nlu_processor=nlu,
-            
-        )
-
-        await ta.add_segment("s1", _make_segment("hello"))
-        session = ta._sessions["s1"]
-        assert session.current_turn.status == TurnStatus.WAITING
-
-    @pytest.mark.asyncio
-    async def test_gate_graceful_on_nlu_error(self):
-        """NLU exception → log and fall through, never block."""
-        nlu = MagicMock()
-        nlu.process.side_effect = RuntimeError("NLU down")
-
-        ta = _make_assembler(
-            config=_make_config(semantic_enabled=True, silence_ms=5000, max_wait_ms=5000),
-            nlu_processor=nlu,
-            
-        )
-
-        await ta.add_segment("s1", _make_segment("hello"))
-        session = ta._sessions["s1"]
-        assert session.current_turn.status == TurnStatus.WAITING  # Fell through
-
-    @pytest.mark.asyncio
-    async def test_gate_disabled_skips_nlu(self):
-        """When semantic gate is disabled, NLU is never called."""
-        nlu = MagicMock()
-
-        ta = _make_assembler(
-            config=_make_config(semantic_enabled=False, silence_ms=5000, max_wait_ms=5000),
-            nlu_processor=nlu,
-            
-        )
-
-        await ta.add_segment("s1", _make_segment("hello"))
-        nlu.process.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_gate_uses_context_bundle(self):
-        """Semantic gate uses cached context_bundle for NLU context."""
-        nlu = MagicMock()
-        nlu.process.return_value = NLUResult(
-            intent="greeting", confidence=0.9, entities={}, sentiment="positive"
-        )
-
-        async_memory = AsyncMock()
-        async_memory.context_bundle.return_value = ContextBundle(
-            session={"current_question": "What trade?", "current_subagent_id": "profile_building"},
-            profile={},
-        )
-
-        workflow = MagicMock()
-        workflow.start_subagent_id = "profile_building"
-        workflow.subagents = {"profile_building": MagicMock(valid_intents=["greeting"], special_handler=None)}
-        workflow.global_intents = ["termination_intent"]
-
-        agent = _make_mock_agent_core()
-        ta = _make_assembler(
-            agent_core=agent,
-            config=_make_config(semantic_enabled=True, silence_ms=5000),
-            nlu_processor=nlu,
-            
-            workflow=workflow,
-            async_memory=async_memory,
-        )
-
-        await ta.add_segment("s1", _make_segment("hello"))
-        await asyncio.sleep(0.1)
-
-        # NLU should have been called with context
-        call_args = nlu.process.call_args
-        assert call_args.kwargs.get("current_question") == "What trade?"
-        assert call_args.kwargs.get("current_subagent_id") == "profile_building"
 
 
 # ---------------------------------------------------------------------------
@@ -795,7 +656,7 @@ class TestSessionEnd:
         await ta.session_end("nonexistent")  # Should not raise
 
     @pytest.mark.asyncio
-    async def test_session_end_cancels_tasks(self):
+    async def test_session_end_cancels_timers_not_invocation(self):
         ta = _make_assembler()
         session = ta._get_or_create_session("s1")
         turn = await session.replace_turn(seed_segments=[])
@@ -805,15 +666,17 @@ class TestSessionEnd:
         turn.silence_task = silence
         turn.ceiling_task = ceiling
         turn.invocation_task = invocation
+        turn.status = TurnStatus.INVOKED
 
         await ta.session_end("s1")
-
-        # Allow event loop to process cancellations
         await asyncio.sleep(0)
 
         assert silence.cancelled()
         assert ceiling.cancelled()
-        assert invocation.cancelled()
+        # Spec §4.4: the invocation stops cooperatively at a safe point.
+        assert not invocation.cancelled()
+        assert turn.abort_event.is_set()
+        invocation.cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -841,7 +704,7 @@ class TestInvocation:
         """Multiple segments are joined with spaces."""
         captured_inputs = []
 
-        async def capture_stream(turn_input, *, abort_event=None, turn_id=""):
+        async def capture_stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
             captured_inputs.append(turn_input)
             yield DoneEvent(turn_status="completed", turn_id=turn_id)
 
@@ -861,7 +724,7 @@ class TestInvocation:
     @pytest.mark.asyncio
     async def test_invoke_pushes_done_event_on_error(self):
         """On stream_turn() error, a DoneEvent(abandoned) is pushed to queue."""
-        async def failing_stream(turn_input, *, abort_event=None, turn_id=""):
+        async def failing_stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
             raise RuntimeError("boom")
             yield  # Make it a generator
 
@@ -885,7 +748,7 @@ class TestInvocation:
         """TurnInput is constructed with session channel/user_id and turn's started_at_ms."""
         captured = []
 
-        async def capture_stream(turn_input, *, abort_event=None, turn_id=""):
+        async def capture_stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
             captured.append(turn_input)
             yield DoneEvent(turn_status="completed", turn_id=turn_id)
 
@@ -1093,7 +956,7 @@ class TestEndToEnd:
 
         call_count = 0
 
-        async def slow_then_capture(turn_input, *, abort_event=None, turn_id=""):
+        async def slow_then_capture(turn_input, *, abort_event=None, turn_id="", **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -1158,7 +1021,6 @@ class TestGH137ChannelsPath:
         cfg = {
             "reach_layer": {
                 "turn_assembler": {
-                    "semantic_gate": {"enabled": True, "confidence_threshold": 0.75},
                     "silence_trigger": {"silence_ms": 400},
                     "max_wait_ceiling": {"max_wait_ms": 8000},
                 }
@@ -1166,15 +1028,14 @@ class TestGH137ChannelsPath:
             "channels": {
                 "voice": {
                     "turn_assembler": {
-                        "semantic_gate": {"enabled": False, "confidence_threshold": 0.9},
+                        "silence_trigger": {"silence_ms": 900},
                     }
                 }
             },
         }
         ta = _make_assembler(config=cfg)
         policy = ta._resolve_config("voice")
-        assert policy["semantic_gate"]["enabled"] is False
-        assert policy["semantic_gate"]["confidence_threshold"] == 0.9
+        assert policy["silence_trigger"]["silence_ms"] == 900
 
     def test_turn_assembler_rejects_legacy_reach_layer_channels(self):
         cfg = {
@@ -1484,7 +1345,7 @@ class TestSessionTurnRefactor:
         """_invoke() passes turn.abort_event and turn.turn_id to stream_turn."""
         captured = {}
 
-        async def fake_stream(turn_input, *, abort_event=None, turn_id=""):
+        async def fake_stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
             captured["abort_event"] = abort_event
             captured["turn_id"] = turn_id
             yield DoneEvent(turn_status="completed", turn_id=turn_id)
@@ -1539,7 +1400,7 @@ class TestSessionTurnRefactor:
         """subscribe() delivers events from Turn 1 then Turn 2 in sequence."""
         call = {"n": 0}
 
-        async def stream(turn_input, *, abort_event=None, turn_id=""):
+        async def stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
             call["n"] += 1
             yield SentenceEvent(text=f"reply{call['n']}", sentence_index=0, turn_id=turn_id)
             yield DoneEvent(turn_status="completed", turn_id=turn_id)
@@ -1681,7 +1542,7 @@ class TestSessionTurnRefactor:
         # (the pre-cancel snapshot). On second call it returns True.
         agent = MagicMock()
 
-        async def sync_done_stream(turn_input, *, abort_event=None, turn_id=""):
+        async def sync_done_stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
             """Generator that yields Done(completed) without any internal await
             — simulating a fast, synchronous completion path where the task
             cancel has no await to land on between the abort check and the put.

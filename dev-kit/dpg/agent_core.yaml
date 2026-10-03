@@ -5,7 +5,19 @@ server:
   host: 0.0.0.0
   port: 8000
 
+preprocessing:
+  nlu_processor:
+    timeout_ms: 2500
+    retry_attempts: 2
+    history_turns: 2
+    off_track:
+      threshold: 3
+      intent: off_track
+
 agent:
+  history_turns: 2        # Spec D: exchanges shown to the main LLM in <recent>
+  state_fields: []        # Spec D: session keys shown on the <state> status line
+  predispatch_timeout_ms: 1500  # Spec E: budget for a tool pre-dispatched before the main LLM
   ask_for_consent: false
   consent_prompt: ""
   timeout_ms: 10000
@@ -40,6 +52,56 @@ agent:
     # streaming: true      # Both providers support streaming natively.
     # image_input: true    # Both providers support image input.
 
+# Tool-result persistence (spec: tool-result persistence, 2026-09-30).
+# Off by default: a tool with none of these keys behaves as before. Enable in
+# the domain config; storage also needs TOOL_RESULT_KEY_SECRET on Memory Layer.
+#
+# Per-connector, in domain `connectors:` (cache on read, invalidates on write):
+#   connectors:
+#     read:
+#       - name: fetch_profile
+#         cache:                  # store the result and show it in <known_facts>
+#           scope: session        # session | user (user outlives the call)
+#           ttl_seconds: 1800     # counted from the write, never extended by a read
+#           keep: [items]         # top-level fields to store, dict results only (default: all)
+#           vary_on: []           # session fields whose values make a separate entry
+#
+# scope: user is unsafe for a connector whose action_gateway tool declares
+# response.session_mapping: a cache hit does not replay session_mapping, so a
+# later session gets the stored result but not the mapped session values.
+# dev-kit validation rejects that combination.
+#     write:
+#       - name: save_profile
+#         invalidates: [fetch_profile]   # read connectors whose stored result to drop
+#
+# Upper bound for scope: user ttl_seconds.
+# tool_results:
+#   max_user_ttl_seconds: 86400
+#
+# Framework `remember` tool: lets the model store a value from a tool result.
+# The value must exactly equal one in the `grounded_in` tools' results.
+# memory_tool:
+#   name: remember
+#   fields:
+#     profile_item_id:
+#       scope: session            # session | persistent
+#       description: "item_id of the profile the caller chose"
+#       grounded_in: [fetch_profile, save_profile]
+
+# Session fields rendered into the LLM's <state> collected (empty values and keys
+# already present are skipped). Spec: docs/superpowers/specs/2026-10-01-session-bootstrap-design.md
+# agent:
+#   prompt_session_fields: [profile_item_id, stored_trade, stored_location]
+#
+# Session bootstrap: runs these steps once on the first turn of a session,
+# before routing and without the LLM. Spec: same as above.
+# session_bootstrap:
+#   timeout_ms: 1500            # > 0; results arriving after this are discarded
+#   steps:                      # at least 1
+#     - type: tool              # only `tool` is supported
+#       tool: fetch_profile     # must name a connectors.read entry (read connectors only)
+#       requires_consent: false # true: skipped unless the caller consented to storage
+
 # conversation.* is domain-specific (blocked_message, escalation_message,
 # output_blocked_message, persona text). All fields must be set in domain.yaml.
 # The block intentionally lives only in domain configs.
@@ -57,6 +119,10 @@ memory_client:
 trust_client:
   endpoint: "http://trust_layer:8003"
   timeout_ms: 2000
+  # POST /escalate gets its own, longer timeout (the Trust Layer may wait on the
+  # HiTL webhook, ~4 s nominal). /escalate is not retried automatically; see the
+  # handoff pending marker (handoff_status=pending) for duplicate protection.
+  escalate_timeout_ms: 8000
   # GH-196 — Batch per-sentence Trust Layer /check/output calls during streaming.
   # Sentences are buffered and submitted as a single concatenated check whenever
   # the buffer reaches max_sentences or max_interval_ms has elapsed since the
@@ -83,13 +149,22 @@ reach_layer:
   # Default turn_assembler policy stack — applies to any channel that
   # does not declare its own turn_assembler section under channels.<name>.
   turn_assembler:
-    semantic_gate:
-      enabled: false             # Enable NLU-based early trigger (requires nlu_processor)
-      confidence_threshold: 0.75 # Invoke immediately if NLU confidence >= this value
     silence_trigger:
       silence_ms: 400            # ms of silence before invoking (resets on each segment)
     max_wait_ceiling:
       max_wait_ms: 8000          # Absolute max wait ms — never resets
+    # Streaming-turn lifecycle (spec 2026-09-29). Applies to /stream_turn and the
+    # session endpoints; /process_turn is unaffected.
+    interruption:
+      on_new_input: abort_and_fold   # abort_and_fold | replace
+      on_disconnect: abort           # abort | continue
+      drain_max_ms: 3000             # successor waits this long for its predecessor
+    fold:
+      max_segments: 3                # newest interrupted utterances kept; 0 disables
+    carryover:
+      max_age_ms: 60000              # older carry-over is discarded, not folded
+      undelivered_note: "[The user has not yet heard the outcome of this action. Tell them the result before moving on.]"
+    session_idle_ttl_ms: 1800000     # idle in-process session eviction
 
 observability:
   otel:
