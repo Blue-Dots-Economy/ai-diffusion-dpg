@@ -2,8 +2,9 @@
 # Blue Dots — Reach Layer domain config.
 # Deep-merged on top of dev-kit/dpg/reach_layer.yaml at startup.
 #
-# Voice channel only. Web is left disabled but present so the config
-# is structurally complete and easy to flip on later.
+# Bridge channel only (OpenAI chat-completions compatible). The other
+# channels (web, CLI, voice, MCP) are optional: see "AI Diffusion Optional
+# Channels" on the docs site for the blocks to add and how to start them.
 
 reach_layer:
 
