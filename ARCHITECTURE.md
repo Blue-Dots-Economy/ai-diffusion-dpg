@@ -1,717 +1,86 @@
-# AI Diffusion DPG — Architecture & Implementation Status
+# AI Diffusion DPG — contributor map
 
-> **Single source of truth** for system design, block responsibilities, runtime behaviour, and implementation status.
-> Status legend: ✅ Complete · 🟡 Stubbed (correct interface, lightweight behaviour) · ⏳ Pending · ❌ Known gap
+This file tells you where things are in the code. For the full architecture, see the Architecture page on the docs site: https://blue-dots-economy.github.io/bluedots-docs/.
 
----
+## Blocks in the code
 
-## Table of Contents
+| Block | Directory | Entry point | Config schema | Dev-kit mirror |
+|---|---|---|---|---|
+| Agent Core (8000) | `agent_core/` | `agent_core/main.py`, `agent_core/src/servers/orchestration_server.py` | `agent_core/src/schema/config.py` | `dev-kit/dev_kit/schemas/dpg/agent_core.py`, `dev-kit/dev_kit/schemas/domain/agent_core.py` |
+| Knowledge Engine (8001) | `knowledge_engine/` | `knowledge_engine/main.py` | `knowledge_engine/src/schema/config.py` | `dev-kit/dev_kit/schemas/dpg/knowledge_engine.py`, `dev-kit/dev_kit/schemas/domain/knowledge_engine.py` |
+| Memory Layer (8002) | `memory_layer/` | `memory_layer/main.py`, `memory_layer/src/server.py` | `memory_layer/src/schema/config.py` | `dev-kit/dev_kit/schemas/dpg/memory_layer.py`, `dev-kit/dev_kit/schemas/domain/memory_layer.py` |
+| Trust Layer (8003) | `trust_layer/` | `trust_layer/main.py`, `trust_layer/src/server.py` | `trust_layer/src/schema/config.py` | `dev-kit/dev_kit/schemas/dpg/trust_layer.py`, `dev-kit/dev_kit/schemas/domain/trust_layer.py` |
+| Observability Layer (8004) | `observability_layer/` | `observability_layer/main.py`, `observability_layer/src/server.py` | `observability_layer/src/schema/config.py` | `dev-kit/dev_kit/schemas/dpg/observability_layer.py`, `dev-kit/dev_kit/schemas/domain/observability_layer.py` |
+| Reach Layer (8005–8008) | `reach_layer/` (one subdirectory per channel: web, voice, mcp, bridge, cli) | `reach_layer/web/server.py`, `reach_layer/voice/server.py`, `reach_layer/mcp/main.py`, `reach_layer/bridge/main.py` | `reach_layer/base/schema/config.py` | `dev-kit/dev_kit/schemas/dpg/reach_layer.py`, `dev-kit/dev_kit/schemas/domain/reach_layer.py` |
+| Action Gateway (9999) | `action_gateway/` | `action_gateway/main.py`, `action_gateway/src/server.py` | `action_gateway/src/schema/config.py` | `dev-kit/dev_kit/schemas/dpg/action_gateway.py`, `dev-kit/dev_kit/schemas/domain/action_gateway.py` |
+| dev-kit (8080) | `dev-kit/` | `dev-kit/dev_kit/` | — | — |
 
-1. [System Overview](#1-system-overview)
-2. [Design Decisions & Changes from Original Spec](#2-design-decisions--changes-from-original-spec)
-3. [DPG Blocks](#3-dpg-blocks)
-4. [Runtime Turn Sequence](#4-runtime-turn-sequence)
-5. [Module Interaction Rules](#5-module-interaction-rules)
-6. [Configuration Architecture](#6-configuration-architecture)
-7. [blue-dots Domain — User Journey Model](#7-blue-dots-domain--user-journey-model)
-8. [Implementation Status](#8-implementation-status)
-9. [Stub Replacement Guide](#9-stub-replacement-guide)
-10. [Out of Scope](#10-out-of-scope)
+Framework defaults for each block live in `dev-kit/dpg/`; the Blue Dots use case is in `dev-kit/configs/blue-dots/`.
 
----
+## Following a turn in the code
 
-## 1. System Overview
+`Orchestrator` in `agent_core/src/orchestrator.py` logs a `[STEP n]` marker at each stage. The synchronous path is `_process_turn_inner`; the streaming path is `stream_turn`, which calls `_stream_turn_impl`. Both are in that file. Search for the marker to find the code.
 
-The framework assembles AI-powered voice/chat systems from **7 standardised DPG building blocks** configured per-domain via a **Domain Configuration Kit** (YAML). Runtime block boundaries are fixed; all domain intelligence is external (config-driven).
-
-The reference domain is **Blue Dots** (`dev-kit/configs/blue-dots/`) — a voice assistant that onboards callers and connects them with opportunities. Entry point: dial the number configured in `channels.voice.dial_number`.
-
-### Ports
-
-| Block | Port |
-|---|---|
-| Agent Core | 8000 |
-| Knowledge Engine | 8001 |
-| Memory Layer | 8002 |
-| Trust Layer | 8003 |
-| Observability Layer | 8004 |
-| Reach Layer — Web | 8005 |
-| Reach Layer — Voice | 8006 |
-| Action Gateway | 9999 |
-
----
-
-## 2. Design Decisions & Changes from Original Spec
-
-### NLU moved from Knowledge Engine → Agent Core
-
-**Original design:** NLU (intent classification, entity extraction) was inside Knowledge Engine.
-
-**Current implementation:** NLU runs entirely inside Agent Core (`understanding/`, the dialogue-act `TurnUnderstander`) before KE is called. There is a single NLU mode: one strict-schema LLM call per turn that classifies dialogue acts and fills typed slots, from which code derives the routing intent. NLU results are passed to KE in the request body. See `docs/superpowers/specs/2026-10-01-nlu-dialogue-acts-design.md` §16.
-
-**Why:** NLU is coupled to Language Normalisation sequencing and to the session's pending question — both Agent Core responsibilities. Moving it inward keeps KE stateless and retrieval-focused.
-
-### Language Normalisation is also in Agent Core
-
-Language normalisation (dialect detection, code-switching, transliteration) runs in Agent Core (`preprocessing/language_normaliser.py`) using a haiku model override, before NLU.
-
-### Memory Layer: Redis + Memgraph (not in-process dict)
-
-**Original design:** Memory Layer planned as in-process dict stub.
-
-**Current implementation:** Redis (session/profile store, RedisJSON) + Memgraph (context graph — typed attribute nodes per session). SQLite was specified in the design doc for audit/cross-session data; current implementation uses Memgraph for the persistent store instead.
-
-**Memgraph context graph:** Each session is a `Session` node connected to `Attribute` nodes via typed relationship edges (e.g., `[:HAS_TRADE]`, `[:HAS_LOCATION]`). Edge types come from config (`profile_collection.profile_graph_relations`), never hardcoded. One graph query gives the LLM its complete context — no conversation history needed.
-
-### Knowledge Engine — conditional call (resolved)
-
-**Design spec:** KE RAG is a tool the LLM calls only when domain knowledge is needed. Subagents whose tool list does not include knowledge tools (e.g. `profile_building`) should never call KE.
-
-**Implementation:** KE retrieval is now an internal LLM tool (`knowledge_retrieval`, connector type `internal`). The LLM invokes it only when the active subagent's tool list includes `knowledge_retrieval`. `ToolRegistry.get_route()` returns `"knowledge_engine"` for this tool, and `ManagerAgent` routes it to `_execute_knowledge_retrieval()` instead of the Action Gateway. Subagents without `knowledge_retrieval` in their tool list never trigger a KE call. Subagent tool lists are defined in `dev-kit/configs/<domain>/agent_core.yaml`.
-
-### Fail-Closed Trust Layer
-
-All Trust Layer endpoints return `block` / `deny` on internal error. The Agent Core's `TrustLayerHttpClient` is fail-closed. This was a known gap (formerly "Fail-Open Trust Layer") that has been resolved.
-
-### Multimodal Input Handler disabled
-
-`knowledge_engine/blocks/multimodal_input_handler.py` exists but is disabled via `enabled: false` in config. Placeholder for future image/audio input.
-
-### Three-Tier config model: tools, not DPGs
-
-The configuration toolchain is **not part of the runtime architecture**. It operates outside the deployed system:
-- **Tier 1 — Configuration Agent (Deterministic Wizard):** ✅ Implemented. A FastAPI server with a React SPA frontend that interviews a domain expert and generates all 7 domain YAML files. The wizard is deterministic: an `IntakeState` captured up front gates which of 11 declarative phases run, FIELD_RULES decide each field's category (chat / predetermined / deploy / derived / framework_default_only), the router cascades intake changes through dependent fields, and 8 canonical tools route the LLM's mutations through Pydantic-validated handlers. See [`docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md`](docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md). Lives in `dev-kit/dev_kit/agent/`.
-- **Tier 2 — YAML Configuration:** The canonical runtime source of truth. Read by each DPG at startup. This is what the 7 DPGs consume.
-- **Tier 3 — Live Tuning Dashboard:** A management UI that reads Observability Layer signals and patches YAML post-deployment. Not yet built.
-
----
-
-## 3. DPG Blocks
-
-### Agent Core ✅
-
-Sole orchestrator and sole LLM caller. Stateless between turns.
-
-**Responsibilities:**
-- Read session state from Memory Layer at turn start.
-- Consent gate: if `ask_for_consent: true` in config and `user_storage_mode` not yet set, deliver scripted consent prompt (turn 1) or evaluate response via Trust Layer `/consent/verify` and write `user_storage_mode` to Memory Layer (turn 2).
-- Input safety check via Trust Layer (mandatory).
-- Language Normalisation (internal — `preprocessing/language_normaliser.py`).
-- Dialogue-act NLU (internal — `understanding/`, `TurnUnderstander`). Resolves the pending question from the session, builds a frame (`pending`, `known_fields`, `recent_turns`), makes one strict-schema LLM call returning dialogue acts and typed slots, then post-processing derives the routing intent from the `act_intents` table and `SlotWriter` plans the session writes. `NLUResult` (intent, entities, confidence — 1.0 derived, 0.0 fallback — and optional `user_state`) is the routing contract. A structured summary of the understanding (acts, relation, resolved option, slot updates, signals) is rendered into the main LLM's prompt as `<caller_turn>`.
-- Pre-LLM guardrail assembly via Trust Layer `/assemble_constraints` — returns prompt constraints, required disclosures, and action gates.
-- Manager Agent routing: select active subagent and tool list based on `current_subagent_id` + NLU intent, following routing rules defined in `dev-kit/configs/<domain>/agent_core.yaml`.
-- Tool pre-dispatch (internal, optional): after routing and before the main LLM, a subagent's `predispatch` rule can run its tool when the NLU result and session already determine the call. The result is handed to LLM call #1 as a normal tool exchange, so the main LLM speaks it in one call. Same guards as a model-initiated call; any failure falls back to the normal path.
-- Assemble retrieval context via Knowledge Engine (passes NLU results + session state in body).
-- LLM call #1 — system prompt = subagent prompt + guardrail constraints + required disclosures.
-- Tool-use loop if `tool_use` block returned: route to Action Gateway → append `tool_result` → LLM call #2. Bounded by `max_tool_rounds`. Tool list filtered by `action_gates`.
-- Output safety check via Trust Layer (mandatory).
-- Deliver response.
-- Write state to Memory Layer (async, after response) — includes `current_subagent_id` and `user_storage_mode`.
-- Emit turn event to Observability Layer (async, after response). Block/escalate turns also emit — observability never skipped.
-
-**Channel configuration (GH-137).** Per-channel LLM-facing config lives at the
-top-level `channels:` block in `agent_core.yaml`. Each channel declares
-`system_prompt_suffix`, `output_contract` (all channels, rendered by the runtime), `terminal_word` (voice only),
-and `turn_assembler` policy. The legacy `agent.channels` and
-`reach_layer.channels` nested paths are removed — domains must use the top-level
-`channels:` block. Reach Layer's own `channels:` block (in `reach_layer.yaml`)
-stays for adapter-specific internals (TTS provider endpoints, websocket URLs).
-
-**Session-end signalling (GH-137).** When `conversation.session_end_eval.enabled:
-true`, the orchestrator registers an `end_session` internal tool that the LLM can
-call when the conversation has naturally concluded (user said goodbye, task
-completed, user asked to stop). The tool has no external executor — the
-orchestrator intercepts it inside the tool loop and sets
-`TurnResult.session_ended = True`. The voice adapter (`reach_layer_voice`)
-reacts to this flag by appending `channels.voice.terminal_word` to the outbound
-TTS stream and emitting a websocket close frame. Chat / web / CLI adapters close
-the session without appending.
-
-**Dignity check (GH-137).** Conversational agents enable
-`trust_layer.dignity_check`, which auto-populates 5 canonical pre-response
-questions. Trust Layer's `/assemble_constraints` endpoint appends these questions
-to the `prompt_constraints` payload returned to Agent Core, which threads them
-into the main LLM system prompt as a "Pre-response dignity check" section. The
-LLM self-checks before emitting its response. No additional LLM call.
-
-**Opening phrase (GH-137).** Each subagent may declare an `opening_phrase` that
-the orchestrator emits once per session — on the first post-consent turn. The
-subagent active on turn 1 is determined by Memory Layer (either `is_start: true`
-for new sessions, or the `current_subagent` restored from a prior session).
-Subsequent turns run the subagent's normal `system_prompt`. The session flag
-`opening_phrase_emitted` prevents re-emission.
-
-**User-state model (optional, Conversational agents only).** Orthogonal to the
-system state described above, Conversational domains may declare a
-`conversation.user_state_model` block with a list of states (id, signals,
-guidance). The dialogue-act NLU classifies the user's current mental state
-(`user_state`) on the same strict-schema LLM call that returns the dialogue acts. The orchestrator resolves the new
-state via `agent_core/src/preprocessing/user_state_resolver.py` — sticky on
-low confidence, transition on confident id change. The active state's
-guidance text is injected into the main LLM system prompt by
-`ManagerAgent.build_system_prompt()`. The state payload piggy-backs on the
-existing per-turn Memory Layer session write; transitions emit a
-`user_state_transition` signal to the Observability Layer and set span
-attributes on the turn OTel span. Feature is off by default; domains that do
-not declare the block are unaffected.
-
-**Streaming path (`POST /stream_turn`):** Agent Core also exposes an async SSE endpoint. `stream_turn()` uses async HTTP clients (`interfaces/async_/`) for all external calls, yields `SignalEvent`s at each pipeline stage, streams LLM tokens split into sentences, runs a per-sentence Trust output check, and emits a final `DoneEvent`. Steps 12–13 (memory write + observability emit) fire via `asyncio.create_task` after `DoneEvent` — never in the response path.
-
-**TurnAssembler:** Every streaming turn runs through `TurnAssembler`, both `POST /stream_turn` (request-scoped: one request = one complete utterance, invoked immediately) and the session endpoints `POST /sessions/{id}/input` + `GET /sessions/{id}/events` (segment stream: silence trigger · max-wait ceiling). It holds `Session` objects keyed by `session_id`; each owns one current `Turn` (segments, event queue, abort signal, `TurnRecord` ledger). A new input or a client disconnect interrupts the turn *cooperatively*: its queue is sealed (#224), it runs on to the orchestrator's next safe point (tool calls are never cut), and the successor waits for it (`interruption.drain_max_ms`). What the interrupted turn held survives in Memory Layer. `turn_carryover` holds its utterances, which the next turn folds into its input (`fold.max_segments`, `carryover.max_age_ms`). `recent_tool_exchanges` holds its completed tool rounds, marked `delivered: false` and replayed with `carryover.undelivered_note`. `POST /process_turn` does not use the assembler. Spec: `docs/superpowers/specs/2026-09-29-turn-assembler-request-mode-design.md`.
-
-**LLM access (`chat_provider/`).** `ChatProviderBase` is the single LLM interface every Agent Core component depends on. Concrete providers (`AnthropicChatProvider`, `OpenAIChatProvider`) are selected via `build_chat_provider(agent_config)` based on `agent.provider`. Each provider owns the wire-format translation, retry/timeout, and OTel telemetry for its SDK; nothing else in agent_core imports the underlying provider library. NLU and language-normalisation use dedicated provider instances (configured by their own `model` fields) so cheap classification calls can run on a smaller model. Multimodal *input* (image blocks) is supported day one; image generation, TTS, ASR, and realtime APIs are deliberately out of scope and would land as sibling abstractions rather than as additions to ChatProviderBase.
-
-**Key files:**
-- `agent_core/src/orchestrator.py` — `process_turn()` (sync) and `stream_turn()` (async generator)
-- `agent_core/src/turn_assembler.py` — `TurnAssemblerBase`, `TurnAssembler`
-- `agent_core/src/session.py` — `Session` per-session lifecycle object
-- `agent_core/src/turn.py` — `Turn` per-turn lifecycle object, `TurnStatus` state machine
-- `agent_core/src/manager_agent.py` — system prompt assembly, tool-use loop (sync + async)
-- `agent_core/src/chat_provider/` — `ChatProviderBase`, `build_chat_provider()`, neutral types, `AnthropicChatProvider` (only file that imports `anthropic`), `OpenAIChatProvider` (only file that imports `openai`)
-- `agent_core/src/preprocessing/language_normaliser.py`
-- `agent_core/src/tool_registry.py`
-- `agent_core/src/workflow_loader.py` — loads subagent graph from config at startup
-- `agent_core/src/http_clients/` — sync HTTP adapters; `http_clients/async_/` — async variants
-- `agent_core/src/interfaces/` — sync ABCs; `interfaces/async_/` — async ABCs used by `stream_turn()`
-- `agent_core/src/servers/orchestration_server.py` — FastAPI: `POST /process_turn`, `POST /stream_turn`, session endpoints, `/health`, `POST /internal/llm/call`
-
-**Tests:** 1025 tests across 42 files, ≥70% line coverage (currently ~75%). `turn_assembler.py` at 96%.
-
-**Known gaps:**
-- HiTL escalation for output path not wired: `orchestrator.py` — when Trust output returns `action: "escalate"`, the escalation call is deferred.
-- `/internal/llm/call` proxy endpoint is implemented but not yet wired to downstream callers.
-- Anthropic, OpenAI and Ollama providers are implemented. Ollama runs in dual-mode (local native vs cloud OpenAI-compatible). AzureOpenAI is a planned follow-up; it slots into `chat_provider/` without changing the orchestration layer.
-- Channel-aware prompt assembly not implemented — all channels receive the same system prompt (#97).
-
----
-
-### Knowledge Engine ✅
-
-Returns ranked retrieval chunks. Stateless on the retrieval path; receives NLU results and session state in the request body. **Does not assemble the final LLM prompt** — prompt assembly lives in Agent Core's `manager_agent.build_system_prompt()` (subagent prompt + guardrail constraints + required disclosures + KE chunks). KE returns chunks; Agent Core decides how they enter the prompt.
-
-KE also owns the **document ingestion path**, fed by both `scripts/ingest.py` and the Reach Layer document-upload endpoint. Ingestion state (queued / ingested / failed / `refreshed_at`) is tracked in a small **SQLite ingestion ledger** so the service can answer "what's been ingested?" without re-scanning ChromaDB.
-
-**Internal blocks:**
-
-| Block | Status | Description |
+| Marker | What happens | Function (all in `agent_core/src/orchestrator.py` unless noted) |
 |---|---|---|
-| Glossary & Domain Vocabulary | ✅ | Maps colloquial/dialect terms to canonical concepts (e.g., "kaam chahiye" → `market_truth_query`). Config-driven. |
-| Static Knowledge Base | ✅ | ChromaDB semantic RAG. `paraphrase-multilingual-MiniLM-L12-v2` embeddings. Top-3 chunks, 0.65 similarity threshold. Intent-based doc-type filtering. |
-| Multimodal Input Handler | 🟡 | Disabled via config (`enabled: false`). Placeholder for future image/audio. |
-| Ingestion ledger | ✅ | SQLite store recording per-document state — `queued`, `ingested`, `failed`, `refreshed_at`. Drives idempotent re-ingest and exposes "what's indexed" without scanning Chroma. |
-
-**Data:** `knowledge_engine/data/chroma_db/` — pre-computed vector store from 5 source documents (labour_schemes.pdf, trade_descriptions.pdf, training_institutes.csv, bridge_income_options.pdf, onest_market_truth.csv). `knowledge_engine/data/ingestion.sqlite` — ingestion ledger.
-
-**Key files:**
-- `knowledge_engine/src/engine.py`
-- `knowledge_engine/src/blocks/glossary.py`
-- `knowledge_engine/src/blocks/static_knowledge_base.py`
-- `knowledge_engine/src/ingestion_store.py` — SQLite ingestion ledger
-- `knowledge_engine/src/server.py` — FastAPI: `POST /retrieve`, `POST /ingest`, `/health`
-
-**Tests:** 192 tests across 13 files, ≥70% line coverage.
-
----
-
-### Memory Layer ✅
-
-Manages state at three scopes. Agent Core reads at turn start and writes asynchronously after response.
-
-**State scopes:**
-
-| Scope | Backing Store | Status | Description |
-|---|---|---|---|
-| Turn/Session | Redis (RedisJSON, TTL) | ✅ | Profile: permanent for consent=true, TTL 4h for consent=false. Session: TTL 24h / 4h. |
-| Context Graph | Memgraph | ✅ | Typed attribute graph per session (`Session` node → `Attribute` nodes via domain edge types). One query gives full LLM context. |
-| Audit / Cross-session | SQLite (`audit_store`) | ✅ | Two purposes: (1) session lifecycle events with `consent_given` for DPDP compliance; (2) raw turn-by-turn conversation transcript (user_message + system_message + subagent_id + intent + model + latency_ms per turn). Never read back into LLM context. Distinct from OTel telemetry. Fully implemented. |
-
-**Redis keys:**
-- `session:{session_id}` — Hash, TTL-bound (default 1440 min / 24 h). All session schema fields stored as strings; lists and dicts JSON-encoded. TTL reset on every `write` and `context_bundle` call.
-- `user:{user_id}` — Hash, TTL-bound. Fields: `{session_id: ISO-8601 last_accessed}`. Lazy cleanup of expired entries on `get_active_sessions`.
-
-**Memgraph node types:** `User`, `UserProfile`, `UserAttribute` (ad-hoc fields), `JourneyHistory`, `Journey` (= session), Journey child nodes (domain-defined labels), `ContextGraph`, `Signal`, `ContextAttribute`.
-
-**Memgraph edge types:** `HAS_PROFILE`, `HAS_JOURNEY_HISTORY`, `HAS_CONTEXT`, `JOURNEY`, `HAS_ATTRIBUTE`, `SIGNAL`, plus domain-specific edges from config (e.g. `OFFERED`, `DROPPED_AT`). Edge labels are never hardcoded.
-
-**Public interface (5 methods + audit):** `context_bundle()`, `write()`, `flush_session()`, `get_active_sessions()`, `delete_user()`, plus audit write.
-
-**Key files:**
-- `memory_layer/src/memory_layer.py` — public interface
-- `memory_layer/src/session_store.py` — RedisSessionStore
-- `memory_layer/src/graph_user_store.py`, `graph_journey_store.py`, `graph_context_store.py`
-- `memory_layer/src/audit_store.py` — SQLite audit log (fully implemented)
-- `memory_layer/src/server.py` — FastAPI: 10 endpoints including `/context_bundle`, `/write`, `/flush_session`, `/audit`, `/users/{user_id}/active-history`, `/profile/{session_id}`, `/session/{session_id}`, `/health`
-
-**Tests:** 226 tests across 7 files.
-
----
-
-### Trust Layer 🟡
-
-Mandatory safety gate. Stateless. Runs on every turn — never skipped. Structured as four internal sub-blocks.
-
-**Internal sub-blocks:**
-
-| Sub-block | File | Status | Responsibility |
-|---|---|---|---|
-| ContentBlock | `blocks/content.py` | ✅ | Phrase-match input/output blocking and escalation routing. |
-| GuardrailsBlock | `blocks/guardrails.py` | ✅ | Pre-LLM constraint assembly. Maps active risks → Policy Pack → prompt constraints, disclosures, action gates. |
-| ConsentBlock | `blocks/consent.py` | ✅ | Evaluates user message against consent/decline phrases. Stateless — Agent Core owns flag management. |
-| HiTLBlock | `blocks/hitl.py` | ⏳ | Escalation queue. Returns `holding_message` and `ticket_id`. Queue backend configurable (log → Redis/webhook). |
-
-**Endpoints:**
-
-| Endpoint | When called | Purpose |
-|---|---|---|
-| `POST /check/input` | Pre-LLM | Phrase-match + risk-signal input check. Returns `allow`, `block`, or `escalate`. |
-| `POST /assemble_constraints` | Pre-LLM, after input passes | Returns guardrail control artifacts for system prompt injection. |
-| `POST /check/output` | Post-LLM | Output phrase-match and guardrail contract check. |
-| `POST /consent/verify` | Turn 2 of fresh session | Evaluates user response against consent phrases. Returns `granted: bool`. |
-| `POST /check/consent` | Before write/identity tool execution | Verifies connector-level consent. Fail-closed. |
-| `POST /escalate` | When input returns `"escalate"` | Queues HiTL escalation, returns holding message. |
-| `GET /health` | Liveness probe | — |
-
-**Fail-closed:** All endpoints return `block` / `deny` on internal error. Agent Core's HTTP client enforces this — never fail-open.
-
-**Known gaps:**
-- No ML-based semantic matching (ContentBlock uses phrase-match only).
-- HiTL queue: `log` backend only. `redis` and `webhook` backends reserved — tracked in GH issue "feat(trust-layer): implement production HiTL escalation queue".
-- HiTL queue: output-check escalation (`trust_output.action == "escalate"`) does not yet call `self._trust.escalate(...)` — deferred to HiTL queue issue.
-- `check_consent`: SQLite consent store writes consent when `verify_consent` returns True. Cross-session consent persistence is in-process only; a shared consent store is needed for multi-instance deployments.
-
-**Key files:**
-- `trust_layer/src/orchestrator.py` — `TrustLayer` orchestrator wiring all 4 sub-blocks
-- `trust_layer/src/blocks/content.py`, `guardrails.py`, `consent.py`, `hitl.py`
-- `trust_layer/src/consent_store.py` — SQLite consent persistence
-- `trust_layer/src/server.py` — FastAPI: all endpoints above
-- `trust_layer/src/models.py` — all Pydantic request/response types
-
-**Tests:** 138 tests across 9 files. All sub-blocks covered.
-
----
-
-### Action Gateway 🟡
-
-Sole interface with external systems. Executes tool calls expressed by the LLM. LLM never calls APIs directly. Write/identity connectors require Trust Layer consent before execution.
-
-**Architecture:** Generic adapter framework. Each external tool is described in `action_gateway.yaml` under `tools:[]`; the gateway instantiates the correct adapter at startup based on `type`. Agent Core fetches the full tool-definition list at startup via `GET /tools` and includes it in every LLM request.
-
-**Adapter types:**
-
-| Type | Class | Status | Description |
-|---|---|---|---|
-| `rest_api` | `RestApiAdapter` | ✅ | Calls external HTTP APIs. Supports `api_key`, `bearer`, and `none` auth. Params sourced from `agent` (LLM-supplied) or `static` (config). |
-| `mcp` | `McpAdapter` | ✅ | Connects to MCP servers via the Model Context Protocol. Tool definitions fetched from server at startup. |
-| `database` | — | ⏳ | Reserved |
-| `file_upload` | — | ⏳ | Reserved |
-| `gRPC` | — | ⏳ | Reserved |
-| `GraphQL` | — | ⏳ | Reserved |
-
-**Adding a new tool:** Add a `tools[]` entry in `action_gateway.yaml` (type, category, auth, endpoints, params) and restart. No code changes required.
-
-**Adding a new adapter type:** Implement `ToolAdapter` ABC (`src/adapters/base.py`) and register the class in `ADAPTER_TYPES` in `src/registry/adapter_factory.py`.
-
-**Endpoints:**
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /tools` | Returns tool definitions in Anthropic tool-use format. Agent Core fetches this at startup. |
-| `POST /execute` | Executes a single tool call. Never raises — returns `success: false` with structured error on failure. |
-| `GET /health` | Liveness probe. |
-
-**Key files:**
-- `action_gateway/src/server.py` — FastAPI: `GET /tools`, `POST /execute`, `GET /health`
-- `action_gateway/src/adapters/base.py` — `ToolAdapter` ABC
-- `action_gateway/src/adapters/rest_api.py` — `RestApiAdapter`
-- `action_gateway/src/adapters/mcp.py` — `McpAdapter`
-- `action_gateway/src/registry/adapter_registry.py` — `AdapterRegistry`: holds all instantiated adapters
-- `action_gateway/src/registry/adapter_factory.py` — `AdapterFactory`: instantiates adapters from YAML config
-- `action_gateway/src/models.py` — Pydantic request/response types
-
-**Tests:** 173 tests across 8 files.
-
----
-
-### Reach Layer ✅
-
-Normalises inbound channels and delivers responses. Ships as **three independently-deployable services** sharing a common `reach_layer/base/` package.
-
-**Architecture:** `reach_layer/base/` (shared library, not a service) defines `ReachLayerBase` (async ABC), `TextChannelBase`, `VoiceChannelBase`, and the `SignalEvent` / `SentenceEvent` / `DoneEvent` dataclasses. Each channel imports `reach-layer-base` and overrides only its input/output surface. The HTTP wire protocol to Agent Core (submit, subscribe, cancel) is concrete on the base class and identical for all channels.
-
-**Assembly modes (channel-independent):**
-
-A channel and an assembly mode are orthogonal concepts. The mode is the wire protocol used to deliver a turn:
-
-- `direct` — one request carries one complete utterance (`POST /process_turn` → one `TurnResult`, or `POST /stream_turn` → SSE, run through the TurnAssembler as a request-scoped turn). Suitable for any channel that has a fully assembled user message before invoking Agent Core.
-- `session` — multi-segment input is buffered in Agent Core's `TurnAssembler` as a segment stream, which decides when to invoke `stream_turn()` (silence trigger · max-wait ceiling). Required only when input arrives as a stream of partial segments.
-
-| mode | submit endpoint | when to pick it |
-|---|---|---|
-| `direct` | `POST /process_turn` (sync, no assembler) or `POST /stream_turn` (SSE, request-scoped TurnAssembler turn) | Whole user message is known at submission time. |
-| `session` | `POST /sessions/{id}/input` → 202; stream via `GET /sessions/{id}/events` | Input arrives as VAD/partial segments and the channel needs the assembler to decide turn boundaries. |
-
-**Default channel → mode mapping:**
-
-| Channel | Mode | Why |
-|---|---|---|
-| CLI | `direct` | A line-buffered prompt is a complete utterance; session mode would buy nothing. CLI direct mode uses `POST /process_turn`, which does not use the TurnAssembler. |
-| Web | `direct` (default) or `session` | Configurable per deployment. Defaults to `direct` because the SPA submits whole messages. |
-| Voice | `session` (only) | Voice is constrained to session mode — VAD emits partial segments and barge-in/turn-completion semantics are owned by the assembler. |
-
-A channel is therefore *not* identified by its mode — Web can run in either mode, and a future text channel that supports incremental editing could opt into `session`. Voice is the only channel where the mode is fixed by the medium.
-
-**Channel implementation status:**
-
-| Channel | Status | Notes |
-|---------|--------|-------|
-| CLI (`reach_layer/cli/`) | ✅ | `CLIReach` — direct mode, readline loop, port-free. Uses `/process_turn`, so no TurnAssembler. |
-| Web (`reach_layer/web/`) | ✅ | FastAPI + React 19 SPA, port 8005. `POST /chat`, `GET /user-history/{user_id}`, `GET /app-config`. Direct mode by default; session mode is supported. Google Sign-In optional. |
-| Voice (`reach_layer/voice/`) | ✅ | `VobizAdapter` on pipecat pipeline (VAD → Raya STT → AgentCoreLLM → Raya TTS → SIP), port 8006. Session mode (required by VAD-driven input). Barge-in supported. 166 tests. Call recording (audit) — ✅ behind `reach_layer.channels.voice.recording.source` config switch (default: disabled). Sources: vobiz native + Pipecat pipeline tap. Stores: local + S3. Sidecar JSON manifest + Observability signals + OTel `recording.lifecycle` span. |
-| MCP (`reach_layer/mcp/`) | ✅ | Model Context Protocol server exposing `dpg.send_message` tool over SSE transport, port 8007. Supports API-key auth, caller namespacing, and streaming progress updates (GH-338). |
-| Production SIP/PSTN | ❌ | Out of scope — VOIP via pipecat/Vobiz is the production path |
-| WhatsApp | ⏳ | Gupshup/Twilio webhook — pending |
-| Mobile SDK | ⏳ | Pending |
-| Outbound campaigns | ⏳ | `campaign_manager.py` skeleton exists; full implementation pending |
-
-**Approved direct calls (production):**
-
-- `reach_layer/web/server.py` calls Memory Layer `GET /users/{user_id}/active-history` to restore chat history on session resume, before turn 1. Production-approved — the call happens outside the turn pipeline (no LLM response is owed) and is the canonical way to repopulate the SPA's sidebar.
-- Reach Layer `POST /ingest` forwards user-uploaded documents to Knowledge Engine's ingestion endpoint. Production-approved for the same reason: ingestion is asynchronous to the turn pipeline.
-- Reach Layer MCP (`reach_layer/mcp/`) calls Agent Core `POST /process_turn` or `POST /sessions/{session_id}/input`. Production-approved as a standard inbound channel.
-- Outbound MCP tool invocations are made using the standard `McpAdapter` to invoke peer agents / standard MCP servers. See [outbound MCP recipe](docs/superpowers/specs/issue-338-outbound-mcp-recipe.md).
-
-Other Reach Layer → downstream-block calls remain prohibited unless added to this list.
-
-**Key files:**
-- `reach_layer/base/reach_layer_base.py` — `ReachLayerBase` ABC + concrete HTTP helpers
-- `reach_layer/base/text_channel.py`, `voice_channel.py`, `events.py`
-- `reach_layer/cli/src/cli_reach.py` — `CLIReach`
-- `reach_layer/web/server.py` — FastAPI web server; `web/src/web_reach.py` — `WebReachLayer`
-- `reach_layer/web/web-src/` — React 19 + Vite 6 + Tailwind SPA
-- `reach_layer/voice/src/vobiz_adapter.py` — `VobizAdapter`; `voice/src/bot.py`, `campaign_manager.py`
-- `reach_layer/voice/src/pipecat_services/` — Raya STT/TTS pipecat services
-- `reach_layer/mcp/src/server.py` — MCP SSE FastAPI server; `mcp/src/mcp_reach.py` — `McpReachLayer`
-
-**Tests:** 308 Python tests across 20 files (cli 47 + web 95 + voice 166) + 143 React UI tests across 14 files. Also includes MCP standard integration and auth tests in `reach_layer/mcp/tests/test_mcp_reach.py`.
-
----
-
-### Observability Layer ✅
-
-Async-only observability. Emits turn events after response delivery. Never in the response path.
-All 7 blocks self-instrument via the shared `dpg_telemetry` package (installed from `observability_layer/`).
-Telemetry flows via OTLP/gRPC to an OTel Collector sidecar.
-
-**`dpg_telemetry` package:** Exposes `init_otel(service_name, config)`, `get_tracer()`, `get_meter()`.
-Every block calls `init_otel()` at startup. Configures TracerProvider, MeterProvider, OTLP exporter,
-W3C propagator, and resource attributes from config.
-
-**Block instrumentation:**
-
-| Block | Key spans | Key metrics |
-|---|---|---|
-| `agent_core` | `orchestrator.turn`, `llm.call` | `llm.tokens`, `turn.latency_ms` |
-| `trust_layer` | `trust.input_check`, `trust.output_check` | `trust.blocks` |
-| `knowledge_engine` | `ke.prompt_assemble`, `ke.rag_retrieve` | `rag.retrieved_docs` |
-| `memory_layer` | `memory.read`, `memory.write` | `memory.latency_ms` |
-| `action_gateway` | `action.execute` | `action.calls` |
-| `reach_layer` | `reach.inbound`, `reach.outbound` | `reach.sessions` |
-
-**Domain config schema:** `ObservabilityConfig` (Pydantic v2) defines the full outcome lifecycle,
-metric instrument types, SLI thresholds, and PII field exclusions (separate lists for telemetry
-vs. audit log — `user_id` allowed in traces for dashboarding, excluded from audit for DPDP Act compliance).
-
-**HTTP service (port 8004):** `/emit/turn` (backward-compatible; routes to `OutcomeTracker`),
-`/emit/signal`, `/validate-config`, `/health`.
-
-**Primary implementation:** `OtelObservabilityLayer` with `OutcomeTracker` — functional OTel instrumentation. Audit trail = Loki (logs) + Jaeger (traces) via OTel Collector; no separate audit DB needed. DPDP PII exclusions enforced at DPG instrumentation layer via `observability.audit.pii_fields_excluded` and `observability.telemetry.pii_fields_excluded` config fields. `ConsoleLogger` is a backward-compatible PoC stub, not the primary implementation.
-
-**Planned production additions:** persistent outcome store. Grafana dashboards, alert rules and Discord routing are provisioned from `automation/docker/grafana/` (see its README, Monitoring).
-
-**Key files:**
-- `observability_layer/src/dpg_telemetry/` — shared bootstrap package (`init_otel`, `get_tracer`, `get_meter`)
-- `observability_layer/src/schema/config.py` — `ObservabilityConfig` Pydantic v2 schema
-- `observability_layer/src/outcome_tracker.py` — lifecycle state machine
-- `observability_layer/src/otel_observability_layer.py` — `OtelObservabilityLayer` (primary implementation)
-- `observability_layer/src/server.py` — FastAPI: `/emit/turn`, `/emit/signal`, `/validate-config`, `/health`
-
-**Tests:** 101 tests across 7 files.
-
----
-
-## 4. Runtime Turn Sequence
-
-```
-Reach Layer (input)
-  │
-  ▼
-Agent Core: read state ← Memory Layer                     [session state, current_subagent_id, user_storage_mode]
-  │
-  ▼
-Agent Core: consent gate                                  [only if ask_for_consent: true in dpg config]
-  │  user_storage_mode=None, no prior turns → return consent prompt (no LLM)
-  │  user_storage_mode=None, prior turn exists → POST /consent/verify → write user_storage_mode → continue
-  │  user_storage_mode set → skip
-  ▼
-Agent Core: POST /check/input → Trust Layer               [MANDATORY]
-  │
-  ▼ (block → TurnResponse(blocked_input_message))
-    (escalate → POST /escalate → TurnResponse(holding_message))
-  ▼ (allow → continue)
-Agent Core: Language Normalisation (internal)             [dialect, code-switching, transliteration]
-  │
-  ▼
-Agent Core: dialogue-act NLU (internal)                   [pending question → frame → strict NLU call → post-processing]
-  │                                                       [→ NLUResult(intent, entities, confidence), session writes, <caller_turn>]
-  ▼
-Agent Core: POST /assemble_constraints → Trust Layer      [guardrail constraints for the active policy pack]
-  │  returns: prompt_constraints, required_disclosures, action_gates, refusal_templates
-  ▼
-Agent Core: Manager Agent selects subagent + tools        [current_subagent_id + NLU intent → routing rules in config]
-  │  build_system_prompt(): subagent_prompt + guardrail_constraints + required_disclosures
-  │  (KE chunks, when fetched, are appended via the knowledge_retrieval tool result — not pre-assembled by KE)
-  │  tool list filtered by action_gates
-  ▼
-Agent Core: tool pre-dispatch (optional)                  [predispatch rule → guards → Action Gateway /execute]
-  │  result handed to LLM call #1 as a tool exchange; failure falls back to the normal path
-  ▼
-Agent Core: LLM call #1 (ChatProviderBase)
-  │
-  ├─ [tool_use block returned]
-  │    Agent Core: route by tool name
-  │      knowledge_retrieval → Knowledge Engine /retrieve
-  │      any other tool      → Action Gateway /execute
-  │    Agent Core: LLM call #2 (with tool_result)
-  │
-  ▼
-Agent Core: POST /check/output → Trust Layer              [MANDATORY]
-  │
-  ▼ (block → TurnResponse(output_blocked_message))
-Agent Core: deliver response → Reach Layer
-  │
-  ├─ [async] write state → Memory Layer                   [current_subagent_id, user_storage_mode, session data]
-  └─ [async] emit TurnEvent → Observability Layer         [all turns including blocked/escalated; carries trace_id]
+| `[STEP 1]` | Fetch the context bundle from Memory Layer. | `_process_turn_inner`, `_stream_turn_impl` |
+| `[STEP 1b]` | Session bootstrap: fetch profile fields before the first turn. | `_run_session_bootstrap_sync`, `_run_session_bootstrap_async`; logic in `agent_core/src/session_bootstrap.py` |
+| `[STEP 2]` | Resolve the current subagent; special handlers (human handoff, WhatsApp handoff) short-circuit the turn. | `_process_turn_inner`, `_stream_turn_impl`, `_handle_special` |
+| `[STEP 3]` | Trust Layer input check; may block or escalate. | `_process_turn_inner`, `_stream_turn_impl` |
+| `[STEP 4]` | Language normalisation. The streaming path runs it together with NLU as `[STEP 4+5]`. | `_process_turn_inner`, `_stream_turn_impl` |
+| `[STEP 5]` | Dialogue-act NLU; results are applied to the session. | `_apply_understanding_sync`, `_apply_understanding_async`; NLU code in `agent_core/src/understanding/` |
+| `[STEP 5]` (handoff) | A request for a human is detected and handed off. | `_handle_human_request_sync`, `_handle_human_request_async`; payload and lines in `agent_core/src/handoff.py` |
+| `[STEP 6]` | Routing: pick the next subagent from intent and session state. | `_resolve_next_subagent`, `_evaluate_condition` |
+| `[STEP 7]` | Prompt assembly. Skipped for terminal subagents. | `_process_turn_inner`, `_stream_turn_impl`; context building in `agent_core/src/context/` |
+| `[STEP 7]` (pre-dispatch) | Tool calls the config says to run before the LLM, so their results are in the prompt. | `_predispatch_sync`, `_predispatch_async`; rules and runner in `agent_core/src/predispatch/` |
+| `[STEP 8]` | LLM call (`Call #1`, and `#2` after tools on the streaming path). | `_process_turn_inner`, `_stream_turn_impl`; providers in `agent_core/src/chat_provider/` |
+| `[STEP 8]` (output guard) | Spoken-output contract and guard applied to the reply (per sentence when streaming). | `_make_output_guard`; `agent_core/src/output/guard.py` |
+| `[STEP 9]` | Tool-use loop: consent, call cap and grounding checks, then the Action Gateway or Knowledge Engine call. | `_process_turn_inner`, `_stream_turn_impl`; checks in `agent_core/src/tool_guard.py` |
+| `[STEP 10]` | Trust Layer output check; may replace the reply with a safe fallback. On the streaming path the check is batched per sentence. | `_process_turn_inner`, `_stream_turn_impl` |
+| `[STEP 11]` | Deliver the response to the caller. | `_process_turn_inner`, `_stream_turn_impl` |
+| `[STEP 11b]`, `[STEP 12]`, `[STEP 12b]`, `[STEP 13]` | After delivery, asynchronously: audit record, memory write, session flush, observability emit. | `_post_turn` (sync path), `_async_post_turn` (stream path) |
+
+## Rules
+
+- Only Agent Core calls other blocks. Blocks never call each other.
+- Each block has a base class and an implementation. Add new behaviour as a new implementation, not by editing the base class (`.claude/rules/base-class-pattern.md`).
+- Trust fails closed. If the Trust Layer is unreachable or errors, the turn is blocked, not allowed.
+- A change to a runtime `<block>/src/schema/config.py` updates the dev-kit mirror and FIELD_RULES in the same PR (`.claude/rules/runtime-devkit-sync.md`). No CI guard catches drift.
+- Each layer's config models set `extra="forbid"`, so an unknown key stops startup.
+- Other rules: `.claude/rules/configuration-discipline.md`, `.claude/rules/error-handling.md`, `.claude/rules/testing-requirements.md`.
+
+## Configuration loading
+
+Each block reads two files: framework defaults from `dev-kit/dpg/` and use-case config from `dev-kit/configs/`. The compose files in `automation/docker/` mount them as `dpg.yaml` and `<block>.yaml` in the container's config directory. Reach Layer (`reach_layer/base/config_loader.py`) and Action Gateway (`action_gateway/src/config/env_expand.py`) expand `${VAR}` and `${VAR:-default}` first. Agent Core merges in `agent_core/main.py`; Reach Layer merges in `deep_merge`. The merged config is then checked against the block's schema.
+
+```mermaid
+flowchart TD
+    A["dev-kit/dpg/block.yaml (framework defaults)"] --> C["Mounted as config/dpg.yaml"]
+    B["dev-kit/configs/domain/block.yaml (use case)"] --> D["Mounted as config/block.yaml"]
+    C --> E["${VAR} expansion (Reach Layer, Action Gateway)"]
+    D --> E
+    E --> F["Deep merge (use case overrides defaults)"]
+    F --> G["Schema validation (an unknown key stops startup)"]
+    G --> H["Running block"]
 ```
 
-**Latency target:** 800–1200ms per turn (voice-first).
-- One LLM call for most turns; two for tool turns.
+## Tests and evals
 
-**Execution paths:**
+Each block has its own tests directory. Run a block's tests from inside its directory:
 
-| Path | Endpoint | Response | Default channel |
-|---|---|---|---|
-| Sync | `POST /process_turn` | `TurnResult` JSON | Web, CLI |
-| Streaming (SSE), via TurnAssembler (request-scoped) | `POST /stream_turn` | `SignalEvent` → `SentenceEvent`s → `DoneEvent` | Web (when SSE preferred), CLI |
-| Session/TurnAssembler | `POST /sessions/{id}/input` + `GET /sessions/{id}/events` | SSE subscription | Voice (only — VAD multi-segment input) |
-
-All three paths run the same 13-step sequence. Every streaming turn goes through TurnAssembler: `/stream_turn` as a request-scoped turn (one request = one complete utterance, invoked immediately, no trigger policy); the session endpoints as a segment stream that calls `stream_turn()` in-process when a trigger fires (silence timer or max-wait ceiling). `/process_turn` does not use it. Channels and modes are independent — see Reach Layer above for the channel ↔ mode default mapping.
-
----
-
-## 5. Module Interaction Rules
-
-**Agent Core is the only turn-time orchestrator** — it owns the per-turn pipeline (memory read → trust input → NLU → constraint assembly → prompt build → LLM → tools → trust output → deliver), and it is the only block that calls the LLM. The user only ever initiates a turn through Reach Layer → Agent Core.
-
-Within and around a turn, however, other blocks may communicate directly **under explicit, approved scopes** (production, not POC-only). Cross-block calls outside these scopes remain prohibited; new ones require an architecture-level approval.
-
-### Turn-time calls (initiated by Agent Core)
-
-| Caller | Callee | Purpose |
+| What | Where | Command |
 |---|---|---|
-| Agent Core | Memory Layer | Read state at turn start; write state after response (async) |
-| Agent Core | Trust Layer | Check input (before LLM); check output (before user) |
-| Agent Core | Knowledge Engine | Retrieve ranked chunks (NLU results + session state in body). Routed via the `knowledge_retrieval` internal tool when the LLM requests it. |
-| Agent Core | Action Gateway | Execute LLM-requested external tool calls |
-| Agent Core | Observability Layer | Emit turn metadata (async, after delivery) |
-| Action Gateway | External systems | Only on instruction from Agent Core |
+| Block unit tests | `agent_core/tests/`, `memory_layer/tests/`, `trust_layer/tests/`, `observability_layer/tests/`, `knowledge_engine/tests/`, `action_gateway/tests/`, `dev-kit/tests/` | `cd agent_core && uv run --extra dev pytest -q` |
+| Doc path check | `scripts/check_doc_paths.py` | `python3 scripts/check_doc_paths.py ARCHITECTURE.md README.md` (from the repo root) |
+| NLU eval | `agent_core/eval/nlu/` | `cd agent_core && uv run python -m eval.nlu.run --help` |
+| Scenario eval (against a running bridge) | `agent_core/eval/scenarios/` | `cd agent_core && uv run python -m eval.scenarios.run --help` |
+| Voice bench (full stack) | `agent_core/eval/voice_bench/` | `cd agent_core && uv run python -m eval.voice_bench --help` |
 
-### Turn entry / exit (Reach Layer ↔ Agent Core)
+## Adding a feature to a block
 
-| Caller | Callee | Purpose |
-|---|---|---|
-| Reach Layer (web) | Agent Core | `POST /process_turn` — direct (sync) mode |
-| Reach Layer (voice) | Agent Core | `POST /sessions/{id}/input` + `GET /sessions/{id}/events` — session mode |
-| Reach Layer (cli) | Agent Core | `POST /process_turn` (direct) or `POST /stream_turn` (SSE) — direct only; session is unnecessary for CLI |
-
-### Approved direct calls (production)
-
-These are first-class production paths, not PoC carve-outs.
-
-| Caller | Callee | Purpose |
-|---|---|---|
-| Reach Layer (web) | Memory Layer | `GET /users/{user_id}/active-history` — restore chat history on session resume, before the first turn. |
-| Reach Layer | Knowledge Engine | `POST /ingest` (planned/in-flight) — user-uploaded documents are routed straight to KE for embedding + ledger update. The upload path bypasses the turn pipeline because no LLM response is owed. |
-
-### Planned direct calls (post-PoC, design-approved)
-
-| Caller | Callee | Purpose |
-|---|---|---|
-| Action Gateway | Knowledge Engine | Read/write cached tool results (caching layer, #18) |
-| Action Gateway | Memory Layer | Read/write cached connector responses scoped to a session (caching layer, #18) |
-
-> **Why this is consistent with "Agent Core orchestrates":** Agent Core still owns every turn's runtime sequence. The approved direct calls above are either (a) *outside* a turn (document ingestion, session-restore before turn 1) or (b) *cache-side* optimisations that don't change the turn semantics observed by Agent Core. No block other than Agent Core builds prompts, calls the LLM, or decides routing.
-
----
-
-## 6. Configuration Architecture
-
-### Three-Tier Config Model (overview)
-
-| Tier | What it is | Status |
-|---|---|---|
-| Tier 1 — Configuration Agent | Deterministic wizard: IntakeState + FIELD_RULES + 11 declarative phases + 8-tool surface drive YAML generation. FastAPI server + React SPA frontend in `dev-kit/dev_kit/agent/`. | ✅ Implemented |
-| Tier 2 — YAML Configuration | Canonical runtime source of truth. Read by Agent Core at startup. | ✅ |
-| Tier 3 — Live Tuning Dashboard | Management UI reading Observability Layer signals to patch YAML post-deployment | ⏳ Not yet built |
-
-These tiers are **configuration tooling — not runtime DPGs**. The 7 DPGs remain the architecture.
-
-### Two-level YAML model (runtime)
-
-```
-dev-kit/
-├── dpg/                          # Framework defaults (same across all domains)
-│   ├── agent_core.yaml
-│   ├── knowledge_engine.yaml
-│   └── ...
-├── configs/
-│   └── blue-dots/                # blue-dots domain overrides
-│       ├── agent_core.yaml       # primary_model, fallback_model, NLU slots/act_intents, connectors
-│       ├── knowledge_engine.yaml # glossary mappings, RAG sources, act-intent filters
-│       ├── memory_layer.yaml     # graph schema (profile_graph_relations), merge rules
-│       ├── trust_layer.yaml      # blocked phrases, escalation topics, consent phrases
-│       ├── action_gateway.yaml   # connector endpoints, timeout
-│       ├── reach_layer.yaml      # CLI prompts, Agent Core endpoint
-│       └── observability_layer.yaml # OTel config, outcome lifecycle, SLI thresholds
-└── loader.py                     # Deep-merge: dpg/*.yaml overridden by configs/<domain>/*.yaml
-```
-
-### YAML section → DPG mapping
-
-| YAML Section | DPG Configured |
-|---|---|
-| `agent` | Agent Core |
-| `channels` | Reach Layer |
-| `knowledge` | Knowledge Engine |
-| `connectors` | Action Gateway |
-| `conversation` | Agent Core + Knowledge Engine |
-| `trust` | Trust Layer |
-| `observability` | Observability Layer |
-| `state` | Memory Layer |
-
-### Rule: nothing domain-specific may be hardcoded
-
-Model names, persona text, tool definitions, guardrail rules, intent definitions, connector endpoints, TTLs, thresholds, and graph edge types must all come from YAML. Config is read once at startup. Never re-read inside request paths.
-
-> **Note — External tool definitions:** Tool definitions for external connectors (name, description, parameters, auth, endpoints) live in `action_gateway.yaml` under `tools:[]`, not in `agent_core.yaml`. Agent Core fetches the assembled tool list from Action Gateway at startup via `GET /tools` and injects it into the LLM request. This keeps tool schema ownership with Action Gateway and removes the need to duplicate connector config in `agent_core.yaml`.
-
----
-
-## 7. Blue Dots Domain — Reference Configuration
-
-The reference domain is **Blue Dots**. Its whole conversation design is domain configuration and is not part of the DPG framework — a different domain configures a different journey. Read it in `dev-kit/configs/blue-dots/`:
-
-- `agent_core.yaml` — the subagent graph, per-subagent `pending` questions, routing rules, and the `preprocessing.nlu_processor` block (`slots`, `act_intents`, `termination_gate`, `topics`, `signals`, `examples`).
-- `memory_layer.yaml`, `trust_layer.yaml`, `reach_layer.yaml`, `action_gateway.yaml` — the matching blocks.
-
-**NLU in this domain.** There is one NLU mode. Per turn the dialogue-act `TurnUnderstander` takes the pending question and known fields, makes one strict-schema call, and code derives the routing intent from the `act_intents` table; typed `slots` replace free-form entities, and `termination_gate` plus `signals` drive the short-circuit and Signal writes. The earlier intent-list mode was removed with no compatibility path; spec §16 records what was removed and what replaced each concept: `docs/superpowers/specs/2026-10-01-nlu-dialogue-acts-design.md`.
-
-**Consent** is handled by the orchestrator before the subagent graph is entered — not by any subagent. See Section 4 Runtime Turn Sequence.
-
----
-
-## 8. Implementation Status
-
-### By block
-
-| Block | Status | Notes |
-|---|---|---|
-| Agent Core | ✅ | Orchestrator, multi-provider chat_provider (Anthropic + OpenAI), preprocessing, tool-use loop, async SSE streaming, TurnAssembler, 10-subagent workflow. 1025 tests, 42 files, ≥70% coverage. |
-| Knowledge Engine | ✅ | Glossary, ChromaDB RAG, HTTP server (`POST /retrieve`). 192 tests, 13 files, ≥70% coverage. |
-| Memory Layer | ✅ | Redis (session) + Memgraph (user/journey/context graph) + SQLite (audit). 10 HTTP endpoints. 226 tests. |
-| Trust Layer | 🟡 | All 4 sub-blocks implemented. Fail-closed. HiTL: log backend only. Consent: in-process SQLite. 138 tests. |
-| Action Gateway | 🟡 | Generic adapter framework (RestApiAdapter + McpAdapter). Response caching is pending Config-driven via `tools:[]`. OTel instrumented. 173 tests. |
-| Reach Layer | ✅ | 3 channels: CLI (✅) + Web/React 19 SPA (✅, with `routing_only` mode for voice-only deployments) + Voice/pipecat (✅ 166 tests). 308 Python + 143 UI tests. |
-| Observability Layer | ✅ | OTel instrumentation functional. Audit = Loki+Jaeger via OTel Collector. Grafana dashboards pending. 101 tests. |
-
-### By feature
-
-| Feature | Status | Notes |
-|---|---|---|
-| Language normalisation | ✅ | Dialect, code-switching, transliteration — in Agent Core |
-| NLU (dialogue acts) | ✅ | Single mode: pending question → frame → strict NLU → post-processing → `<caller_turn>`; routing intent derived from `act_intents` — in Agent Core |
-| Subagent-based routing | ✅ | current_subagent_id tracked; routing rules driven by config graph |
-| Semantic RAG | ✅ | ChromaDB, multilingual embeddings, intent-based filtering |
-| Glossary mapping | ✅ | Config-driven colloquial → canonical |
-| LLM call with retry | ✅ | Exponential backoff inside each ChatProviderBase implementation |
-| Multi-provider LLM abstraction | ✅ | `chat_provider/` selects Anthropic or OpenAI by config (#287) |
-| Tool-use loop | ✅ | Bounded by `max_tool_rounds`, action_gates from Trust Layer applied |
-| KE conditional call (tool-only) | ✅ | `knowledge_retrieval` internal tool; LLM decides when to call KE; subagents without `knowledge_retrieval` never trigger KE |
-| Session state (turn + session) | ✅ | Redis with TTL |
-| Persistent profile store | ✅ | Redis RedisJSON |
-| Context graph | ✅ | Memgraph typed attribute graph |
-| Audit log / SQLite store | ✅ | SQLiteAuditStore fully implemented — session lifecycle events (DPDP consent) + raw turn-by-turn conversation transcript |
-| Input trust check (ContentBlock) | ✅ | Phrase-match implemented |
-| Output trust check (ContentBlock) | ✅ | Phrase-match implemented |
-| GuardrailsBlock + /assemble_constraints | ✅ | GuardrailsBlock implemented; Policy Pack from config; /assemble_constraints endpoint live |
-| ConsentBlock + /consent/verify | ✅ | ConsentBlock implemented; phrase evaluation from config; consent_store SQLite (in-process only) |
-| HiTLBlock + /escalate | 🟡 | HiTLBlock implemented as log backend only; redis/webhook backends reserved |
-| Orchestrator consent gate | ✅ | Consent gate implemented in orchestrator; user_storage_mode flag logic active |
-| Fail-closed Trust Layer | ✅ | All endpoints and AC HTTP client are fail-closed (resolved) |
-| Reach Layer web adapter | ✅ | Web UI + POST /chat + session restore via Memory Layer (approved exception) |
-| Async SSE streaming (`stream_turn`) | ✅ | Per-sentence Trust output check; `SignalEvent`/`SentenceEvent`/`DoneEvent` |
-| TurnAssembler (multi-segment input) | ✅ | Silence trigger + max-wait ceiling; session endpoints |
-| Action Gateway adapter framework | ✅ | RestApiAdapter + McpAdapter; config-driven via `tools:[]`; OTel instrumented |
-| Reach Layer restructure (3 channels) | ✅ | `reach_layer/base/` + `cli/` + `web/` + `voice/` as independent deployables |
-| Web UI React SPA | ✅ | React 19 + Vite 6 + Tailwind; dark/light theme; Markdown; Google Sign-In optional |
-| Voice channel (pipecat) | ✅ | VobizAdapter wired |
-| Real ONEST connector | ⏳ | Add ONEST tool entry to `action_gateway.yaml` once live API is available |
-| Browser-side SSE streaming | ⏳ | `POST /chat/stream` endpoint — typewriter animation (#99) |
-| TTS stop on barge-in | ✅ | In-flight Raya TTS audio does not stop mid-utterance on barge-in (#98) |
-| WhatsApp/Mobile channels | ⏳ | Pending |
-| Grafana dashboard provisioning | ✅ | 8 dashboards plus alert rules routed to Discord, provisioned from `automation/docker/grafana/`; exporters behind the `monitoring` Compose profile |
-| Configuration Agent (Tier 1) — Deterministic Wizard | ✅ | FastAPI + React SPA; IntakeState-gated 11-phase wizard with FIELD_RULES, 8 canonical tools, runtime-schema dry-run, and decision logging at 14 points |
-| Live Tuning Dashboard (Tier 3) | ⏳ | Dashboard reading Observability Layer signals |
-| Profile building subagent flow | ✅ | Subagent graph implemented; full profile collection partially complete |
-| Multimodal input | 🟡 | Handler exists, disabled via config |
-| Docker compose | ✅ | `automation/docker/docker-compose.dev.yml` |
-| Helm charts | 🟡 | `automation/helm/` — structure exists, completeness unverified |
-
----
-
-## 9. Stub Replacement Guide
-
-Each stub implements the exact same abstract base class interface. Swapping requires **no changes to Agent Core or any other block**.
-
-### Action Gateway
-
-The adapter framework is production-ready. To connect a new external API:
-
-1. Add a `tools[]` entry to `dev-kit/configs/<domain>/action_gateway.yaml` with `type: rest_api` (or `mcp`), auth config, endpoint URLs, and parameter definitions.
-2. Restart — `AdapterFactory` instantiates the adapter from config. No code changes required.
-3. To support a new adapter type (e.g. `database`, `gRPC`), implement `ToolAdapter` ABC in `action_gateway/src/adapters/` and register the class in `ADAPTER_TYPES` in `action_gateway/src/registry/adapter_factory.py`.
-
-### Reach Layer
-
-The 3-channel base class hierarchy is in place. Adding a new channel:
-
-1. Create `reach_layer/<channel>/` with its own `pyproject.toml` declaring `reach-layer-base` as a path dependency.
-2. Inherit from `TextChannelBase` or `VoiceChannelBase` (not `ReachLayerBase` directly).
-3. Implement only the abstract methods: `on_session_start`, `on_session_end`, plus `run_loop` (text) or `handle_call`/`handle_barge_in`/`on_vad_event` (voice). HTTP wire methods come for free.
-4. Add the channel to `reach_layer.yaml` under `reach_layer.channels.<name>` with `assembly_mode: session` or `direct`.
-5. Write a `Dockerfile` and register in `automation/docker/docker-compose*.yml`.
-6. Agent Core and all other services require no changes.
-
-### Observability Layer
-
-1. Implement `OutcomeTracker` placement.rate gauge computation (ratio of placed/total sessions).
-
----
-
-## 10. Out of Scope
-
-- ASR/TTS pipeline (speech-to-text, text-to-speech)
-- Model training or fine-tuning
-- Infrastructure provisioning or IaC
-- Multi-tenancy and cost attribution
-- Testing tooling beyond per-module pytest
-- Versioning and rollback of domain configs
+- [ ] Schema: add the field to `<block>/src/schema/config.py`, with a default or as required.
+- [ ] Dev-kit mirror: update `dev-kit/dev_kit/schemas/domain/<block>.py`, `dev-kit/dev_kit/schema.py` and FIELD_RULES in `dev-kit/dev_kit/agent/field_rules/`.
+- [ ] Defaults: add a framework default to `dev-kit/dpg/<block>.yaml` if it is not use-case specific.
+- [ ] Tests: add them under `<block>/tests/`.
+- [ ] Config docs: update the block's README (for example `agent_core/README.md`).
+- [ ] Site: if users can see the change, update its page in the docs site repo.
