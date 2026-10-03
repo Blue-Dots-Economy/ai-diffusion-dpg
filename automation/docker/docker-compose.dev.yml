@@ -24,7 +24,7 @@
 #
 # Ingestion flow (Knowledge Engine):
 #   On startup, KE runs: python scripts/ingest.py && python main.py
-#   Ingest reads docs from knowledge-engine/data/ (bind-mounted as /app/data),
+#   Ingest reads docs from knowledge_engine/data/ (bind-mounted as /app/data),
 #   writes embeddings into chroma_data volume at /app/data/chroma_db (writable named
 #   volume that overrides the read-only bind mount for that subdirectory).
 #   Server starts only after ingest completes successfully.
@@ -56,6 +56,13 @@ services:
     volumes:
       - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-blue-dots}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
+    # Per-domain connector secrets: one KEY=value line per auth.secret_env in
+    # dev-kit/configs/<domain>/action_gateway.yaml. The file is gitignored; copy
+    # secrets.env.example next to it. Optional, so dev-kit deploys (which inject
+    # these keys into `environment` themselves) are unaffected.
+    env_file:
+      - path: ../../dev-kit/configs/${DOMAIN:-kkb}/secrets.env
+        required: false
     networks:
       - dpg_net
     deploy:
@@ -201,7 +208,7 @@ services:
     volumes:
       - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-blue-dots}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
-      - ../../knowledge-engine/data:/app/data:ro   # source docs (read-only)
+      - ../../knowledge_engine/data:/app/data:ro   # source docs (read-only)
       - chroma_data:/app/chroma_db            # writable ChromaDB volume (CHROMA_PERSIST_DIR points here)
       - kb_data:/data/kb                      # upload staging area for KB documents
     networks:
@@ -619,10 +626,12 @@ services:
   #   restart: unless-stopped
 
   memgraph:
-    image: memgraph/memgraph
+    # Pinned: the image ENTRYPOINT is the memgraph binary, so `command` carries
+    # flags only. Repeating the binary path here makes memgraph exit with
+    # "Unexpected positional argument(s)".
+    image: memgraph/memgraph:3.13.1
     container_name: memgraph
     command: [
-      "/usr/lib/memgraph/memgraph",
       "--storage-wal-enabled=true",
       "--storage-snapshot-interval-sec=300"
     ]
