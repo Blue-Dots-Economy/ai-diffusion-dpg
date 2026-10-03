@@ -3,7 +3,7 @@
 ## Prerequisites
 - Docker Desktop installed and running
 - `OPENAI_API_KEY` (the Blue Dots configuration uses OpenAI for the agent and the embeddings)
-- To **build** the DPG images locally (`--build`, or no pre-built image available): be logged in to Docker (`docker login dhi.io`; in a verified run a Docker login was already present and no separate dhi.io login was needed). Every Dockerfile except `knowledge_engine/` is based on Docker Hardened Images (dhi.io), and dhi.io refuses anonymous pulls. Pulling the pre-built images from GHCR does not need it.
+- To **build** the DPG images locally (`--build`, or no pre-built image available): be logged in to Docker. Building pulls the `dhi.io` base images through your Docker login, so log in to Docker Hub first. Every Dockerfile except `knowledge_engine/` is based on Docker Hardened Images (dhi.io), and dhi.io refuses anonymous pulls. Pulling the pre-built images from GHCR does not need it.
 - The DHI runtime images have **no shell** (knowledge_engine, on `python:3.14-slim`, is the exception) — `docker compose exec <service> sh` does not work. Use exec form with the venv's python instead, e.g. `docker compose exec agent_core python -c "..."`.
 
 ---
@@ -46,8 +46,8 @@ docker compose -f docker-compose.yml up -d    # start all services
 ```
 
 The dev compose file has no `build:` sections, so build with
-`docker-compose.yml`, and set `DPG_IMAGE_TAG` if you want the dev file to use
-the images you built.
+`docker-compose.yml`. It tags builds `${GIT_SHA:-latest}`; to make the dev file
+use them, set `DPG_IMAGE_TAG` to the `GIT_SHA` you built with (or `latest`).
 
 ---
 
@@ -228,6 +228,6 @@ the same file. `docker-compose.yml` gives dev_kit 512 MB and 0.1 CPU.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `agent_core` stuck in "Created" | Dependencies not healthy yet | Wait — it starts automatically once all 5 deps are healthy |
+| `agent_core` stuck in "Created" | Dependencies not healthy yet | Wait — it starts automatically once `action_gateway` is healthy |
 | `knowledge_engine` unhealthy after 3 min | OOM during ingest | Increase Docker Desktop memory limit or switch to OpenAI embeddings |
 | A Reach Layer channel can't connect | `agent_core` not healthy yet | Run `docker compose ps` and wait for agent_core to show healthy |

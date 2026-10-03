@@ -30,9 +30,10 @@
 #   Server starts only after ingest completes successfully.
 #
 # Prerequisites:
-#   1. export ANTHROPIC_API_KEY=sk-ant-...
+#   1. export OPENAI_API_KEY=sk-...   (Blue Dots config; ANTHROPIC_API_KEY is only needed
+#      when a provider is set to anthropic)
 #   2. docker compose up -d                    (runs ingest first, then starts all services)
-#   3. docker compose run --rm reach_layer_cli (interactive CLI session, opt-in via `cli` profile)
+#   3. docker compose ps                       (there is no CLI service; use the web, voice, MCP or bridge channels)
 #
 # Paths in this file are relative to the docker-compose.yml location.
 # ../../ resolves to the repository root.

@@ -1,6 +1,6 @@
 # automation/docker/docker-compose.yml  (LOCAL BUILD)
 #
-# Builds all 7 DPG services from source using each service's Dockerfile.
+# Builds the DPG services (blocks, channels and dev-kit) from source using each service's Dockerfile.
 # Use this file for local development — images are built on your machine.
 #
 # For pre-built images, use docker-compose.dev.yml instead.
@@ -30,10 +30,11 @@
 #   Server starts only after ingest completes successfully.
 #
 # Prerequisites:
-#   1. export ANTHROPIC_API_KEY=sk-ant-...
+#   1. export OPENAI_API_KEY=sk-...   (Blue Dots config; ANTHROPIC_API_KEY is only needed
+#      when a provider is set to anthropic)
 #   2. docker compose build              (build all images from source)
 #   3. docker compose up -d              (runs ingest first, then starts all services)
-#   4. docker compose run --rm reach_layer (interactive CLI session)
+#   4. docker compose ps                 (there is no CLI service; use the web, voice, MCP or bridge channels)
 #
 # Paths in this file are relative to the docker-compose.yml location.
 # ../../ resolves to the repository root.
