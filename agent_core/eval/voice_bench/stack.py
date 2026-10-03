@@ -54,8 +54,15 @@ def apply_patch(text: str, patch: dict, tap_url: str, instance_url: str) -> str:
     return text
 
 
-def compose_override(bridge_host_port: int, env_file: Path, tool_result_secret: str | None = None) -> str:
-    """Compose override: publish the bridge, feed BLUE_DOTS_* env, cap agent_core, set tool_result_secret.
+ENV_EXPAND = Path("action_gateway/src/config/env_expand.py")
+
+
+def compose_override(bridge_host_port: int, env_file: Path, tap_url: str, instance_url: str,
+                     tool_result_secret: str | None = None) -> str:
+    """Compose override: publish the bridge, feed BLUE_DOTS_* env, point action_gateway at the tap
+    via SIGNALS_* env, cap agent_core, set tool_result_secret.
+
+    Refs with env_expand.py read the SIGNALS_* vars; older refs ignore them and get the patch file.
 
     If tool_result_secret is None, generates a fresh secrets.token_hex(32) value.
     The secret is included in StackError redaction and must NOT be logged.
@@ -73,6 +80,9 @@ def compose_override(bridge_host_port: int, env_file: Path, tool_result_secret: 
             "volumes": ["../../dev-kit/dpg/reach_layer.yaml:/app/reach_layer/bridge/config/dpg.yaml:ro"]
         },
         "action_gateway": {"env_file": [str(env_file)],
+                           "environment": [f"SIGNALS_BASE_URL={tap_url}",
+                                           f"SIGNALS_SEARCH_URL={tap_url}/signals-search",
+                                           f"SIGNALS_INSTANCE_URL={instance_url}"],
                            "extra_hosts": ["host.docker.internal:host-gateway"]},
         "agent_core": {"deploy": {"resources": {"limits": {"memory": "1g", "cpus": "1.0"}}}},
         # Milestone refs before cf794ef use memgraph/memgraph:latest, whose newer binary fails the healthcheck.
@@ -163,15 +173,17 @@ class TargetStack:
         self._git("worktree", "add", "--detach", str(wt), self.target.git_ref or "")
         self._up = True
         try:
-            patch = yaml.safe_load(PATCH_FILE.read_text(encoding="utf-8"))
-            f = wt / patch["file"]
-            try:
-                f.write_text(apply_patch(f.read_text(encoding="utf-8"), patch, self.tap_url,
-                                         self.instance_url), encoding="utf-8")
-            except PatchMismatch as e:
-                raise StackError(f"patch does not apply: {e}") from e
+            if not (wt / ENV_EXPAND).exists():  # older ref: no env expansion, rewrite the yaml
+                patch = yaml.safe_load(PATCH_FILE.read_text(encoding="utf-8"))
+                f = wt / patch["file"]
+                try:
+                    f.write_text(apply_patch(f.read_text(encoding="utf-8"), patch, self.tap_url,
+                                             self.instance_url), encoding="utf-8")
+                except PatchMismatch as e:
+                    raise StackError(f"patch does not apply: {e}") from e
             compose = wt / self.target.compose
-            override_text, self._tool_result_secret = compose_override(BRIDGE_HOST_PORT, self.env_file)
+            override_text, self._tool_result_secret = compose_override(BRIDGE_HOST_PORT, self.env_file, self.tap_url,
+                                                                       self.instance_url)
             (compose.parent / OVERRIDE_NAME).write_text(override_text, encoding="utf-8")
             self._exec(self._compose_argv("up", "-d", "--build", "reach_layer_bridge"),
                        "docker compose up", env=self._env())
