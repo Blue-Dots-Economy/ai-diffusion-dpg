@@ -15,3 +15,8 @@ services:
     environment:
       # dev-kit moved to host port 8081; 8080 is the Signals stack's Keycloak.
       - KE_DEVKIT_CALLBACK_URL=http://host.docker.internal:8081
+  reach_layer_bridge:
+    # The bridge has no authentication, so publish it on loopback only, for
+    # local testing with curl. Never publish it on a routable interface.
+    ports:
+      - "127.0.0.1:8008:8008"
