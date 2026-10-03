@@ -49,9 +49,9 @@ Pass `DOMAIN=blue-dots` on the command line: a `DOMAIN` already set in your shel
 ## Repository map
 
 - `action_gateway/` - Action Gateway: calls external systems through declared tools.
-- `agent_core/` - Agent Core: the per-turn orchestrator, plus the eval suites in `eval/`.
+- `agent_core/` - Agent Core: the per-turn orchestrator, plus the eval suites in `agent_core/eval/`.
 - `automation/` - Docker Compose files, dashboards and deployment assets.
-- `dev-kit/` - the configuration kit: framework defaults in `dpg/`, per-use-case overrides in `configs/`, and the configuration agent UI.
+- `dev-kit/` - the configuration kit: framework defaults in `dev-kit/dpg/`, per-use-case overrides in `dev-kit/configs/`, and the configuration agent UI.
 - `docs/` - design notes, gap analyses and reference PDFs; designs live in `docs/superpowers/specs/`.
 - `knowledge_engine/` - Knowledge Engine: retrieval and glossary mapping.
 - `memory_layer/` - Memory Layer: sessions, profiles, saved tool results, audit.

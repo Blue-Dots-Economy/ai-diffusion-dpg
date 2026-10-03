@@ -19,6 +19,9 @@ def missing(md: Path, root: Path) -> list[str]:
 
 def main(argv: list[str]) -> int:
     root = Path.cwd()
+    if not (root / "agent_core").is_dir():
+        print("hint: run this from the repo root (no agent_core/ in the current directory)")
+        return 1
     bad = {a: missing(Path(a), root) for a in argv}
     for a, toks in bad.items():
         for t in toks:
