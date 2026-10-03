@@ -27,10 +27,37 @@ docker compose -f docker-compose.dev.yml logs -f knowledge_engine
 docker compose -f docker-compose.dev.yml ps
 ```
 
-The channels are the web, voice, MCP and VoicERA bridge Reach Layer services.
-The web channel needs `REACH_SESSION_SECRET` and `GOOGLE_CLIENT_ID` set. A
-`DOMAIN` exported in your shell overrides the one in `.env`, so unset it if you
-want the `.env` value.
+The **bridge** (`reach_layer_bridge`, port 8008) is the default and the only
+Reach Layer channel started out of the box. It is a generic OpenAI
+chat-completions-compatible endpoint (`POST /v1/chat/completions`), so any
+system that speaks that API can connect to the agent, for example your own
+voice pipeline. [VoicERA](https://github.com/COSS-India/VoicEra), an external
+DPG voice service, is one example.
+
+The other channels are optional and sit behind compose profiles, so a plain
+`up` or `build` skips them:
+
+| Channel | Service | Profile |
+|---|---|---|
+| Web chat, for local/dev testing only | `reach_layer_web` (8005) | `web` |
+| Voice (telephony), with the optional `ngrok` tunnel | `reach_layer_voice` (8006) | `voice` |
+| MCP server | `reach_layer_mcp` (8007) | `mcp` |
+
+The CLI is not a compose service; you build and run it on its own. Each
+optional channel also needs a channel block in the use case's
+`agent_core.yaml` and `reach_layer.yaml`. Web chat runs without login
+(`auth.enabled: false`); Google sign-in is optional and needs `enabled: true`
+plus `GOOGLE_CLIENT_ID` and `REACH_SESSION_SECRET`. The exact edits for each
+channel are in the
+[optional channels guide](https://docs.bluedotseconomy.org/guides/installation/local-setup/ai-diffusion-channels/).
+For example, to add web chat once its blocks are in place:
+
+```bash
+docker compose -f docker-compose.dev.yml --profile web up -d reach_layer_web
+```
+
+A `DOMAIN` exported in your shell overrides the one in `.env`, so unset it if
+you want the `.env` value.
 
 ---
 
@@ -71,8 +98,9 @@ docker compose -f docker-compose.dev.yml -f local-signals.override.yml up -d
 
 The override moves dev-kit to 8081 and Loki to 3101 (Signals uses 8080 and
 3100), points `KE_DEVKIT_CALLBACK_URL` at 8081, lets Action Gateway reach the
-host through `host.docker.internal`, publishes the bridge on `127.0.0.1:8008`
-and mounts the bridge's `dpg.yaml`. The full walkthrough is in the
+host through `host.docker.internal`, and publishes the bridge on
+`127.0.0.1:8008` (loopback only), so you can call it with `curl` or any
+OpenAI-compatible client on the same machine. The full walkthrough is in the
 [local setup guide](https://docs.bluedotseconomy.org/guides/installation/local-setup/ai-diffusion-dpg/).
 
 ---
