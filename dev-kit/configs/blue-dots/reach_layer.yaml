@@ -2,9 +2,8 @@
 # Blue Dots — Reach Layer domain config.
 # Deep-merged on top of dev-kit/dpg/reach_layer.yaml at startup.
 #
-# One block per channel: web, cli and voice (the Reach Layer channels), plus
-# bridge for the optional VoicERA integration. What the agent says is Hindi,
-# in a woman's voice, matching agent_core.yaml; web UI labels are English.
+# Voice channel only. Web is left disabled but present so the config
+# is structurally complete and easy to flip on later.
 
 reach_layer:
 
@@ -13,70 +12,6 @@ reach_layer:
       domain: "blue_dot"
 
   channels:
-
-    cli:
-      prompt: "You: "
-      agent_prefix: "Agent: "
-
-    web:
-      # Blue Dots runs the web chat without login. To turn Google sign-in on, set
-      # enabled: true and provide GOOGLE_CLIENT_ID and REACH_SESSION_SECRET.
-      auth:
-        enabled: false
-      ui:
-        app_name: "Blue Dots"
-        app_tagline: "Job assistant"
-        app_icon: "🔵"
-        agent_avatar: "🔵"
-        user_avatar: "👤"
-        setup_heading: "Welcome to Blue Dots"
-        # The country code is required. What is typed here becomes
-        # session.user_id, which the Action Gateway substitutes into
-        # `?phone_number={user_id}` for the lookup and `"+{user_id}"` for the
-        # write — and /admin/participant keys on the account phone, which
-        # carries the code. A 10-digit entry still "works" end to end, but it
-        # stores a malformed number that will never match the same caller
-        # arriving by voice.
-        setup_subtitle: "Enter your phone number with the country code to begin a session."
-        user_id_placeholder: "e.g. 919876543210"
-        user_id_hint: "12 digits — country code first, no + and no spaces."
-        start_btn_label: "Start →"
-        new_session_msg: "नमस्ते! मैं ब्लू डॉट्स की सहायक हूँ। काम ढूँढने में आपकी मदद कर सकती हूँ।"
-        returning_user_msg: "आपका फिर से स्वागत है!"
-        storage_key: "blue_dots_user_id"
-        theme_storage_key: "blue_dots_theme"
-        sign_out_confirm: "Sign out?"
-        switch_user_confirm: "Switch user? Your current session will be closed."
-        delete_conversation_confirm: "Delete this conversation? This cannot be undone."
-
-    voice:
-      # Hindi by default. Hindi callers pause longer mid-sentence than the
-      # framework's 0.4 s window allows, so the utterance closes later.
-      vad:
-        stop_secs: 1.0
-      raya:
-        stt_language: "hi"
-        tts_language: "hi"
-        voice_id: "d6a002d0-230c-49b1-a137-b8a7d564b1ae"   # Priyanka, hi (a woman's voice)
-      agent_core:
-        timeout_ms: 15000
-        # Opening line on call pickup is emitted by Agent Core as the
-        # entry subagent's opening_phrase. Do not add a static greeting here.
-        # Spoken verbatim only when the Agent Core call fails — Hindi,
-        # feminine first person.
-        fallback_phrase: "माफ़ कीजिए, मैं सुन नहीं पाई। क्या आप फिर से बोल सकते हैं?"
-        # GH-152: brief acknowledgement spoken when the caller barges
-        # in mid-response. Spoken verbatim — Hindi.
-        barge_in_acknowledgement: "एक सेकंड।"
-      # GH-242: short hold if the first sentence hasn't reached TTS within
-      # filler_threshold_ms. Same neutral hold as the bridge's
-      # tool_status_phrases: it must never reveal what is happening.
-      filler_threshold_ms: 1500
-      filler_phrase: "एक मिनट।"
-      # GH-137: spoken just before WebSocket close on bot-initiated hangup.
-      # Emitted verbatim — Hindi.
-      terminal_word: "धन्यवाद"
-
     bridge:
       # GH-137-style: spoken/written just before the caller's client closes
       # the call. The shim never ends the call itself, so this word is the
