@@ -14,9 +14,11 @@
 # 1. Set your API key
 export OPENAI_API_KEY=sk-...
 
-# 2. Start all services
+# 2. Build the images from this checkout and start all services
 cd automation/docker
-docker compose -f docker-compose.dev.yml up -d
+export GIT_SHA=$(git rev-parse --short HEAD)
+docker compose -f docker-compose.yml build
+DPG_IMAGE_TAG=$GIT_SHA docker compose -f docker-compose.dev.yml up -d
 
 # 3. Watch Knowledge Engine finish ingest (first run only — takes ~3-4 min)
 docker compose -f docker-compose.dev.yml logs -f knowledge_engine
@@ -47,7 +49,14 @@ docker compose -f docker-compose.yml up -d    # start all services
 
 The dev compose file has no `build:` sections, so build with
 `docker-compose.yml`. It tags builds `${GIT_SHA:-latest}`; to make the dev file
-use them, set `DPG_IMAGE_TAG` to the `GIT_SHA` you built with (or `latest`).
+use them, set `DPG_IMAGE_TAG` to the `GIT_SHA` you built with.
+
+The Blue Dots configuration in this checkout sets its Signals URLs as
+`${SIGNALS_*:-…}` placeholders, which only an Action Gateway image built from
+this commit or later expands. So `DPG_IMAGE_TAG` must name an image built from
+this commit or later. Older tags, including the default `sha-646216d` and
+`latest`, would call the placeholder text as the URL. Build from source, as the
+quick start does, until a newer default tag is published.
 
 ---
 

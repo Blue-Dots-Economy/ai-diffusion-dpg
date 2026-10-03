@@ -35,7 +35,7 @@ Framework defaults for each block live in `dev-kit/dpg/`; the Blue Dots use case
 | `[STEP 7]` (pre-dispatch) | Tool calls the config says to run before the LLM, so their results are in the prompt. | `_predispatch_sync`, `_predispatch_async`; rules and runner in `agent_core/src/predispatch/` |
 | `[STEP 8]` | LLM call (`Call #1`, and `#2` after tools on the streaming path). | `_process_turn_inner`, `_stream_turn_impl`; providers in `agent_core/src/chat_provider/` |
 | `[STEP 8]` (output guard) | Spoken-output contract and guard applied to the reply (per sentence when streaming). | `_make_output_guard`; `agent_core/src/output/guard.py` |
-| `[STEP 9]` | Tool-use loop: consent, call cap and grounding checks, then the Action Gateway or Knowledge Engine call. | `_process_turn_inner`, `_stream_turn_impl`; checks in `agent_core/src/tool_guard.py` |
+| `[STEP 9]` | Tool-use loop: per-turn call cap and grounding checks (`agent_core/src/tool_guard.py`), then the Action Gateway or Knowledge Engine call. | `_process_turn_inner`, `_stream_turn_impl`; `check_tool_call` |
 | `[STEP 10]` | Trust Layer output check; may replace the reply with a safe fallback. The streaming path has no `[STEP 10]` marker; it batches the check in `_TrustOutputBatcher`. | `_process_turn_inner`; `_TrustOutputBatcher` (stream) |
 | `[STEP 11]` | Deliver the response to the caller. | `_process_turn_inner`, `_stream_turn_impl` |
 | `[STEP 11b]`, `[STEP 12]`, `[STEP 12b]`, `[STEP 13]` | After delivery, asynchronously: audit record, memory write, session flush, observability emit. These markers and the session flush exist only on the sync path. | `_post_turn` (sync path) |

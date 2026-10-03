@@ -46,6 +46,8 @@ This exact sequence was not exercised end to end. The verified path, against a l
 
 Pass `DOMAIN=blue-dots` on the command line: a `DOMAIN` already set in your shell overrides `.env`. The dev compose file has no `build:` sections, so it uses the images built in the previous step (`DPG_IMAGE_TAG` must equal the `GIT_SHA` you built with).
 
+The Blue Dots configuration in this checkout sets its Signals URLs as `${SIGNALS_*:-…}` placeholders, which only an Action Gateway image built from this commit or later expands. Build the images from this checkout, as above, or use an image tag built from this commit or later. An older tag, such as the default `sha-646216d` or `latest`, would call the placeholder text as the URL.
+
 ## Repository map
 
 - `action_gateway/` - Action Gateway: calls external systems through declared tools.

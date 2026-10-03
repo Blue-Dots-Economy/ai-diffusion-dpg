@@ -51,8 +51,8 @@
 #     docker compose push
 #     # re-tag every image as :latest and push
 #     for svc in action_gateway agent_core dev_kit knowledge_engine memory_layer \
-#                observability_layer reach_layer_cli reach_layer_web reach_layer_voice \
-#                trust_layer; do
+#                observability_layer reach_layer_web reach_layer_voice reach_layer_mcp \
+#                reach_layer_bridge trust_layer; do
 #       repo=$(docker compose config --format json | jq -r ".services.${svc}.image" | cut -d: -f1)
 #       docker tag ${repo}:${GIT_SHA} ${repo}:latest
 #       docker push ${repo}:latest
