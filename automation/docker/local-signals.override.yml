@@ -11,3 +11,7 @@ services:
       - "3101:3100"
   action_gateway:
     extra_hosts: ["host.docker.internal:host-gateway"]
+  knowledge_engine:
+    environment:
+      # dev-kit moved to host port 8081; 8080 is the Signals stack's Keycloak.
+      - KE_DEVKIT_CALLBACK_URL=http://host.docker.internal:8081
