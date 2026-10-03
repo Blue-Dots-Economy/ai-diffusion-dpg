@@ -53,6 +53,9 @@ services:
       - CONFIG_FOLDER=/app/config
       # Connector API keys are injected here at deploy time by dev-kit (e.g. ONEST_API_KEY=...).
       # When running docker compose manually, add KEY=value lines to this section.
+    volumes:
+      - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     # Per-domain connector secrets: one KEY=value line per auth.secret_env in
     # dev-kit/configs/<domain>/action_gateway.yaml. The file is gitignored; copy
     # secrets.env.example next to it. Optional, so dev-kit deploys (which inject
@@ -60,9 +63,6 @@ services:
     env_file:
       - path: ../../dev-kit/configs/${DOMAIN:-kkb}/secrets.env
         required: false
-    volumes:
-      - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     networks:
       - dpg_net
     deploy:
