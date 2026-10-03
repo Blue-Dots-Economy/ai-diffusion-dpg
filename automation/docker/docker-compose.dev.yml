@@ -1,6 +1,6 @@
 # automation/docker/docker-compose.yml
 #
-# Runs all 7 DPG services on a single machine using pre-built images from
+# Runs the DPG services (blocks, channels and dev-kit) on a single machine using pre-built images from
 # GHCR: ghcr.io/blue-dots-economy/ai-diffusion-dpg/<service>. The packages are
 # public, so no `docker login` is needed to pull them. All are linux/amd64.
 #
