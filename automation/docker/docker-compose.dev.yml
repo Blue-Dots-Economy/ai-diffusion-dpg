@@ -313,6 +313,7 @@ services:
     image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-web:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: reach_layer_web
+    profiles: [web]   # optional channel; start with --profile web
     environment:
       - CONFIG_FOLDER=/app/config
       # routing_only = health + ingest proxy only (no SPA, no auth, no chat).
@@ -386,6 +387,7 @@ services:
     image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-voice:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: reach_layer_voice
+    profiles: [voice]   # optional channel; start with --profile voice
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
       - DOMAIN_CONFIG_PATH=/app/config/domain.yaml
@@ -437,6 +439,7 @@ services:
     image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-mcp:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: reach_layer_mcp
+    profiles: [mcp]   # optional channel; start with --profile mcp
     environment:
       - CONFIG_FOLDER=/app/config
     volumes:
@@ -486,6 +489,10 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      # main.py reads the framework defaults from config/dpg.yaml under its
+      # workdir and ignores CONFIG_FOLDER for that file, so mount it there too
+      # (as docker-compose.yml and automation/deploy/shared-vm do).
+      - ../../dev-kit/dpg/reach_layer.yaml:/app/reach_layer/bridge/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
     networks:
       - dpg_net
@@ -677,6 +684,7 @@ services:
   ngrok:
     image: ngrok/ngrok:latest
     container_name: ngrok
+    profiles: [voice]   # only with the voice channel
     # Tunnels the voice channel so Vobiz can reach /answer and /ws webhooks.
     # If NGROK_DOMAIN is set (paid ngrok fixed domain), --domain pins the URL so
     # PUBLIC_URL is known before voice starts. Otherwise the URL is random and must

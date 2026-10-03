@@ -13,10 +13,21 @@ The reference use case is Blue Dots (`dev-kit/configs/blue-dots/`).
 | Memory Layer | 8002 | Session state, profile graph, saved tool results, audit. |
 | Trust Layer | 8003 | Input and output checks, consent, constraints, human handoff; fails closed. |
 | Observability Layer | 8004 | Traces, metrics, turn and outcome events (async). |
-| Reach Layer | 8005–8008 | Channels: web, voice (telephony) and CLI. Optional integrations: an MCP server and a bridge to [VoicERA](https://github.com/COSS-India/VoicEra), an external DPG voice service. |
+| Reach Layer | 8005–8008 | The bridge (OpenAI chat-completions compatible, the default integration) plus optional web chat (local/dev), CLI, voice (telephony) and MCP. |
 | Action Gateway | 9999 | Calls external systems through declared tools. |
 
 `dev-kit` (8080) is a configuration tool, not a runtime block.
+
+## Channels
+
+The **bridge** is the default and the only channel enabled out of the box. It is a generic OpenAI chat-completions-compatible endpoint (`POST /v1/chat/completions`, port 8008), so any system that speaks that API can connect to the agent, for example your own voice pipeline. [VoicERA](https://github.com/COSS-India/VoicEra), an external DPG voice service, is one example of such a pipeline.
+
+The other channels are optional and need enabling: a channel block in the use case's `agent_core.yaml` and `reach_layer.yaml`, and a compose profile (`web`, `voice` or `mcp`). The [optional channels guide](https://docs.bluedotseconomy.org/guides/installation/local-setup/ai-diffusion-channels/) lists the exact edits for each.
+
+- **Web chat** (8005): for local/dev testing only. It runs without login; Google sign-in is optional (`auth.enabled: true` plus `GOOGLE_CLIENT_ID` and `REACH_SESSION_SECRET`).
+- **CLI**: a terminal client, run as a container on the stack's network.
+- **Voice** (8006): phone calls through a telephony provider.
+- **MCP** (8007): the agent as tools for an MCP host.
 
 ## Quick start
 
@@ -33,16 +44,19 @@ TOOL_RESULT_KEY_SECRET=<output of: openssl rand -hex 32>
 DOMAIN=blue-dots
 DPG_IMAGE_TAG=<short git sha>
 ENV
-GIT_SHA=<short git sha> docker compose -f docker-compose.yml build action_gateway agent_core knowledge_engine memory_layer observability_layer trust_layer reach_layer_web dev_kit
-DOMAIN=blue-dots docker compose -f docker-compose.dev.yml up -d --wait redis memgraph action_gateway knowledge_engine memory_layer trust_layer observability_layer agent_core reach_layer_web dev_kit otelcol jaeger loki prometheus grafana
-curl -s localhost:8005/health
+GIT_SHA=<short git sha> docker compose -f docker-compose.yml build action_gateway agent_core knowledge_engine memory_layer observability_layer trust_layer reach_layer_bridge dev_kit
+COMPOSE="docker compose -f docker-compose.dev.yml -f local-signals.override.yml"
+DOMAIN=blue-dots $COMPOSE up -d --wait redis memgraph action_gateway knowledge_engine memory_layer trust_layer observability_layer agent_core reach_layer_bridge dev_kit otelcol jaeger loki prometheus grafana
+curl -s localhost:8008/health
+curl -sN -X POST http://127.0.0.1:8008/v1/chat/completions -H 'content-type: application/json' -d '{
+    "model": "dpg", "stream": true,
+    "messages": [{"role": "user", "content": "नमस्ते"}],
+    "metadata": {"caller_phone": "9199000000101", "call_id": "run-call-003"}}'
 ```
 
 This exact sequence was not exercised end to end. The verified path, against a local Signals, is the [local setup guide](https://docs.bluedotseconomy.org/guides/installation/local-setup/ai-diffusion-dpg/).
 
-`/health` means the service is up, not that chat works. Open http://localhost:8005 for the web chat. Blue Dots runs it without login: enter a phone number with the country code (for example `919876543210`), which is the user ID the tools use.
-
-Google sign-in for the web chat is optional. To turn it on, set `reach_layer.channels.web.auth.enabled: true` in `dev-kit/configs/blue-dots/reach_layer.yaml` and add `GOOGLE_CLIENT_ID` (your Google OAuth client id) and `REACH_SESSION_SECRET` (output of `openssl rand -hex 32`) to `.env`.
+`local-signals.override.yml` publishes the bridge on `127.0.0.1:8008` (loopback only) and moves dev-kit to 8081 and Loki to 3101; with no `SIGNALS_*` variables set, the tools still call the hosted Signals. `/health` means the service is up, not that chat works. The chat request is one turn through the bridge, with `curl` standing in for any OpenAI-compatible client; it streams `data:` chunks and ends with `data: [DONE]`. Send `metadata.caller_phone` as the caller's phone number, digits only with the country code first, and keep `metadata.call_id` the same for the whole call.
 
 Pass `DOMAIN=blue-dots` on the command line: a `DOMAIN` already set in your shell overrides `.env`. The dev compose file has no `build:` sections, so it uses the images built in the previous step (`DPG_IMAGE_TAG` must equal the `GIT_SHA` you built with).
 
@@ -58,7 +72,7 @@ The Blue Dots configuration in this checkout sets its Signals URLs as `${SIGNALS
 - `knowledge_engine/` - Knowledge Engine: retrieval and glossary mapping.
 - `memory_layer/` - Memory Layer: sessions, profiles, saved tool results, audit.
 - `observability_layer/` - Observability Layer: traces, metrics and outcome events.
-- `reach_layer/` - Reach Layer: the web, voice and CLI channels, plus the optional MCP server and VoicERA bridge.
+- `reach_layer/` - Reach Layer: the bridge (the default), plus the optional web chat (local/dev), CLI, voice and MCP channels.
 - `trust_layer/` - Trust Layer: checks, consent, constraints and handoff.
 
 ## Documentation

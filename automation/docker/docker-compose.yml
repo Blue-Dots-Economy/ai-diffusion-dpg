@@ -370,6 +370,7 @@ services:
         - linux/arm64
     image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-web:${GIT_SHA:-latest}
     container_name: reach_layer_web
+    profiles: [web]   # optional channel; start with --profile web
     environment:
       - CONFIG_FOLDER=/app/config
       # routing_only = health + ingest proxy only (no SPA, no auth, no chat).
@@ -450,6 +451,7 @@ services:
         - linux/arm64
     image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-voice:${GIT_SHA:-latest}
     container_name: reach_layer_voice
+    profiles: [voice]   # optional channel; start with --profile voice
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
       - DOMAIN_CONFIG_PATH=/app/config/domain.yaml
@@ -507,6 +509,7 @@ services:
         - linux/arm64
     image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-mcp:${GIT_SHA:-latest}
     container_name: reach_layer_mcp
+    profiles: [mcp]   # optional channel; start with --profile mcp
     environment:
       - CONFIG_FOLDER=/app/config
     volumes:
@@ -759,6 +762,7 @@ services:
   ngrok:
     image: ngrok/ngrok:latest
     container_name: ngrok
+    profiles: [voice]   # only with the voice channel
     command: http reach_layer_voice:8006 --log stdout
     environment:
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
