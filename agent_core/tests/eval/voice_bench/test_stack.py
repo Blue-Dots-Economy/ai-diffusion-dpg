@@ -37,8 +37,20 @@ def test_apply_patch_rejects_no_or_two_hosts():
         apply_patch('base_url: "https://example.org"', PATCH, "http://t", "http://i")
 
 
+TAP = "http://host.docker.internal:18742"
+INST = "http://signals-api:2742"
+
+
+def test_compose_override_points_action_gateway_at_local_signals(tmp_path):
+    y_str, _ = compose_override(18008, tmp_path / "bd.env", TAP, INST)
+    env = yaml.safe_load(y_str)["services"]["action_gateway"]["environment"]
+    assert f"SIGNALS_BASE_URL={TAP}" in env
+    assert f"SIGNALS_SEARCH_URL={TAP}/signals-search" in env
+    assert f"SIGNALS_INSTANCE_URL={INST}" in env
+
+
 def test_compose_override_shape(tmp_path):
-    y_str, secret = compose_override(18008, tmp_path / "bd.env")
+    y_str, secret = compose_override(18008, tmp_path / "bd.env", TAP, INST)
     y = yaml.safe_load(y_str)
     assert y["services"]["reach_layer_bridge"]["ports"] == ["127.0.0.1:18008:8008"]
     assert y["services"]["reach_layer_bridge"]["volumes"] == ["../../dev-kit/dpg/reach_layer.yaml:/app/reach_layer/bridge/config/dpg.yaml:ro"]
@@ -49,7 +61,7 @@ def test_compose_override_shape(tmp_path):
 
 def test_compose_override_includes_memory_layer_secret(tmp_path):
     """Compose override must set TOOL_RESULT_KEY_SECRET on memory_layer."""
-    y_str, secret = compose_override(18008, tmp_path / "bd.env")
+    y_str, secret = compose_override(18008, tmp_path / "bd.env", TAP, INST)
     y = yaml.safe_load(y_str)
     env = y["services"]["memory_layer"]["environment"]
     assert any(e.startswith("TOOL_RESULT_KEY_SECRET=") for e in env)
@@ -61,8 +73,8 @@ def test_compose_override_includes_memory_layer_secret(tmp_path):
 
 def test_compose_override_generates_different_secrets(tmp_path):
     """Two calls to compose_override must generate different secrets."""
-    y_str1, secret1 = compose_override(18008, tmp_path / "bd.env")
-    y_str2, secret2 = compose_override(18008, tmp_path / "bd.env")
+    y_str1, secret1 = compose_override(18008, tmp_path / "bd.env", TAP, INST)
+    y_str2, secret2 = compose_override(18008, tmp_path / "bd.env", TAP, INST)
     y1 = yaml.safe_load(y_str1)
     y2 = yaml.safe_load(y_str2)
     secret1_from_yaml = next(e.split("=", 1)[1] for e in y1["services"]["memory_layer"]["environment"]
@@ -173,6 +185,25 @@ def test_up_creates_worktree_patches_and_composes(tmp_path, monkeypatch):
     assert 'base_url: "http://host.docker.internal:18742"' in patched
     ov = yaml.safe_load((wt / "automation/docker/voice-bench.override.yml").read_text())
     assert ov["services"]["action_gateway"]["env_file"] == [str((tmp_path / "bd.env").resolve())]
+
+
+def test_up_skips_patch_when_ref_has_env_expand(tmp_path):
+    class ExpandRun(FakeRun):
+        def __call__(self, argv, **kw):
+            r = super().__call__(argv, **kw)
+            if "worktree" in argv and "add" in argv:
+                wt = Path(argv[argv.index("--detach") + 1])
+                (wt / "action_gateway/src/config").mkdir(parents=True)
+                (wt / "action_gateway/src/config/env_expand.py").write_text("")
+            return r
+    run = ExpandRun(tmp_path)
+    _stack(tmp_path, run).up()
+    wt = tmp_path / "work" / "M1-abc1234"
+    # untouched: still the upstream URL, not the tap URL
+    assert 'base_url: "https://signals.bluedotseconomy.org"' in (
+        wt / "dev-kit/configs/blue-dots/action_gateway.yaml").read_text()
+    ov = yaml.safe_load((wt / "automation/docker/voice-bench.override.yml").read_text())
+    assert "SIGNALS_BASE_URL=http://host.docker.internal:18742" in ov["services"]["action_gateway"]["environment"]
 
 
 def test_compose_failure_redacts_secrets(tmp_path, monkeypatch):

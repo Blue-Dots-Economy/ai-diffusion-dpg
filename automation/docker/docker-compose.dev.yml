@@ -1,6 +1,6 @@
 # automation/docker/docker-compose.yml
 #
-# Runs all 7 DPG services on a single machine using pre-built images from
+# Runs the DPG services (blocks, channels and dev-kit) on a single machine using pre-built images from
 # GHCR: ghcr.io/blue-dots-economy/ai-diffusion-dpg/<service>. The packages are
 # public, so no `docker login` is needed to pull them. All are linux/amd64.
 #
@@ -30,9 +30,10 @@
 #   Server starts only after ingest completes successfully.
 #
 # Prerequisites:
-#   1. export ANTHROPIC_API_KEY=sk-ant-...
+#   1. export OPENAI_API_KEY=sk-...   (Blue Dots config; ANTHROPIC_API_KEY is only needed
+#      when a provider is set to anthropic)
 #   2. docker compose up -d                    (runs ingest first, then starts all services)
-#   3. docker compose run --rm reach_layer_cli (interactive CLI session, opt-in via `cli` profile)
+#   3. docker compose ps                       (there is no CLI service; use the web, voice, MCP or bridge channels)
 #
 # Paths in this file are relative to the docker-compose.yml location.
 # ../../ resolves to the repository root.
@@ -51,8 +52,13 @@ services:
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
-      # Connector API keys are injected here at deploy time by dev-kit (e.g. ONEST_API_KEY=...).
-      # When running docker compose manually, add KEY=value lines to this section.
+      # Connector secrets and the Signals cluster. Empty values are fine for a domain that doesn't use them.
+      - BLUE_DOTS_API_KEY=${BLUE_DOTS_API_KEY:-}
+      - BLUE_DOTS_ORG_ID=${BLUE_DOTS_ORG_ID:-}
+      - BLUE_DOTS_SEARCH_API_KEY=${BLUE_DOTS_SEARCH_API_KEY:-}
+      - SIGNALS_BASE_URL=${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}
+      - SIGNALS_SEARCH_URL=${SIGNALS_SEARCH_URL:-https://signals.bluedotseconomy.org/signals-search}
+      - SIGNALS_INSTANCE_URL=${SIGNALS_INSTANCE_URL:-https://signals.bluedotseconomy.org}
     volumes:
       - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-blue-dots}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
@@ -244,6 +250,7 @@ services:
       - MEMGRAPH_URI=bolt://memgraph:7687
       - MEMGRAPH_USER=memgraph
       - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-}
+      - TOOL_RESULT_KEY_SECRET=${TOOL_RESULT_KEY_SECRET:-}
     volumes:
       - ../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-blue-dots}/memory_layer.yaml:/app/config/memory_layer.yaml:ro

@@ -1,0 +1,28 @@
+# Run the AI Diffusion stack next to the Blue Dots local Signals stack
+# (bluedots-docs: Guides → Installation → Local Setup → Local Stack). That stack
+# already publishes 8080 (Keycloak) and 3100 (signals-search), so move ours.
+#   docker compose -f docker-compose.dev.yml -f local-signals.override.yml up -d ...
+services:
+  dev_kit:
+    ports: !override
+      - "8081:8080"
+  loki:
+    ports: !override
+      - "3101:3100"
+  action_gateway:
+    extra_hosts: ["host.docker.internal:host-gateway"]
+  knowledge_engine:
+    environment:
+      # dev-kit moved to host port 8081; 8080 is the Signals stack's Keycloak.
+      - KE_DEVKIT_CALLBACK_URL=http://host.docker.internal:8081
+  reach_layer_bridge:
+    # The bridge has no authentication, so publish it on loopback only, for
+    # local testing with curl. Never publish it on a routable interface.
+    ports:
+      - "127.0.0.1:8008:8008"
+    # main.py reads the framework defaults from config/dpg.yaml under its
+    # workdir and ignores CONFIG_FOLDER for that file, so mount dpg.yaml there
+    # too (as automation/deploy/shared-vm does). Without it the bridge
+    # crash-loops on FileNotFoundError: /app/reach_layer/bridge/config/dpg.yaml.
+    volumes:
+      - ../../dev-kit/dpg/reach_layer.yaml:/app/reach_layer/bridge/config/dpg.yaml:ro
