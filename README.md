@@ -35,10 +35,14 @@ GOOGLE_CLIENT_ID=<your Google OAuth client id>
 DOMAIN=blue-dots
 DPG_IMAGE_TAG=<short git sha>
 ENV
-GIT_SHA=<short git sha> docker compose -f docker-compose.yml build
+GIT_SHA=<short git sha> docker compose -f docker-compose.yml build action_gateway agent_core knowledge_engine memory_layer observability_layer trust_layer reach_layer_web dev_kit
 DOMAIN=blue-dots docker compose -f docker-compose.dev.yml up -d --wait redis memgraph action_gateway knowledge_engine memory_layer trust_layer observability_layer agent_core reach_layer_web dev_kit otelcol jaeger loki prometheus grafana
 curl -s localhost:8005/health
 ```
+
+This exact sequence was not exercised end to end. The verified path, against a local Signals, is the [local setup guide](https://blue-dots-economy.github.io/bluedots-docs/guides/installation/local-setup/ai-diffusion-dpg/).
+
+`/health` means the service is up, not that chat works. The web chat needs a real Google OAuth client, otherwise `/chat` returns 401. `REACH_SESSION_SECRET` and `GOOGLE_CLIENT_ID` are still required, or `reach_layer_web` won't boot.
 
 Pass `DOMAIN=blue-dots` on the command line: a `DOMAIN` already set in your shell overrides `.env`. The dev compose file has no `build:` sections, so it uses the images built in the previous step (`DPG_IMAGE_TAG` must equal the `GIT_SHA` you built with).
 
