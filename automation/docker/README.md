@@ -2,8 +2,8 @@
 
 ## Prerequisites
 - Docker Desktop installed and running
-- `ANTHROPIC_API_KEY` (get one from [console.anthropic.com](https://console.anthropic.com))
-- To **build** the DPG images locally (`--build`, or no pre-built image available): `docker login dhi.io` with a Docker Hub account. Every Dockerfile except `knowledge_engine/` is based on [Docker Hardened Images](https://hub.docker.com/hardened-images/catalog), and dhi.io refuses anonymous pulls. Pulling the pre-built images from GHCR does not need it.
+- `OPENAI_API_KEY` (the Blue Dots configuration uses OpenAI for the agent and the embeddings)
+- To **build** the DPG images locally (`--build`, or no pre-built image available): be logged in to Docker (`docker login dhi.io`; in a verified run a Docker login was already present and no separate dhi.io login was needed). Every Dockerfile except `knowledge_engine/` is based on Docker Hardened Images (dhi.io), and dhi.io refuses anonymous pulls. Pulling the pre-built images from GHCR does not need it.
 - The DHI runtime images have **no shell** (knowledge_engine, on `python:3.14-slim`, is the exception) — `docker compose exec <service> sh` does not work. Use exec form with the venv's python instead, e.g. `docker compose exec agent_core python -c "..."`.
 
 ---
@@ -12,7 +12,7 @@
 
 ```bash
 # 1. Set your API key
-export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
 
 # 2. Start all services
 cd automation/docker
@@ -21,9 +21,14 @@ docker compose -f docker-compose.dev.yml up -d
 # 3. Watch Knowledge Engine finish ingest (first run only — takes ~3-4 min)
 docker compose -f docker-compose.dev.yml logs -f knowledge_engine
 
-# 4. Once all containers are healthy, start the CLI
-docker compose -f docker-compose.dev.yml --profile cli run --rm reach_layer
+# 4. Once all containers are healthy, check them
+docker compose -f docker-compose.dev.yml ps
 ```
+
+The channels are the web, voice, MCP and VoicERA bridge Reach Layer services.
+The web channel needs `REACH_SESSION_SECRET` and `GOOGLE_CLIENT_ID` set. A
+`DOMAIN` exported in your shell overrides the one in `.env`, so unset it if you
+want the `.env` value.
 
 ---
 
@@ -31,15 +36,35 @@ docker compose -f docker-compose.dev.yml --profile cli run --rm reach_layer
 
 | File | Use when |
 |---|---|
-| `docker-compose.dev.yml` | Running with pre-built images from Docker Hub |
+| `docker-compose.dev.yml` | Running with pre-built images from GHCR (`ghcr.io/blue-dots-economy/ai-diffusion-dpg/<block>:<tag>`; pick the tag with `DPG_IMAGE_TAG`) |
 | `docker-compose.yml` | Local development — builds images from source |
 
 ### Local build workflow
 ```bash
-docker compose build          # build all 7 images from source
-docker compose up -d          # start all services
-docker compose --profile cli run --rm reach_layer
+docker compose -f docker-compose.yml build   # build the images from source
+docker compose -f docker-compose.yml up -d    # start all services
 ```
+
+The dev compose file has no `build:` sections, so build with
+`docker-compose.yml`, and set `DPG_IMAGE_TAG` if you want the dev file to use
+the images you built.
+
+---
+
+## Running against a local Signals
+
+To point the stack at a Signals instance on your machine instead of the hosted
+one, layer `local-signals.override.yml` on top of the dev file:
+
+```bash
+docker compose -f docker-compose.dev.yml -f local-signals.override.yml up -d
+```
+
+The override moves dev-kit to 8081 and Loki to 3101 (Signals uses 8080 and
+3100), points `KE_DEVKIT_CALLBACK_URL` at 8081, lets Action Gateway reach the
+host through `host.docker.internal`, publishes the bridge on `127.0.0.1:8008`
+and mounts the bridge's `dpg.yaml`. The full walkthrough is in the
+[local setup guide](https://blue-dots-economy.github.io/bluedots-docs/guides/installation/local-setup/ai-diffusion-dpg/).
 
 ---
 
@@ -93,9 +118,9 @@ docker compose -f docker-compose.dev.yml up -d
 
 Grafana (<http://localhost:3000>, `admin` / `$GF_SECURITY_ADMIN_PASSWORD`,
 default `admin`) opens on **Service Status**. The dashboards, alert rules and
-Discord routing are provisioned from files under `grafana/provisioning/`,
-read-only in the UI: the dashboards are in `provisioning/dashboards/` next to
-the provider config, alerting in `provisioning/alerting/`. Every dashboard has
+Discord routing are provisioned from files under `automation/docker/grafana/provisioning/`,
+read-only in the UI: the dashboards are in `automation/docker/grafana/provisioning/dashboards/` next to
+the provider config, alerting in `automation/docker/grafana/provisioning/alerting/`. Every dashboard has
 a *DPG dashboards* menu (top right) that switches between them and keeps the
 time range.
 
@@ -126,10 +151,10 @@ nothing alerts for what was never started.
 
 Three exporters (profile `monitoring`) feed them: `blackbox_exporter` (a health
 probe per service), `cadvisor` (containers) and `redis_exporter`. Prometheus
-scrapes them with `prometheus/prometheus.yml`, which keeps only this stack's
+scrapes them with `automation/docker/prometheus/prometheus.yml`, which keeps only this stack's
 containers.
 
-**Alerts.** 17 rules in `grafana/provisioning/alerting/`, routed by their
+**Alerts.** 17 rules in `automation/docker/grafana/provisioning/alerting/`, routed by their
 `severity` label to a Discord channel each; a resolved message follows when an
 alert clears.
 
@@ -157,7 +182,7 @@ message.
 
 **Changing dashboards.** The community ones are committed pre-adapted. To bump
 one or add another, edit the pinned list in
-`grafana/import_community_dashboards.py` and run it (Python 3.10+, standard
+`automation/docker/grafana/import_community_dashboards.py` and run it (Python 3.10+, standard
 library only); Grafana picks the files up within 10 s. The script records every
 adaptation it makes and why.
 
@@ -173,19 +198,29 @@ no dependency-graph query.
 
 ## Resource Requirements
 
+Limits set in `docker-compose.dev.yml` (`deploy.resources.limits`):
+
 | Service | RAM | CPU |
 |---|---|---|
-| memory_layer | 512 MB | 0.1 |
-| trust_layer | 512 MB | 0.1 |
-| observability_layer | 512 MB | 0.1 |
-| action_gateway | 512 MB | 0.1 |
-| knowledge_engine | **2 GB** | 0.5 |
-| agent_core | 512 MB | 0.1 |
-| **Total** | **~4.5 GB** | ~1.0 |
+| action_gateway | 256 MB | 0.5 |
+| agent_core | 256 MB | 0.5 |
+| dev_kit | 256 MB | 0.5 |
+| knowledge_engine | 256 MB | 0.5 |
+| memory_layer | 256 MB | 0.25 |
+| observability_layer | 256 MB | 0.1 |
+| trust_layer | 256 MB | 0.25 |
+| reach_layer_web | 256 MB | 0.25 |
+| reach_layer_voice | 256 MB | 0.5 |
+| reach_layer_mcp | 256 MB | 0.25 |
+| reach_layer_bridge | 256 MB | 0.25 |
 
-> Knowledge Engine needs 2 GB minimum. On low-memory machines, switch to
-> `embedding_provider: openai` in `dev-kit/dpg/knowledge_engine.yaml` and
-> set `OPENAI_API_KEY` — this reduces KE RAM to ~256 MB.
+The monitoring and support containers (Grafana, Loki, Prometheus, the
+collector, Jaeger, Memgraph, Redis and the exporters) have their own limits in
+the same file. `docker-compose.yml` gives dev_kit 512 MB and 0.1 CPU.
+
+> If Knowledge Engine runs out of memory during ingest, raise its limit in the
+> compose file, or switch to `embedding_provider: openai` in
+> `dev-kit/dpg/knowledge_engine.yaml` (needs `OPENAI_API_KEY`).
 
 ---
 
@@ -195,5 +230,4 @@ no dependency-graph query.
 |---|---|---|
 | `agent_core` stuck in "Created" | Dependencies not healthy yet | Wait — it starts automatically once all 5 deps are healthy |
 | `knowledge_engine` unhealthy after 3 min | OOM during ingest | Increase Docker Desktop memory limit or switch to OpenAI embeddings |
-| `reach_layer` can't connect | `agent_core` not healthy yet | Run `docker compose ps` and wait for agent_core to show healthy |
-| Network still in use on `down` | A `reach_layer run` container is still alive | `docker ps -a \| grep reach_layer` then `docker rm -f <id>` |
+| A Reach Layer channel can't connect | `agent_core` not healthy yet | Run `docker compose ps` and wait for agent_core to show healthy |
