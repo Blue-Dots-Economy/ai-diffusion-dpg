@@ -42,9 +42,9 @@ BLUE_DOTS_SEARCH_API_KEY=<your Signals service key>
 BLUE_DOTS_ORG_ID=<your Signals organisation id>
 TOOL_RESULT_KEY_SECRET=<output of: openssl rand -hex 32>
 DOMAIN=blue-dots
-DPG_IMAGE_TAG=<short git sha>
+DPG_IMAGE_TAG=<release tag>
 ENV
-GIT_SHA=<short git sha> docker compose -f docker-compose.yml build action_gateway agent_core knowledge_engine memory_layer observability_layer trust_layer reach_layer_bridge dev_kit
+GIT_SHA=<release tag> docker compose -f docker-compose.yml build action_gateway agent_core knowledge_engine memory_layer observability_layer trust_layer reach_layer_bridge dev_kit
 COMPOSE="docker compose -f docker-compose.dev.yml -f local-signals.override.yml"
 DOMAIN=blue-dots $COMPOSE up -d --wait redis memgraph action_gateway knowledge_engine memory_layer trust_layer observability_layer agent_core reach_layer_bridge dev_kit otelcol jaeger loki prometheus grafana
 curl -s localhost:8008/health
@@ -60,7 +60,9 @@ This exact sequence was not exercised end to end. The verified path, against a l
 
 Pass `DOMAIN=blue-dots` on the command line: a `DOMAIN` already set in your shell overrides `.env`. The dev compose file has no `build:` sections, so it uses the images built in the previous step (`DPG_IMAGE_TAG` must equal the `GIT_SHA` you built with).
 
-The Blue Dots configuration in this checkout sets its Signals URLs as `${SIGNALS_*:-…}` placeholders, which only an Action Gateway image built from this commit or later expands. Build the images from this checkout, as above, or use an image tag built from this commit or later. An older tag, such as the default `sha-646216d` or `latest`, would call the placeholder text as the URL.
+Releases are tagged `<YYYYMM>-s<sprint>-rc<n>` (for example `202610-s1-rc1`), and a release's images carry the same tag. Check out the release tag and build with it. Until the first release tag is published, build from `main` and use `local` as the tag.
+
+The Blue Dots configuration in this checkout sets its Signals URLs as `${SIGNALS_*:-…}` placeholders, which only an Action Gateway image built from this commit or later expands. Build the images from this checkout, as above, or use a release tag that includes this change. An older image, such as the default `sha-646216d` or `latest`, would call the placeholder text as the URL.
 
 ## Repository map
 

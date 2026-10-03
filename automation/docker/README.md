@@ -16,7 +16,7 @@ export OPENAI_API_KEY=sk-...
 
 # 2. Build the images from this checkout and start all services
 cd automation/docker
-export GIT_SHA=$(git rev-parse --short HEAD)
+export GIT_SHA=<release tag>   # e.g. 202610-s1-rc1; use `local` until releases are tagged
 docker compose -f docker-compose.yml build
 DPG_IMAGE_TAG=$GIT_SHA docker compose -f docker-compose.dev.yml up -d
 
@@ -80,10 +80,10 @@ use them, set `DPG_IMAGE_TAG` to the `GIT_SHA` you built with.
 
 The Blue Dots configuration in this checkout sets its Signals URLs as
 `${SIGNALS_*:-…}` placeholders, which only an Action Gateway image built from
-this commit or later expands. So `DPG_IMAGE_TAG` must name an image built from
-this commit or later. Older tags, including the default `sha-646216d` and
+this commit or later expands. So `DPG_IMAGE_TAG` must name a release tag that
+includes this change, or a local build of it. Older tags, including the default `sha-646216d` and
 `latest`, would call the placeholder text as the URL. Build from source, as the
-quick start does, until a newer default tag is published.
+quick start does, until a release tag is published.
 
 ---
 
