@@ -24,7 +24,7 @@
 #
 # Ingestion flow (Knowledge Engine):
 #   On startup, KE runs: python scripts/ingest.py && python main.py
-#   Ingest reads docs from knowledge-engine/data/ (bind-mounted as /app/data),
+#   Ingest reads docs from knowledge_engine/data/ (bind-mounted as /app/data),
 #   writes embeddings into chroma_data volume at /app/data/chroma_db (writable named
 #   volume that overrides the read-only bind mount for that subdirectory).
 #   Server starts only after ingest completes successfully.
@@ -51,8 +51,13 @@ services:
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
-      # Connector API keys are injected here at deploy time by dev-kit (e.g. ONEST_API_KEY=...).
-      # When running docker compose manually, add KEY=value lines to this section.
+      # Connector secrets and the Signals cluster. Empty values are fine for a domain that doesn't use them.
+      - BLUE_DOTS_API_KEY=${BLUE_DOTS_API_KEY:-}
+      - BLUE_DOTS_ORG_ID=${BLUE_DOTS_ORG_ID:-}
+      - BLUE_DOTS_SEARCH_API_KEY=${BLUE_DOTS_SEARCH_API_KEY:-}
+      - SIGNALS_BASE_URL=${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}
+      - SIGNALS_SEARCH_URL=${SIGNALS_SEARCH_URL:-https://signals.bluedotseconomy.org/signals-search}
+      - SIGNALS_INSTANCE_URL=${SIGNALS_INSTANCE_URL:-https://signals.bluedotseconomy.org}
     volumes:
       - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-blue-dots}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
@@ -201,7 +206,7 @@ services:
     volumes:
       - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-blue-dots}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
-      - ../../knowledge-engine/data:/app/data:ro   # source docs (read-only)
+      - ../../knowledge_engine/data:/app/data:ro   # source docs (read-only)
       - chroma_data:/app/chroma_db            # writable ChromaDB volume (CHROMA_PERSIST_DIR points here)
       - kb_data:/data/kb                      # upload staging area for KB documents
     networks:
@@ -237,6 +242,7 @@ services:
       - MEMGRAPH_URI=bolt://memgraph:7687
       - MEMGRAPH_USER=memgraph
       - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-}
+      - TOOL_RESULT_KEY_SECRET=${TOOL_RESULT_KEY_SECRET:-}
     volumes:
       - ../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-blue-dots}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
@@ -619,10 +625,12 @@ services:
   #   restart: unless-stopped
 
   memgraph:
-    image: memgraph/memgraph
+    # Pinned: the image ENTRYPOINT is the memgraph binary, so `command` carries
+    # flags only. Repeating the binary path here makes memgraph exit with
+    # "Unexpected positional argument(s)".
+    image: memgraph/memgraph:3.13.1
     container_name: memgraph
     command: [
-      "/usr/lib/memgraph/memgraph",
       "--storage-wal-enabled=true",
       "--storage-snapshot-interval-sec=300"
     ]

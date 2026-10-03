@@ -1,0 +1,13 @@
+# Run the AI Diffusion stack next to the Blue Dots local Signals stack
+# (bluedots-docs: Guides → Installation → Local Setup → Local Stack). That stack
+# already publishes 8080 (Keycloak) and 3100 (signals-search), so move ours.
+#   docker compose -f docker-compose.dev.yml -f local-signals.override.yml up -d ...
+services:
+  dev_kit:
+    ports: !override
+      - "8081:8080"
+  loki:
+    ports: !override
+      - "3101:3100"
+  action_gateway:
+    extra_hosts: ["host.docker.internal:host-gateway"]

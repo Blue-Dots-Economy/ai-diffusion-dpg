@@ -534,6 +534,10 @@ services:
       - CONFIG_FOLDER=/app/config
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - BLUE_DOTS_ORG_ID=${BLUE_DOTS_ORG_ID:?set BLUE_DOTS_ORG_ID in .env}
+      # Signals cluster the Blue Dots domain config points at (UAT by default).
+      - SIGNALS_BASE_URL=${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}
+      - SIGNALS_SEARCH_URL=${SIGNALS_SEARCH_URL:-https://signals.bluedotseconomy.org/signals-search}
+      - SIGNALS_INSTANCE_URL=${SIGNALS_INSTANCE_URL:-https://signals.bluedotseconomy.org}
     volumes:
       - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets:ro
       - ./bin/exec_with_secrets.py:/opt/dpg/exec_with_secrets.py:ro
