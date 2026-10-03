@@ -1,6 +1,6 @@
 # AI Diffusion DPG — contributor map
 
-This file tells you where things are in the code. For the full architecture, see the Architecture page on the docs site: https://blue-dots-economy.github.io/bluedots-docs/core-concepts/architecture/ai-diffusion-dpg/.
+This file tells you where things are in the code. For the full architecture, see the Architecture page on the docs site: https://docs.bluedotseconomy.org/core-concepts/architecture/ai-diffusion-dpg/.
 
 ## Blocks in the code
 

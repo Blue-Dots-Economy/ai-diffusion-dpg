@@ -64,7 +64,7 @@ The override moves dev-kit to 8081 and Loki to 3101 (Signals uses 8080 and
 3100), points `KE_DEVKIT_CALLBACK_URL` at 8081, lets Action Gateway reach the
 host through `host.docker.internal`, publishes the bridge on `127.0.0.1:8008`
 and mounts the bridge's `dpg.yaml`. The full walkthrough is in the
-[local setup guide](https://blue-dots-economy.github.io/bluedots-docs/guides/installation/local-setup/ai-diffusion-dpg/).
+[local setup guide](https://docs.bluedotseconomy.org/guides/installation/local-setup/ai-diffusion-dpg/).
 
 ---
 

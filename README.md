@@ -20,7 +20,7 @@ The reference use case is Blue Dots (`dev-kit/configs/blue-dots/`).
 
 ## Quick start
 
-This starts the blocks against the hosted Blue Dots UAT Signals, so no `SIGNALS_*` variables are needed. You do need your `BLUE_DOTS_*` keys and an OpenAI key. To run against a local Signals instead, follow the [local setup guide](https://blue-dots-economy.github.io/bluedots-docs/guides/installation/local-setup/ai-diffusion-dpg/).
+This starts the blocks against the hosted Blue Dots UAT Signals, so no `SIGNALS_*` variables are needed. You do need your `BLUE_DOTS_*` keys and an OpenAI key. To run against a local Signals instead, follow the [local setup guide](https://docs.bluedotseconomy.org/guides/installation/local-setup/ai-diffusion-dpg/).
 
 ```bash
 cd automation/docker
@@ -40,7 +40,7 @@ DOMAIN=blue-dots docker compose -f docker-compose.dev.yml up -d --wait redis mem
 curl -s localhost:8005/health
 ```
 
-This exact sequence was not exercised end to end. The verified path, against a local Signals, is the [local setup guide](https://blue-dots-economy.github.io/bluedots-docs/guides/installation/local-setup/ai-diffusion-dpg/).
+This exact sequence was not exercised end to end. The verified path, against a local Signals, is the [local setup guide](https://docs.bluedotseconomy.org/guides/installation/local-setup/ai-diffusion-dpg/).
 
 `/health` means the service is up, not that chat works. The web chat needs a real Google OAuth client, otherwise `/chat` returns 401. `REACH_SESSION_SECRET` and `GOOGLE_CLIENT_ID` are still required, or `reach_layer_web` won't boot.
 
@@ -61,9 +61,9 @@ Pass `DOMAIN=blue-dots` on the command line: a `DOMAIN` already set in your shel
 
 ## Documentation
 
-- [Architecture](https://blue-dots-economy.github.io/bluedots-docs/core-concepts/architecture/ai-diffusion-dpg/): how the blocks fit together and how a turn runs.
-- [Configuration](https://blue-dots-economy.github.io/bluedots-docs/core-concepts/architecture/ai-diffusion-configuration/): the configuration layers and what each YAML file controls.
-- [Local setup guide](https://blue-dots-economy.github.io/bluedots-docs/guides/installation/local-setup/ai-diffusion-dpg/): running the stack, including against a local Signals.
+- [Architecture](https://docs.bluedotseconomy.org/core-concepts/architecture/ai-diffusion-dpg/): how the blocks fit together and how a turn runs.
+- [Configuration](https://docs.bluedotseconomy.org/core-concepts/architecture/ai-diffusion-configuration/): the configuration layers and what each YAML file controls.
+- [Local setup guide](https://docs.bluedotseconomy.org/guides/installation/local-setup/ai-diffusion-dpg/): running the stack, including against a local Signals.
 - `docs/superpowers/specs/`: design documents.
 - `agent_core/eval/`: NLU, scenario and voice-bench evaluations.
 - [ARCHITECTURE.md](ARCHITECTURE.md): the contributor map.
