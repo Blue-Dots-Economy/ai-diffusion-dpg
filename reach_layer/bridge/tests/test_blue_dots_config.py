@@ -48,8 +48,13 @@ def test_bridge_declares_output_contract():
     assert contract["languages"]["hindi"]["numbers"] == "words"
 
 
-def test_existing_channels_are_untouched():
-    channels = _channels()
-    for name in ("voice", "web"):
-        assert name in channels
-        assert channels[name]["system_prompt_suffix"].strip()
+def test_blue_dots_declares_only_the_bridge_channel():
+    """The blue-dots domain is served through the bridge alone.
+
+    This used to assert that the ``voice`` and ``web`` channels were untouched,
+    which held while the bridge (#382) was being added alongside them. The
+    voicera-vm promotion (#385) narrowed the domain to the bridge only, so the
+    guard now pins that instead: another channel appearing here is a change to
+    how the domain is served and should be a deliberate edit to this test.
+    """
+    assert set(_channels()) == {"bridge"}
