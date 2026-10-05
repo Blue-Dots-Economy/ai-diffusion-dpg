@@ -112,6 +112,8 @@ _CARRYOVER_CLOCK_SKEW_MS = 5000
 # human_request speaks the already line instead of escalating again
 # (identity/handoff spec §5.2). An older pending marker allows a new escalate.
 _HANDOFF_PENDING_WINDOW_MS = 30_000
+# Shared `operation` value for every handoff log record.
+_OP_HANDOFF = "orchestrator.handoff"
 
 # Module-level guard to prevent double-instrumentation in test environments.
 _HTTPX_INSTRUMENTED = False
@@ -3342,7 +3344,7 @@ class AgentCore(AgentCoreBase):
             return          # failure already logged by _register_bg_task
         logger.warning(
             "orchestrator.handoff_line_unheard",
-            extra={"operation": "orchestrator.handoff", "status": "skipped",
+            extra={"operation": _OP_HANDOFF, "status": "skipped",
                    "session_id": session_id, "user_id": user_id,
                    "reason": "turn_cancelled_before_delivery"},
         )
@@ -3376,7 +3378,7 @@ class AgentCore(AgentCoreBase):
         if age_ms < 0:
             logger.warning(
                 "orchestrator.handoff_pending_marker_discarded",
-                extra={"operation": "orchestrator.handoff", "status": "skipped",
+                extra={"operation": _OP_HANDOFF, "status": "skipped",
                        "reason": "malformed_pending_at"},
             )
             return False
@@ -3429,7 +3431,7 @@ class AgentCore(AgentCoreBase):
     def _handoff_escalate_failed(session_id: str, exc: Exception) -> None:
         """Log an escalate exception by type only (the message could carry the payload or URL)."""
         logger.warning("orchestrator.handoff_escalate_failed", extra={
-            "operation": "orchestrator.handoff", "status": "failure",
+            "operation": _OP_HANDOFF, "status": "failure",
             "session_id": session_id, "error": type(exc).__name__,
         })
 
@@ -3446,7 +3448,7 @@ class AgentCore(AgentCoreBase):
             "outcome": outcome, "reason": reason, "latency_ms": latency_ms,
         }
         logger.info("orchestrator.handoff", extra={
-            "operation": "orchestrator.handoff",
+            "operation": _OP_HANDOFF,
             "status": "failure" if outcome == "failed" else "success",
             "session_id": session_id, **fields,
         })
@@ -3459,7 +3461,7 @@ class AgentCore(AgentCoreBase):
             await self._async_learning.emit_signal("handoff", data)
         except Exception as exc:  # noqa: BLE001
             logger.warning("orchestrator.handoff_signal_failed", extra={
-                "operation": "orchestrator.handoff", "status": "skipped",
+                "operation": _OP_HANDOFF, "status": "skipped",
                 "session_id": data.get("session_id"), "error": type(exc).__name__})
 
     def _handoff_will_escalate(self, bundle) -> bool:
@@ -3562,7 +3564,7 @@ class AgentCore(AgentCoreBase):
             self._learning.emit_signal("handoff", data)
         except Exception as exc:  # noqa: BLE001
             logger.warning("orchestrator.handoff_signal_failed", extra={
-                "operation": "orchestrator.handoff", "status": "skipped",
+                "operation": _OP_HANDOFF, "status": "skipped",
                 "session_id": session_id, "error": type(exc).__name__})
         return line
 

@@ -510,7 +510,8 @@ async def test_pending_marker_in_the_near_future_is_still_pending():
     t = _Turn()
     t.session.update(handoff_status="pending", handoff_pending_at=str(_now_ms() + 2_000))
     text, _ = await t.stream()
-    assert text == HANDOFF_LINES["already"] and t.escalate_calls == []
+    assert text == HANDOFF_LINES["already"]
+    assert t.escalate_calls == []
 
 
 @pytest.mark.asyncio
@@ -524,13 +525,15 @@ async def test_pending_marker_far_in_the_future_allows_a_fresh_escalate():
     t = _Turn()
     t.session.update(handoff_status="pending", handoff_pending_at=str(_now_ms() + 86_400_000))
     text, _ = await t.stream()
-    assert text == SPOKEN["delivered"] and len(t.escalate_calls) == 1
+    assert text == SPOKEN["delivered"]
+    assert len(t.escalate_calls) == 1
 
 
 def test_sync_pending_marker_far_in_the_future_allows_a_fresh_escalate():
     t = _Turn()
     t.session.update(handoff_status="pending", handoff_pending_at=_now_ms() + 86_400_000)
-    assert t.sync().response_text == SPOKEN["delivered"] and len(t.escalate_calls) == 1
+    assert t.sync().response_text == SPOKEN["delivered"]
+    assert len(t.escalate_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -539,7 +542,8 @@ async def test_pending_marker_seconds_instead_of_ms_is_treated_as_stale_not_pend
     t = _Turn()
     t.session.update(handoff_status="pending", handoff_pending_at=str(int(time.time())))
     text, _ = await t.stream()
-    assert text == SPOKEN["delivered"] and len(t.escalate_calls) == 1
+    assert text == SPOKEN["delivered"]
+    assert len(t.escalate_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -548,7 +552,8 @@ async def test_delivered_still_blocks_a_duplicate_regardless_of_marker_age():
     t = _Turn()
     t.session.update(handoff_status="delivered", handoff_pending_at=str(_now_ms() + 86_400_000))
     text, _ = await t.stream()
-    assert text == HANDOFF_LINES["already"] and t.escalate_calls == []
+    assert text == HANDOFF_LINES["already"]
+    assert t.escalate_calls == []
 
 
 @pytest.mark.asyncio
@@ -564,7 +569,8 @@ async def test_background_task_exception_is_retrieved_and_logged(caplog):
         core._register_bg_task(task, "handoff_escalate", "sess-1")
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-    assert task.done() and task.exception() is not None
+    assert task.done()
+    assert task.exception() is not None
     rec = [r for r in caplog.records if r.message == "orchestrator.bg_task_failed"]
     assert rec, "a failing background task produced no log record"
     assert getattr(rec[0], "session_id", None) == "sess-1"

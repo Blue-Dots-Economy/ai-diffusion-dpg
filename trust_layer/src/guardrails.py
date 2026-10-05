@@ -119,7 +119,12 @@ class BasicTrustLayer:
         self._consent = ConsentBlock(config)
 
         trust_cfg = config.get("trust", {})
-        db_path = trust_cfg.get("consent_store", {}).get("db_path", "/tmp/dpg_consent.db")
+        # Defaults to in-memory, matching ConsentStore's own default. A consent
+        # database must not land in a world-writable directory by default: on a
+        # shared host any user could pre-create or symlink that path and tamper
+        # with consent records. A deployment that wants consent to survive a
+        # restart sets trust.consent_store.db_path to a private location.
+        db_path = trust_cfg.get("consent_store", {}).get("db_path") or ":memory:"
         self._consent_store = ConsentStore(db_path)
 
         input_cfg = trust_cfg.get("input_rules", {})
