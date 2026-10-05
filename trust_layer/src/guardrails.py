@@ -11,7 +11,12 @@ Design:
 - check_input(): blocked_phrases → "block", escalation_topics → "escalate", else → "allow"
 - check_output(): blocked_output_phrases → "block", else → "allow"
 - check_consent(): PoC stub always returns True — no consent flow implemented.
-- All phrase matching is case-insensitive substring search.
+- assemble_constraints() / verify_consent() / escalate(): delegate to the
+  GuardrailsBlock / ConsentBlock / HiTLBlock. main.py serves this object, so
+  every route in server.py must be backed here.
+- Phrase matching is case-insensitive and WHOLE-WORD (with an inflection
+  suffix for terms of at least _INFLECT_MIN_LEN characters) — not a plain
+  substring search. "kill" must not fire on "skill".
 - Empty / None message is always allowed (not a content violation).
 """
 
@@ -21,7 +26,10 @@ import logging
 import re
 import time
 
+from blocks.consent import ConsentBlock
+from blocks.guardrails import GuardrailsBlock
 from blocks.hitl import HiTLBlock
+from consent_store import ConsentStore
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +110,18 @@ class BasicTrustLayer:
             raise ValueError("config must not be None")
 
         self._hitl = HiTLBlock(config)
+        # Every route server.py exposes must be backed by a real implementation
+        # here: main.py serves THIS object, not orchestrator.TrustLayer, so a
+        # method missing from this class makes its route fall into the except
+        # branch in production while the unit tests (which build TrustLayer)
+        # still pass. escalate had the same gap; it was fixed in #437.
+        self._guardrails = GuardrailsBlock(config)
+        self._consent = ConsentBlock(config)
 
         trust_cfg = config.get("trust", {})
+        db_path = trust_cfg.get("consent_store", {}).get("db_path", "/tmp/dpg_consent.db")
+        self._consent_store = ConsentStore(db_path)
+
         input_cfg = trust_cfg.get("input_rules", {})
         output_cfg = trust_cfg.get("output_rules", {})
 
@@ -262,6 +280,48 @@ class BasicTrustLayer:
             },
         )
         return True
+
+    def assemble_constraints(
+        self,
+        session_id: str,
+        workflow_step: str,
+        active_risks: list[str],
+        user_segment: str | None,
+    ) -> dict:
+        """Delegate to GuardrailsBlock.assemble_constraints.
+
+        Args:
+            session_id: Unique identifier for the conversation session.
+            workflow_step: Current step in the workflow.
+            active_risks: Risk IDs identified by NLU.
+            user_segment: Optional user segment or role.
+
+        Returns:
+            Dict with prompt_constraints, required_disclosures, action_gates
+            and refusal_templates.
+        """
+        return self._guardrails.assemble_constraints(
+            session_id, workflow_step, active_risks, user_segment
+        )
+
+    def verify_consent(self, session_id: str, user_message: str) -> bool:
+        """Delegate to ConsentBlock.verify_consent and persist consent if granted.
+
+        The write matters: ``/consent/verify`` is the only path that records a
+        consent decision, so verifying without persisting would leave the store
+        empty for every later connector-level check.
+
+        Args:
+            session_id: Unique identifier for the conversation session.
+            user_message: The user's message that may carry a consent signal.
+
+        Returns:
+            True if a consent phrase was found.
+        """
+        granted = self._consent.verify_consent(session_id, user_message)
+        if granted:
+            self._consent_store.record_consent(session_id)
+        return granted
 
     def escalate(
         self,
