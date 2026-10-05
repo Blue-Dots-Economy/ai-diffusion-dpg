@@ -1959,6 +1959,12 @@ agent_workflow:
       # only constrains what the MODEL writes. Referring to the saved city
       # without reciting it keeps the turn short and cannot leak an address.
       fixed_opening: "मुझे आपकी जानकारी मिली — {stored_trade}। क्या आपके सेव किए गए शहर में ही नौकरियाँ ढूंढूँ?"
+      # stored_location is REQUIRED even though the line no longer interpolates
+      # it. The sentence offers to search "in your saved city", which is only
+      # meaningful if one exists — drop it from this list and a returning caller
+      # with a trade but no saved city gets offered a search against nothing.
+      # The gate reads this list, not the template's placeholders, so the two
+      # are allowed to differ on purpose.
       fixed_opening_requires: [stored_trade, stored_location]
       opening_phrase: >
         आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?
