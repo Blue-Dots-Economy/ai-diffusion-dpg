@@ -261,6 +261,12 @@ class BridgeDpg(BaseModel):
     server: BridgeServerDpg = Field(default_factory=BridgeServerDpg)
     agent_core_url: str = "http://agent_core:8000"
     terminal_word: str = ""
+    # Both are per-domain in practice and only placeholders at framework level.
+    # ``hangup_tool_name``: the client-offered tool called on session end so the
+    # client hangs up; empty disables it. ``tool_status_phrases``: tool name ->
+    # line spoken while that tool runs. Mirrors the runtime BridgeChannelConfig.
+    hangup_tool_name: str = ""
+    tool_status_phrases: dict[str, str] = Field(default_factory=dict)
     timeout_s: float = Field(default=60.0, gt=0)
 
 

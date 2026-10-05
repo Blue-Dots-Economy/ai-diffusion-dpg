@@ -235,9 +235,13 @@ def test_reach_layer_dpg_bridge_channel_accepted():
         "agent_core_url": "http://agent_core:8000",
         "timeout_s": 60.0,
         "terminal_word": "",
+        "hangup_tool_name": "end_conversation",
+        "tool_status_phrases": {"search_jobs": "One moment"},
     }
     cfg = ReachLayerDpgConfig.model_validate(base)
     assert cfg.reach_layer.channels.bridge.server.port == 8008
+    assert cfg.reach_layer.channels.bridge.hangup_tool_name == "end_conversation"
+    assert cfg.reach_layer.channels.bridge.tool_status_phrases == {"search_jobs": "One moment"}
 
 
 def test_reach_layer_dpg_bridge_is_optional():
@@ -253,6 +257,8 @@ def test_reach_layer_dpg_bridge_is_optional():
         {"server": {"host": "h", "port": 0}},      # port must be 1..65535
         {"server": {"host": "h", "port": 70000}},
         {"timeout_s": 0},                          # must be > 0
+        {"tool_status_phrases": ["not", "a", "mapping"]},
+        {"tool_status_phrases": {"search_jobs": 5}},   # values must be strings
     ],
 )
 def test_reach_layer_dpg_bridge_rejects_invalid(override):
