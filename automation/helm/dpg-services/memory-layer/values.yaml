@@ -1,0 +1,54 @@
+# DPG Memory Layer. dpgConfig and domainConfig are injected at deploy time:
+#   --set-file dpgConfig=dev-kit/dpg/memory_layer.yaml
+#   --set-file domainConfig=dev-kit/configs/<domain>/memory_layer.yaml
+# Template behaviour and every supported key: automation/helm/dpg-common/templates/_deployment.tpl
+replicaCount: 1
+
+image:
+  # Published by .github/workflows/build-images.yaml; same default tag as
+  # automation/docker/docker-compose.dev.yml (DPG_IMAGE_TAG).
+  repository: ghcr.io/blue-dots-economy/ai-diffusion-dpg/memory-layer
+  tag: "sha-646216d"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8002
+
+# The service reads /app/config/dpg.yaml and /app/config/<configFile>.
+configFile: memory_layer.yaml
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+healthCheck:
+  readiness:
+    initialDelaySeconds: 15
+    periodSeconds: 10
+  liveness:
+    initialDelaySeconds: 30
+    periodSeconds: 20
+
+# Backing stores (the redis and memgraph infra charts). The dev-kit sets
+# memgraph.password and a redis.url with credentials when they are configured.
+redis:
+  url: "redis://redis:6379/0"
+
+memgraph:
+  uri: "bolt://memgraph:7687"
+  user: memgraph
+  password: ""
+
+env:
+  - {name: REDIS_URL, key: redis.url}
+  - {name: MEMGRAPH_URI, key: memgraph.uri}
+  - {name: MEMGRAPH_USER, key: memgraph.user}
+  - {name: MEMGRAPH_PASSWORD, key: memgraph.password}
+
+# Injected at deploy time — do not set here
+dpgConfig: ""
+domainConfig: ""

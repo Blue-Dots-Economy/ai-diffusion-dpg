@@ -1,0 +1,47 @@
+# DPG Configuration Agent (dev-kit) UI. It reads no DPG/domain config, so
+# configFile stays empty (no ConfigMaps or config mounts).
+# Template behaviour and every supported key: automation/helm/dpg-common/templates/_deployment.tpl
+replicaCount: 1
+
+image:
+  # Published by .github/workflows/build-images.yaml; same default tag as
+  # automation/docker/docker-compose.dev.yml (DPG_IMAGE_TAG).
+  repository: ghcr.io/blue-dots-economy/ai-diffusion-dpg/dev-kit
+  tag: "sha-646216d"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# The dev-kit has no /health route; compose also probes /.
+probes:
+  path: /
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+healthCheck:
+  readiness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  liveness:
+    initialDelaySeconds: 20
+    periodSeconds: 20
+
+# LLM provider keys for the Configuration Agent. The dev-kit exits at startup
+# without one, so the chart refuses to render unless at least one is set.
+anthropicApiKey: ""
+openaiApiKey: ""
+googleApiKey: ""
+
+secretEnvFromValues:
+  - {name: ANTHROPIC_API_KEY, key: anthropicApiKey}
+  - {name: OPENAI_API_KEY, key: openaiApiKey}
+  - {name: GOOGLE_API_KEY, key: googleApiKey}
+requireOneSecret: true

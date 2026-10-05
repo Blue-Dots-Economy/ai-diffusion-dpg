@@ -1,0 +1,45 @@
+# DPG Action Gateway. dpgConfig and domainConfig are injected at deploy time:
+#   --set-file dpgConfig=dev-kit/dpg/action_gateway.yaml
+#   --set-file domainConfig=dev-kit/configs/<domain>/action_gateway.yaml
+# Template behaviour and every supported key: automation/helm/dpg-common/templates/_deployment.tpl
+replicaCount: 1
+
+image:
+  # Published by .github/workflows/build-images.yaml; same default tag as
+  # automation/docker/docker-compose.dev.yml (DPG_IMAGE_TAG).
+  repository: ghcr.io/blue-dots-economy/ai-diffusion-dpg/action-gateway
+  tag: "sha-646216d"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 9999
+
+# The service reads /app/config/dpg.yaml and /app/config/<configFile>.
+configFile: action_gateway.yaml
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+healthCheck:
+  readiness:
+    initialDelaySeconds: 15
+    periodSeconds: 10
+  liveness:
+    initialDelaySeconds: 30
+    periodSeconds: 20
+
+# Connector API keys: one entry per auth.secret_env (and extra_headers
+# secret_env) in the domain's action_gateway.yaml. Action Gateway refuses to
+# start while one is missing. Set at deploy time, never store values here:
+#   --set-string extraSecrets.MY_API_KEY=...
+# The dev-kit generates these flags from the tools configured in the Tools phase.
+extraSecrets: {}
+
+# Injected at deploy time — do not set here
+dpgConfig: ""
+domainConfig: ""
