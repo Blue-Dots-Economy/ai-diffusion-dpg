@@ -58,7 +58,7 @@ from src.interfaces.trust_layer import TrustLayerBase
 from src.http_clients.trust_layer import TrustLayerConstraintError
 from src.preprocessing.language_normalisation import LanguageNormaliser
 from src.manager_agent import ManagerAgent, zero_seed_fields
-from src.tool_guard import check_tool_call
+from src.tool_guard import apply_session_only, check_tool_call
 from src.predispatch.rules import Selection, select
 from src.predispatch.runner import PREDISPATCH_ID, PredispatchResult, run_async, run_sync
 from src.models import (
@@ -672,6 +672,22 @@ class AgentCore(AgentCoreBase):
                       write_tools=self._write_tools,
                       has_fresh=lambda t: tool_cache.latest_entry(t) is not None)
 
+    def _enforce_session_only(self, tc, bundle) -> None:
+        """Replace or drop this call's ``session_only_params`` before it is guarded.
+
+        Runs on every dispatch path. A field the caller never gave is removed
+        rather than sent with whatever the model supplied.
+        """
+        spec = (getattr(self._manager_agent, "_session_only_params", None) or {}).get(
+            getattr(tc, "tool_name", "")) or {}
+        if not spec:
+            return
+        dropped = apply_session_only(tc, spec, getattr(bundle, "session", None))
+        if dropped:
+            logger.info("orchestrator.session_only_dropped", extra={
+                "operation": "orchestrator.session_only", "status": "success",
+                "tool": tc.tool_name, "dropped": sorted(dropped)})
+
     def _predispatch_guard(self, tc, bundle, tool_cache, counts: dict, consent_ok: bool | None):
         """The shared guard (consent, cap, grounding, cache) for a pre-dispatch call.
 
@@ -685,6 +701,7 @@ class AgentCore(AgentCoreBase):
         Returns:
             GuardVerdict.
         """
+        self._enforce_session_only(tc, bundle)
         grounded = getattr(self._manager_agent, "_grounded_params", None)
         caps = getattr(self._manager_agent, "_tool_call_caps", None)
         spec = (grounded if isinstance(grounded, dict) else {}).get(tc.tool_name) or {}
@@ -2128,11 +2145,13 @@ class AgentCore(AgentCoreBase):
             "  TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
             "  model=%s  total_latency=%dms  next_subagent=%s\n"
             "  llm_calls=%s  predispatch_tool=%s  predispatch_outcome=%s  predispatch_ms=%s\n"
+            "  %s\n"
             "  response: %r\n"
             "═══════════════════════════════════════════════════════════════",
             session_id, nlu_result.intent, bool(tool_calls),
             llm_response.model_used, latency_ms, next_subagent_id,
             _llm_calls, _pd.tool, _pd.outcome, _pd.ms,
+            self._nlu_banner(understanding),
             final_text[:200],
         )
 
@@ -2141,6 +2160,22 @@ class AgentCore(AgentCoreBase):
     # ------------------------------------------------------------------
     # Private: routing algorithm
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _nlu_banner(understanding) -> str:
+        """`acts`/`relation`/`pending`/`resolved` for the turn banner.
+
+        These decide the derived intent, and therefore the routing, but they are
+        logged only inside ``extra={}`` (dropped by the default formatter) and as
+        OTel counters. With neither visible, a turn that routes on a resolver
+        miss is indistinguishable from one the model simply got wrong — which
+        cost three successive wrong diagnoses of the same bug.
+        """
+        d = getattr(understanding, "dialogue", None)
+        acts = ",".join(getattr(d, "acts", ()) or ()) or "-"
+        return (f"acts={acts}  relation={getattr(d, 'relation', None) or '-'}  "
+                f"pending={getattr(understanding, 'pending_id', None) or '-'}  "
+                f"resolved={getattr(understanding, 'resolved', None) is not None}")
 
     def _resolve_next_subagent(
         self,
@@ -5486,6 +5521,7 @@ class AgentCore(AgentCoreBase):
                                 self._remember_on_saved(bundle),
                             )
                         else:
+                            self._enforce_session_only(tc, bundle)
                             _spec = (
                                 getattr(self._manager_agent, "_grounded_params", {}) or {}
                             ).get(tc.tool_name) or {}
@@ -5789,6 +5825,7 @@ class AgentCore(AgentCoreBase):
                                         self._remember_on_saved(bundle),
                                     )
                                 else:
+                                    self._enforce_session_only(tc, bundle)
                                     _spec2 = (
                                         getattr(self._manager_agent, "_grounded_params", {}) or {}
                                     ).get(tc.tool_name) or {}
@@ -6032,6 +6069,7 @@ class AgentCore(AgentCoreBase):
                 "  model=%s  total_latency=%dms  next_subagent=%s  sentences=%d\n"
                 "  llm_ttft=%sms  first_token=%sms  first_sentence=%sms\n"
                 "  llm_calls=%s  predispatch_tool=%s  predispatch_outcome=%s  predispatch_ms=%s\n"
+                "  %s\n"
                 "  response: %r\n"
                 "═══════════════════════════════════════════════════════════════",
                 session_id, nlu_result.intent, was_tool_used,
@@ -6039,6 +6077,7 @@ class AgentCore(AgentCoreBase):
                 _timings["llm_ttft_ms"], _timings["first_token_ms"],
                 _timings["first_sentence_ms"],
                 _llm_calls, _pd.tool, _pd.outcome, _pd.ms,
+                self._nlu_banner(understanding),
                 full_response_text.strip()[:200],
             )
 

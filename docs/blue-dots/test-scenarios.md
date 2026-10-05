@@ -249,6 +249,30 @@ the two real Delhi jobs scored 0.535/0.531 and were never spoken.
 
 ---
 
+### C6 — picking a job that was listed on an EARLIER turn
+> ... / बेंगलुरु *(bot lists jobs)* / पहला वाला
+
+The pick arrives on the turn **after** the list. Resolving it needs the
+`fetch_jobs` result to have survived the turn, via the tool-result store.
+
+**Expect:** `intent=job_pick`, `selected_job_item_id` set in session, routing
+moves on to `profile_setup` (new caller) or `apply_confirm` (profile exists).
+**Verify:**
+```bash
+docker exec dpg_redis redis-cli HGET "session:<phone>:<call_id>" selected_job_item_id
+docker logs dpg_agent_core --since 5m | grep -E 'acts=|resolver_miss'
+```
+**Known failure mode:** with `TOOL_RESULT_KEY_SECRET` unset the store is
+disabled, the offered list is empty by the next turn, the option cannot resolve
+(`resolver_miss:no_options`), and the turn degrades to `any_input` — the caller
+is stuck in `job_match` and **no profile and no application are ever created**,
+while the bot speaks as though both happened. The NLU is not at fault here: it
+returns `act=select`, `pending=select_job` correctly.
+**Guards:** **F53**. Measured: `job_pick` 0 → 4 and applications 0 → 3 on an
+identical build by setting that one variable.
+
+---
+
 ## E. Conversation robustness
 
 ### D1 — a question outside the script
@@ -393,6 +417,91 @@ happens next.
 ### F4t — no technical errors spoken to the caller
 **Expect:** never "तकनीकी समस्या".
 **Guards:** F21.
+
+---
+
+### F5t — no invented profile fields
+Run A1 but have the caller mention **only** name, trade and city — never work
+history, job type or help needed.
+
+**Expect:** the `save_profile` call carries only what was actually said.
+**Verify:** compare the tool input against `slot_provenance` in the same session:
+```bash
+docker exec dpg_redis redis-cli HGET "session:<phone>:<call_id>" slot_provenance
+docker exec dpg_redis redis-cli HGET "session:<phone>:<call_id>" recent_tool_exchanges
+```
+Every key in the `save_profile` input must appear in `slot_provenance` (or be a
+required field).
+**Known failure mode:** a caller who said only name, trade and city was sent
+with `work_experience="Returning after a break"`, `experience_years="1 Year"`
+and `job_nature="Full-time"` — none uttered, all three empty in session. A
+prompt rule forbidding this already existed and was ignored.
+**Guards:** **F56**. The `session_only_params` contract now takes these from
+session or drops them, so invention is structurally impossible.
+
+### F6t — optional array fields are accepted when volunteered
+Have the caller volunteer a job type unprompted ("फुल टाइम चाहिए").
+
+**Expect:** the save succeeds (201/200), and the profile upstream carries
+`natureOfJobsInterestedIn` as an **array**.
+**Known failure mode:** sent as a bare string, the upstream rejected the WHOLE
+write with `400 INVALID_ITEM_STATE: "must be array"` — so one optional field the
+model chose to fill lost the entire profile. The `help_needed` enum offered to
+the model also listed four values that do not exist upstream, making a failed
+write the expected outcome whenever that field was used.
+**Verify:** `curl .../admin/participant?phone_number=<phone>` and read
+`item_state.natureOfJobsInterestedIn`.
+**Guards:** **F52.**
+
+### F7t — a caller with no profile is never told they have one
+Call on a number with **no** profile at all.
+
+**Expect:** the bot asks for trade and city. It must not describe a saved city,
+trade or employer.
+**Known failure mode:** a first-time caller was told "आपकी जानकारी में बेंगलुरु
+है" ("your information has Bengaluru") — a city nobody in that call had said,
+with `stored_location` and `profile_item_id` both empty.
+**Guards:** **F45.**
+
+---
+
+## I. Human handoff
+
+### H1 — the caller asks for a person
+> ... / मुझे किसी इंसान से बात करनी है
+
+**Expect (handoff enabled, `identity.human_handoff: request`):** a FIXED line
+from config, prefixed with the AI disclosure, and **no LLM call** for that turn.
+Trust mints a ticket and the webhook receives **one signed payload**.
+**Verify:**
+```bash
+docker logs dpg_agent_core --since 5m | grep -E 'next_subagent=handoff|llm_calls'
+```
+`llm_calls` must be `None` — the line is spoken by the framework, never written
+by the model.
+**Guards:** the handoff contract (#437, #457).
+
+### H2 — asking twice in one call sends one payload
+Ask for a person three times in the same `call_id`.
+
+**Expect:** the first request delivers; the second and third speak the `already`
+line and send **nothing**. Exactly one webhook payload for the call.
+**Verify:** count requests at the receiver before and after.
+**Guards:** #446's "one signed payload per handoff call".
+
+### H3 — handoff off is the shipped default
+With `identity.human_handoff: none` (what Blue Dots ships).
+
+**Expect:** the caller hears the `no_handoff_line` — no human is available,
+the bot continues to help. Nothing is escalated, no webhook call.
+
+### H4 — a failed delivery is reported honestly
+Point `HITL_WEBHOOK_URL` at a URL that 404s.
+
+**Expect:** the bot speaks the `failed` line ("अभी मैं आपकी बात आगे नहीं भेज
+पाई") — never the delivered line. `escalate` returns
+`delivered:false, reason:http_404`.
+**Guards:** F2 (nothing claimed before its result).
 
 ---
 

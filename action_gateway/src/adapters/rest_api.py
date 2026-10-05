@@ -167,9 +167,11 @@ def _render_body_template(template, values: dict):
         ``str()``-cast.
       - If a placeholder's key is missing from ``values``, or its value is
         ``None`` or an empty string, the enclosing field is dropped from the
-        parent dict/list. After substitution, dicts that became empty are
-        also dropped from their parent — so optional nested branches vanish
-        cleanly when the user did not supply any of their fields.
+        parent dict/list. After substitution, dicts AND lists that became
+        empty are also dropped from their parent — so optional nested
+        branches vanish cleanly when the user did not supply any of their
+        fields, and an array-typed field written as ``["{placeholder}"]`` is
+        omitted rather than sent as ``[]``.
       - Strings with no placeholders, and non-string scalars, copy through
         unchanged.
       - Nested dicts and lists are walked recursively.
@@ -192,8 +194,12 @@ def _render_body_template(template, values: dict):
             rendered = _render_body_template(v, values)
             if rendered is _DROP:
                 continue
-            if isinstance(rendered, dict) and not rendered:
-                # Nested dict pruned to empty → drop from parent too.
+            if isinstance(rendered, (dict, list)) and not rendered:
+                # Nested dict/list pruned to empty → drop from parent too.
+                # Lists matter for array-typed upstream fields written as
+                # ["{placeholder}"]: when the placeholder is absent the item is
+                # dropped and the list would otherwise be sent as [], writing an
+                # empty array for a field the caller never answered.
                 continue
             out[k] = rendered
         return out
