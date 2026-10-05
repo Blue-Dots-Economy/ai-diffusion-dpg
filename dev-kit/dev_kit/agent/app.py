@@ -2785,71 +2785,13 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
         preview[svc_name] = result["stdout"] if result["success"] else f"# Error: {result['stderr']}"
 
     # DPG charts — inject dpgConfig, domainConfig, secrets, and resources
+    preview_channels = _selected_channels_for(slug)
     for block_name in BLOCKS:
         chart_dir = block_name.replace("_", "-")
-        chart_path = str(_helm_base / "dpg" / chart_dir)
-        set_values: dict[str, str] = {}
-        set_files: dict[str, str] = {}
-
-        dpg_file = DPG_DIR / f"{block_name}.yaml"
-        domain_file = CONFIGS_DIR / slug / f"{block_name}.yaml"
-        if dpg_file.exists():
-            set_files["dpgConfig"] = str(dpg_file)
-        if domain_file.exists():
-            set_files["domainConfig"] = str(domain_file)
-        if secrets.get("anthropic_api_key"):
-            set_values["anthropicApiKey"] = secrets["anthropic_api_key"]
-        if secrets.get("openai_api_key"):
-            set_values["openaiApiKey"] = secrets["openai_api_key"]
-
-        # Inject infra secrets into DPG blocks that connect to them
-        if block_name == "memory_layer":
-            if secrets.get("memgraph_password"):
-                set_values["memgraph.password"] = secrets["memgraph_password"]
-            if secrets.get("redis_password"):
-                set_values["redis.url"] = f"redis://:{secrets['redis_password']}@redis:6379/0"
-
-        # Inject domain-specific tool API keys as extraSecrets for action-gateway
-        if block_name == "action_gateway":
-            for env_var, secret_value in secrets.get("tool_secrets", {}).items():
-                if secret_value:
-                    set_values[f"extraSecrets.{env_var}"] = secret_value
-
-        # Inject Azure creds and upload chain auth into knowledge-engine
-        if block_name == "knowledge_engine":
-            if secrets.get("azure_storage_account"):
-                set_values["azure.storageAccount"] = secrets["azure_storage_account"]
-            if secrets.get("azure_storage_key"):
-                set_values["azure.storageKey"] = secrets["azure_storage_key"]
-            if secrets.get("azure_container_name"):
-                set_values["azure.containerName"] = secrets["azure_container_name"]
-            if secrets.get("reach_to_ke_api_key"):
-                set_values["uploadAuth.reachToKeApiKey"] = secrets["reach_to_ke_api_key"]
-            if secrets.get("ke_to_devkit_api_key"):
-                set_values["uploadAuth.keToDevkitApiKey"] = secrets["ke_to_devkit_api_key"]
-            if secrets.get("ke_devkit_callback_url"):
-                set_values["uploadAuth.devkitCallbackUrl"] = secrets["ke_devkit_callback_url"]
-
-        # Inject upload chain auth into reach-layer
-        if block_name == "reach_layer":
-            if secrets.get("devkit_to_reach_api_key"):
-                set_values["uploadAuth.devkitToReachApiKey"] = secrets["devkit_to_reach_api_key"]
-            if secrets.get("reach_to_ke_api_key"):
-                set_values["uploadAuth.reachToKeApiKey"] = secrets["reach_to_ke_api_key"]
-            if secrets.get("ke_internal_url"):
-                set_values["uploadAuth.keInternalUrl"] = secrets["ke_internal_url"]
-
-        block_res = resources.get(block_name, {})
-        limits = block_res.get("limits", {})
-        requests = block_res.get("requests", {})
-        if limits.get("cpu"):
-            set_values["resources.limits.cpu"] = limits["cpu"]
-        if limits.get("memory"):
-            set_values["resources.limits.memory"] = limits["memory"]
-        if requests.get("cpu"):
-            set_values["resources.requests.cpu"] = requests["cpu"]
-        if requests.get("memory"):
-            set_values["resources.requests.memory"] = requests["memory"]
+        chart_path = _dpg_chart_path(_helm_base, block_name)
+        set_values, set_files = _dpg_helm_values(
+            block_name, slug, secrets, resources, selected_channels=preview_channels,
+        )
 
         cmd = build_template_command(chart_path, chart_dir, set_values=set_values or None, set_files=set_files or None)
         result = await run_helm_command(cmd)
@@ -3032,7 +2974,12 @@ async def execute_deploy(slug: str, body: dict) -> dict:
     else:
         kubeconfig_content = body.get("kubeconfig", "")
         namespace = body.get("namespace", "dpg")
-        asyncio.create_task(_run_k8s_deploy(slug, state, secrets, resources, kubeconfig_content, namespace))
+        asyncio.create_task(
+            _run_k8s_deploy(
+                slug, state, secrets, resources, kubeconfig_content, namespace,
+                selected_channels=_selected_channels_for(slug),
+            )
+        )
 
     return {"status": "started", "target": target}
 
@@ -3194,7 +3141,152 @@ async def _run_docker_deploy(
         )
 
 
-async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kubeconfig_content: str, namespace: str) -> None:
+def _dpg_chart_path(helm_base: Path, svc_name: str) -> str:
+    """Return the Helm chart directory for a DPG block.
+
+    Args:
+        helm_base: The automation/helm directory.
+        svc_name: Block name with underscores, e.g. ``agent_core``.
+
+    Returns:
+        Path to ``<helm_base>/dpg-services/<block-with-hyphens>``.
+    """
+    return str(helm_base / "dpg-services" / svc_name.replace("_", "-"))
+
+
+def _selected_channels_for(slug: str) -> list[str] | None:
+    """Return the project's selected Reach channels, or None if it has no intake state.
+
+    Args:
+        slug: Project slug under dev-kit/configs/.
+
+    Returns:
+        The IntakeState ``selected_channels`` list, or None for projects created
+        before the deterministic wizard (only the web channel is then deployed).
+    """
+    try:
+        return list(load_intake_state(CONFIGS_DIR / slug / "_meta" / "intake_state.json").selected_channels)
+    except FileNotFoundError:
+        return None
+
+
+def _dpg_helm_values(
+    svc_name: str,
+    slug: str,
+    secrets: dict,
+    resources: dict,
+    selected_channels: list[str] | None = None,
+    expose_reach_node_port: bool = False,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Build the --set and --set-file values for one DPG block's Helm release.
+
+    Shared by the Kubernetes deploy and its preview so both render the same
+    release. ``reach_layer`` is a parent chart with one sub-chart per channel:
+    its config goes to every channel through ``global.*``, the web channel's
+    settings sit under ``web.``, and channels other than web are switched on
+    from ``selected_channels`` (the same rule the compose deploy applies).
+
+    Args:
+        svc_name: Block name with underscores, e.g. ``agent_core``.
+        slug: Project slug; selects dev-kit/configs/<slug>/<block>.yaml.
+        secrets: Decrypted deploy secrets (LLM keys, tool_secrets, upload chain, ...).
+        resources: Per-block resource overrides from the deploy preset.
+        selected_channels: Reach channels chosen in the wizard; None deploys web only.
+        expose_reach_node_port: Publish the web channel on NodePort 30805 so a
+            dev-kit outside the cluster can reach its upload proxy.
+
+    Returns:
+        A ``(set_values, set_files)`` tuple for build_helm_command / build_template_command.
+    """
+    is_reach = svc_name == "reach_layer"
+    file_prefix = "global." if is_reach else ""
+    value_prefix = "web." if is_reach else ""
+    set_values: dict[str, str] = {}
+    set_files: dict[str, str] = {}
+
+    dpg_file = DPG_DIR / f"{svc_name}.yaml"
+    domain_file = CONFIGS_DIR / slug / f"{svc_name}.yaml"
+    if dpg_file.exists():
+        set_files[f"{file_prefix}dpgConfig"] = str(dpg_file)
+    if domain_file.exists():
+        set_files[f"{file_prefix}domainConfig"] = str(domain_file)
+    if secrets.get("anthropic_api_key"):
+        set_values["anthropicApiKey"] = secrets["anthropic_api_key"]
+    if secrets.get("openai_api_key"):
+        set_values["openaiApiKey"] = secrets["openai_api_key"]
+
+    # Inject infra secrets into DPG blocks that connect to them
+    if svc_name == "memory_layer":
+        if secrets.get("memgraph_password"):
+            set_values["memgraph.password"] = secrets["memgraph_password"]
+        if secrets.get("redis_password"):
+            set_values["redis.url"] = f"redis://:{secrets['redis_password']}@redis:6379/0"
+
+    # Inject domain-specific tool API keys as extraSecrets for action-gateway
+    if svc_name == "action_gateway":
+        for env_var, secret_value in secrets.get("tool_secrets", {}).items():
+            if secret_value:
+                set_values[f"extraSecrets.{env_var}"] = secret_value
+
+    # Inject Azure creds and upload chain auth into knowledge-engine
+    if svc_name == "knowledge_engine":
+        if secrets.get("azure_storage_account"):
+            set_values["azure.storageAccount"] = secrets["azure_storage_account"]
+        if secrets.get("azure_storage_key"):
+            set_values["azure.storageKey"] = secrets["azure_storage_key"]
+        if secrets.get("azure_container_name"):
+            set_values["azure.containerName"] = secrets["azure_container_name"]
+        if secrets.get("reach_to_ke_api_key"):
+            set_values["uploadAuth.reachToKeApiKey"] = secrets["reach_to_ke_api_key"]
+        if secrets.get("ke_to_devkit_api_key"):
+            set_values["uploadAuth.keToDevkitApiKey"] = secrets["ke_to_devkit_api_key"]
+        if secrets.get("ke_devkit_callback_url"):
+            set_values["uploadAuth.devkitCallbackUrl"] = secrets["ke_devkit_callback_url"]
+
+    if is_reach:
+        # Upload chain auth for the web channel's ingest proxy.
+        if secrets.get("devkit_to_reach_api_key"):
+            set_values["web.uploadAuth.devkitToReachApiKey"] = secrets["devkit_to_reach_api_key"]
+        if secrets.get("reach_to_ke_api_key"):
+            set_values["web.uploadAuth.reachToKeApiKey"] = secrets["reach_to_ke_api_key"]
+        if secrets.get("ke_internal_url"):
+            set_values["web.uploadAuth.keInternalUrl"] = secrets["ke_internal_url"]
+        if expose_reach_node_port:
+            # Fixed port 30805 avoids conflicts and is predictable for the ingest proxy.
+            set_values["web.service.type"] = "NodePort"
+            set_values["web.service.nodePort"] = "30805"
+        if selected_channels is not None:
+            # web always runs (it serves the ingest proxy); without the web
+            # channel selected it runs in routing_only mode, as in compose.
+            set_values["web.webMode"] = "full" if "web" in selected_channels else "routing_only"
+            for channel in ("voice", "mcp"):
+                if channel in selected_channels:
+                    set_values[f"{channel}.enabled"] = "true"
+
+    block_res = resources.get(svc_name, {})
+    limits = block_res.get("limits", {})
+    requests = block_res.get("requests", {})
+    if limits.get("cpu"):
+        set_values[f"{value_prefix}resources.limits.cpu"] = limits["cpu"]
+    if limits.get("memory"):
+        set_values[f"{value_prefix}resources.limits.memory"] = limits["memory"]
+    if requests.get("cpu"):
+        set_values[f"{value_prefix}resources.requests.cpu"] = requests["cpu"]
+    if requests.get("memory"):
+        set_values[f"{value_prefix}resources.requests.memory"] = requests["memory"]
+
+    return set_values, set_files
+
+
+async def _run_k8s_deploy(
+    slug: str,
+    state,
+    secrets: dict,
+    resources: dict,
+    kubeconfig_content: str,
+    namespace: str,
+    selected_channels: list[str] | None = None,
+) -> None:
     """Background task: deploy all 14 charts via helm upgrade --install in phase order."""
     import tempfile
     from dev_kit.agent.deployer.helm import DEPLOY_PHASES, build_helm_command, run_helm_command
@@ -3225,7 +3317,7 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
                 if svc_name in infra_services:
                     chart_path = str(_helm_base / "infra" / chart_dir)
                 else:
-                    chart_path = str(_helm_base / "dpg" / chart_dir)
+                    chart_path = _dpg_chart_path(_helm_base, svc_name)
 
                 release_name = chart_dir
                 set_values: dict[str, str] = {}
@@ -3247,71 +3339,11 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
                     elif svc_name == "grafana" and secrets.get("grafana_admin_password"):
                         set_values["adminPassword"] = secrets["grafana_admin_password"]
                 else:
-                    # DPG charts need config injection
-                    dpg_file = DPG_DIR / f"{svc_name}.yaml"
-                    domain_file = CONFIGS_DIR / slug / f"{svc_name}.yaml"
-                    if dpg_file.exists():
-                        set_files["dpgConfig"] = str(dpg_file)
-                    if domain_file.exists():
-                        set_files["domainConfig"] = str(domain_file)
-                    if secrets.get("anthropic_api_key"):
-                        set_values["anthropicApiKey"] = secrets["anthropic_api_key"]
-                    if secrets.get("openai_api_key"):
-                        set_values["openaiApiKey"] = secrets["openai_api_key"]
-
-                    # Inject infra secrets into DPG blocks that connect to them
-                    if svc_name == "memory_layer":
-                        if secrets.get("memgraph_password"):
-                            set_values["memgraph.password"] = secrets["memgraph_password"]
-                        if secrets.get("redis_password"):
-                            set_values["redis.url"] = f"redis://:{secrets['redis_password']}@redis:6379/0"
-
-                    # Inject domain-specific tool API keys as extraSecrets for action-gateway
-                    if svc_name == "action_gateway":
-                        for env_var, secret_value in secrets.get("tool_secrets", {}).items():
-                            if secret_value:
-                                set_values[f"extraSecrets.{env_var}"] = secret_value
-
-                    # Inject Azure creds and upload chain auth into knowledge-engine
-                    if svc_name == "knowledge_engine":
-                        if secrets.get("azure_storage_account"):
-                            set_values["azure.storageAccount"] = secrets["azure_storage_account"]
-                        if secrets.get("azure_storage_key"):
-                            set_values["azure.storageKey"] = secrets["azure_storage_key"]
-                        if secrets.get("azure_container_name"):
-                            set_values["azure.containerName"] = secrets["azure_container_name"]
-                        if secrets.get("reach_to_ke_api_key"):
-                            set_values["uploadAuth.reachToKeApiKey"] = secrets["reach_to_ke_api_key"]
-                        if secrets.get("ke_to_devkit_api_key"):
-                            set_values["uploadAuth.keToDevkitApiKey"] = secrets["ke_to_devkit_api_key"]
-                        if secrets.get("ke_devkit_callback_url"):
-                            set_values["uploadAuth.devkitCallbackUrl"] = secrets["ke_devkit_callback_url"]
-
-                    # Inject upload chain auth into reach-layer and expose as NodePort
-                    # so the local dev-kit can reach it directly from outside the cluster.
-                    if svc_name == "reach_layer":
-                        if secrets.get("devkit_to_reach_api_key"):
-                            set_values["uploadAuth.devkitToReachApiKey"] = secrets["devkit_to_reach_api_key"]
-                        if secrets.get("reach_to_ke_api_key"):
-                            set_values["uploadAuth.reachToKeApiKey"] = secrets["reach_to_ke_api_key"]
-                        if secrets.get("ke_internal_url"):
-                            set_values["uploadAuth.keInternalUrl"] = secrets["ke_internal_url"]
-                        # Expose reach-layer as NodePort so local dev-kit can call it for uploads.
-                        # Fixed port 30805 avoids conflicts and is predictable for the ingest proxy.
-                        set_values["service.type"] = "NodePort"
-                        set_values["service.nodePort"] = "30805"
-
-                    block_res = resources.get(svc_name, {})
-                    limits = block_res.get("limits", {})
-                    requests = block_res.get("requests", {})
-                    if limits.get("cpu"):
-                        set_values["resources.limits.cpu"] = limits["cpu"]
-                    if limits.get("memory"):
-                        set_values["resources.limits.memory"] = limits["memory"]
-                    if requests.get("cpu"):
-                        set_values["resources.requests.cpu"] = requests["cpu"]
-                    if requests.get("memory"):
-                        set_values["resources.requests.memory"] = requests["memory"]
+                    set_values, set_files = _dpg_helm_values(
+                        svc_name, slug, secrets, resources,
+                        selected_channels=selected_channels,
+                        expose_reach_node_port=True,
+                    )
 
                 cmd = build_helm_command(
                     chart_path=chart_path,
