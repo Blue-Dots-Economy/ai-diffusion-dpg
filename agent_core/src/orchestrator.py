@@ -112,6 +112,8 @@ _CARRYOVER_CLOCK_SKEW_MS = 5000
 # human_request speaks the already line instead of escalating again
 # (identity/handoff spec §5.2). An older pending marker allows a new escalate.
 _HANDOFF_PENDING_WINDOW_MS = 30_000
+# Shared `operation` value for every handoff log record.
+_OP_HANDOFF = "orchestrator.handoff"
 
 # Module-level guard to prevent double-instrumentation in test environments.
 _HTTPX_INSTRUMENTED = False
@@ -3291,9 +3293,76 @@ class AgentCore(AgentCoreBase):
         )
         return already, payload, step
 
+    def _register_bg_task(self, task: "asyncio.Task", name: str, session_id: str) -> None:
+        """Hold a background task and log its outcome when it finishes.
+
+        ``add_done_callback(self._bg_tasks.discard)`` on its own never retrieves
+        the exception, so a failure surfaces only as asyncio's "Task exception
+        was never retrieved" at garbage-collection time — with no operation,
+        session or error attached, and nothing tying it to the turn.
+
+        Args:
+            task: The task to hold.
+            name: Short operation name for the log record.
+            session_id: Session the task belongs to.
+        """
+        self._bg_tasks.add(task)
+
+        def _done(t: "asyncio.Task") -> None:
+            self._bg_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.error(
+                    "orchestrator.bg_task_failed",
+                    extra={"operation": f"orchestrator.{name}", "status": "failure",
+                           "session_id": session_id, "error": f"{type(exc).__name__}: {exc}"},
+                )
+
+        task.add_done_callback(_done)
+
+    @staticmethod
+    def _handoff_record_unheard(session_id: str, user_id: str, task: "asyncio.Task") -> None:
+        """Log that a handoff completed for a turn the caller never heard.
+
+        The session's ``delivered`` state is still correct — the handoff really
+        did reach the team — so it is deliberately not rewritten here. What was
+        missing is any record that the caller never heard the confirmation
+        line, which is the part a later ``already`` reply silently assumes.
+
+        Deliberately log-only: this runs from a cancelled turn's done-callback,
+        where issuing another write would repeat the late-write problem it
+        exists to surface.
+
+        Args:
+            session_id: Session the handoff belonged to.
+            user_id: Caller id, for correlation.
+            task: The completed escalate task.
+        """
+        if task.cancelled() or task.exception() is not None:
+            return          # failure already logged by _register_bg_task
+        logger.warning(
+            "orchestrator.handoff_line_unheard",
+            extra={"operation": _OP_HANDOFF, "status": "skipped",
+                   "session_id": session_id, "user_id": user_id,
+                   "reason": "turn_cancelled_before_delivery"},
+        )
+
     @staticmethod
     def _handoff_already(bundle) -> bool:
-        """True when this call already has a delivered handoff, or one still pending (< 30 s old)."""
+        """True when this call already has a delivered handoff, or one still pending (< 30 s old).
+
+        The pending age is clamped the same way carryover ages are: a marker up
+        to ``_CARRYOVER_CLOCK_SKEW_MS`` in the future counts as age 0, and
+        anything beyond that is malformed. Without the clamp a future
+        ``handoff_pending_at`` (clock skew, or seconds written where ms were
+        meant) makes the raw difference negative, negative is always below the
+        window, and the call is stuck "pending" forever — the caller could
+        never be handed off again. A malformed marker therefore allows a fresh
+        escalate: a duplicate handoff is recoverable, a permanently blocked one
+        is not. A genuinely ``delivered`` handoff still blocks duplicates above.
+        """
         status = bundle.session.get("handoff_status")
         if status == "delivered":
             return True
@@ -3303,7 +3372,17 @@ class AgentCore(AgentCoreBase):
             pending_at = int(float(bundle.session.get("handoff_pending_at") or 0))
         except (TypeError, ValueError):
             return False
-        return int(time.time() * 1000) - pending_at < _HANDOFF_PENDING_WINDOW_MS
+        age_ms = int(time.time() * 1000) - pending_at
+        if -_CARRYOVER_CLOCK_SKEW_MS <= age_ms < 0:
+            age_ms = 0
+        if age_ms < 0:
+            logger.warning(
+                "orchestrator.handoff_pending_marker_discarded",
+                extra={"operation": _OP_HANDOFF, "status": "skipped",
+                       "reason": "malformed_pending_at"},
+            )
+            return False
+        return age_ms < _HANDOFF_PENDING_WINDOW_MS
 
     @staticmethod
     def _handoff_pending_writes(bundle) -> dict:
@@ -3352,7 +3431,7 @@ class AgentCore(AgentCoreBase):
     def _handoff_escalate_failed(session_id: str, exc: Exception) -> None:
         """Log an escalate exception by type only (the message could carry the payload or URL)."""
         logger.warning("orchestrator.handoff_escalate_failed", extra={
-            "operation": "orchestrator.handoff", "status": "failure",
+            "operation": _OP_HANDOFF, "status": "failure",
             "session_id": session_id, "error": type(exc).__name__,
         })
 
@@ -3369,7 +3448,7 @@ class AgentCore(AgentCoreBase):
             "outcome": outcome, "reason": reason, "latency_ms": latency_ms,
         }
         logger.info("orchestrator.handoff", extra={
-            "operation": "orchestrator.handoff",
+            "operation": _OP_HANDOFF,
             "status": "failure" if outcome == "failed" else "success",
             "session_id": session_id, **fields,
         })
@@ -3382,7 +3461,7 @@ class AgentCore(AgentCoreBase):
             await self._async_learning.emit_signal("handoff", data)
         except Exception as exc:  # noqa: BLE001
             logger.warning("orchestrator.handoff_signal_failed", extra={
-                "operation": "orchestrator.handoff", "status": "skipped",
+                "operation": _OP_HANDOFF, "status": "skipped",
                 "session_id": data.get("session_id"), "error": type(exc).__name__})
 
     def _handoff_will_escalate(self, bundle) -> bool:
@@ -3413,9 +3492,17 @@ class AgentCore(AgentCoreBase):
                                for k, v in pending.items()), return_exceptions=True)
         task = asyncio.ensure_future(self._handoff_escalate_async(
             session_id, user_id, bundle, turn_input, lines, payload, step, turn_id=turn_id, caller=caller))
-        self._bg_tasks.add(task)
-        task.add_done_callback(self._bg_tasks.discard)
-        return await asyncio.shield(task)
+        self._register_bg_task(task, "handoff_escalate", session_id)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # The turn was cancelled but the shielded escalate keeps running and
+            # still records its result, so the session can end up marked
+            # "delivered" for a line the caller never heard. Record that, so the
+            # gap is visible rather than silent.
+            task.add_done_callback(
+                lambda t: self._handoff_record_unheard(session_id, user_id, t))
+            raise
 
     async def _handoff_escalate_async(self, session_id: str, user_id: str, bundle, turn_input, lines: dict,
                                       payload: dict, step: str, *, turn_id: str, caller: str) -> str:
@@ -3444,8 +3531,7 @@ class AgentCore(AgentCoreBase):
         data = self._handoff_signal(session_id, turn_id, outcome, result, latency_ms)
         if self._async_learning:
             task = asyncio.create_task(self._emit_handoff_signal(data))
-            self._bg_tasks.add(task)
-            task.add_done_callback(self._bg_tasks.discard)
+            self._register_bg_task(task, "handoff_signal", session_id)
         return line
 
     def _handle_human_request_sync(self, session_id: str, user_id: str, bundle, turn_input,
@@ -3478,7 +3564,7 @@ class AgentCore(AgentCoreBase):
             self._learning.emit_signal("handoff", data)
         except Exception as exc:  # noqa: BLE001
             logger.warning("orchestrator.handoff_signal_failed", extra={
-                "operation": "orchestrator.handoff", "status": "skipped",
+                "operation": _OP_HANDOFF, "status": "skipped",
                 "session_id": session_id, "error": type(exc).__name__})
         return line
 
