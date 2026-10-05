@@ -1,0 +1,46 @@
+# Reach Layer bridge channel: OpenAI chat-completions front end backed by Agent
+# Core, so an external voice platform can use it as its LLM base_url.
+# Config comes from the parent's global.dpgConfig / global.domainConfig, and
+# channels.bridge.enabled must be true in it.
+# Template behaviour and every supported key: automation/helm/dpg-common/templates/_deployment.tpl
+nameSuffix: bridge              # resources are named reach-layer-bridge
+replicaCount: 1
+
+image:
+  repository: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-bridge
+  tag: "sha-646216d"
+  pullPolicy: IfNotPresent
+
+# The bridge has no authentication by design: keep it ClusterIP, never expose
+# it outside the cluster.
+service:
+  port: 8008
+  type: ClusterIP
+
+# bridge reads CONFIG_FOLDER/domain.yaml, but looks for dpg.yaml only in
+# /app/reach_layer/config/ (next to its code, WORKDIR /app/reach_layer/bridge),
+# so dpg.yaml is mounted there.
+configFile: domain.yaml
+config:
+  dpgMountPath: /app/reach_layer/config/dpg.yaml
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+healthCheck:
+  readiness:
+    initialDelaySeconds: 15
+    periodSeconds: 10
+  liveness:
+    initialDelaySeconds: 90
+    periodSeconds: 20
+
+logLevel: INFO
+
+env:
+  - {name: LOG_LEVEL, key: logLevel}

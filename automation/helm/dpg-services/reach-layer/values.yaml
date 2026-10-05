@@ -1,0 +1,33 @@
+# DPG Reach Layer: one release ("reach-layer") with a sub-chart per channel.
+# All channels share one unified Reach config, injected at deploy time:
+#   --set-file global.dpgConfig=dev-kit/dpg/reach_layer.yaml
+#   --set-file global.domainConfig=dev-kit/configs/<domain>/reach_layer.yaml
+# Each channel also needs `channels.<channel>.enabled: true` in that config,
+# otherwise the service refuses to start.
+#
+# Per-channel settings live under the channel's key and override
+# charts/<channel>/values.yaml, e.g. --set web.service.type=NodePort.
+
+global:
+  dpgConfig: ""
+  domainConfig: ""
+
+# Web chat channel (port 8005). Resources keep the plain release name
+# "reach-layer", so its Service and DNS name stay reach-layer.
+web:
+  enabled: true
+
+# MCP server for MCP hosts (port 8007). Not externally exposed.
+mcp:
+  enabled: false
+
+# Vobiz telephony voice channel (port 8006). Needs Vobiz/Raya credentials and
+# a public HTTPS URL (PUBLIC_URL) that reaches the service; see
+# charts/voice/values.yaml.
+voice:
+  enabled: false
+
+# OpenAI chat-completions bridge (port 8008). Has no authentication by design:
+# keep it ClusterIP and never expose it outside the cluster.
+bridge:
+  enabled: false
