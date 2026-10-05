@@ -65,7 +65,12 @@ def test_create_transport_returns_fastapi_websocket_transport(config):
     mock_ws = MagicMock()
     mock_transport = MagicMock()
 
-    with patch("src.operators.vobiz_operator.VobizFrameSerializer"), \
+    # create_transport builds LoggingVobizFrameSerializer (a real subclass of
+    # pipecat's VobizFrameSerializer), so THAT is what has to be patched.
+    # Patching only the parent leaves a MagicMock InputParams flowing into the
+    # real constructor, which validates `encoding` and rejects it.
+    with patch("src.operators.vobiz_operator.LoggingVobizFrameSerializer"), \
+         patch("src.operators.vobiz_operator.VobizFrameSerializer"), \
          patch("src.operators.vobiz_operator.FastAPIWebsocketParams"), \
          patch("src.operators.vobiz_operator.FastAPIWebsocketTransport", return_value=mock_transport):
         op = VobizOperator(config)
@@ -97,6 +102,7 @@ def test_webhook_response_xml_embeds_sample_rate(config):
     assert "rate=8000" in xml
 
 
+import asyncio
 import logging
 from pipecat.frames.frames import EndFrame, CancelFrame
 from src.operators.vobiz_operator import LoggingVobizFrameSerializer
@@ -147,12 +153,30 @@ def _patch_aiohttp(response: _FakeResponse):
     return patch("aiohttp.ClientSession", return_value=fake), fake
 
 
+async def _serialize_and_settle(serializer, frame):
+    """``serialize()``, then wait for the REST hangup pipecat now runs detached.
+
+    pipecat-vobiz 0.0.3 defaults ``hangup_method`` to ``"both"``: it returns the
+    WebSocket stop message immediately and fires the REST ``DELETE`` via
+    ``asyncio.create_task``. Awaiting ``serialize()`` therefore no longer implies
+    the hangup has happened, so asserting right after it saw zero DELETEs and no
+    log record. Waiting on the pending tasks is generic on purpose — it does not
+    reach into the library's private ``_rest_hangup_task``.
+    """
+    result = await serializer.serialize(frame)
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if pending:
+        _, still_pending = await asyncio.wait(pending, timeout=5)
+        assert not still_pending, f"hangup task did not finish: {still_pending}"
+    return result
+
+
 @pytest.mark.asyncio
 async def test_logging_serializer_success_outcome(caplog):
     serializer = _make_serializer()
     cm, fake = _patch_aiohttp(_FakeResponse(204))
     with cm, caplog.at_level(logging.INFO, logger="src.operators.vobiz_operator"):
-        await serializer.serialize(EndFrame())
+        await _serialize_and_settle(serializer, EndFrame())
     assert len(fake.delete_calls) == 1
     call = fake.delete_calls[0]
     assert call["url"] == "https://api.vobiz.ai/api/v1/Account/aid/Call/call-456/"
@@ -168,7 +192,7 @@ async def test_logging_serializer_already_terminated_404(caplog):
     serializer = _make_serializer()
     cm, fake = _patch_aiohttp(_FakeResponse(404))
     with cm, caplog.at_level(logging.INFO, logger="src.operators.vobiz_operator"):
-        await serializer.serialize(EndFrame())
+        await _serialize_and_settle(serializer, EndFrame())
     rec = next(r for r in caplog.records if r.message == "vobiz_serializer.hangup")
     assert rec.outcome == "already_terminated"
     assert rec.status == "success"
@@ -178,7 +202,7 @@ async def test_logging_serializer_already_terminated_404(caplog):
 async def test_logging_serializer_missing_call_id(caplog):
     serializer = _make_serializer(call_id=None)
     with caplog.at_level(logging.INFO, logger="src.operators.vobiz_operator"):
-        await serializer.serialize(EndFrame())
+        await _serialize_and_settle(serializer, EndFrame())
     rec = next(r for r in caplog.records if r.message == "vobiz_serializer.hangup")
     assert rec.outcome == "skipped_missing_credentials"
     assert rec.status == "failure"
@@ -189,7 +213,7 @@ async def test_logging_serializer_cancel_frame_triggers_hangup():
     serializer = _make_serializer()
     cm, fake = _patch_aiohttp(_FakeResponse(204))
     with cm:
-        await serializer.serialize(CancelFrame())
+        await _serialize_and_settle(serializer, CancelFrame())
     assert len(fake.delete_calls) == 1
 
 
@@ -198,8 +222,8 @@ async def test_logging_serializer_idempotent_on_double_end_frame():
     serializer = _make_serializer()
     cm, fake = _patch_aiohttp(_FakeResponse(204))
     with cm:
-        await serializer.serialize(EndFrame())
-        await serializer.serialize(EndFrame())
+        await _serialize_and_settle(serializer, EndFrame())
+        await _serialize_and_settle(serializer, EndFrame())
     assert len(fake.delete_calls) == 1
 
 
@@ -208,7 +232,7 @@ async def test_logging_serializer_5xx_outcome_failure(caplog):
     serializer = _make_serializer()
     cm, fake = _patch_aiohttp(_FakeResponse(500, text="boom"))
     with cm, caplog.at_level(logging.INFO, logger="src.operators.vobiz_operator"):
-        await serializer.serialize(EndFrame())
+        await _serialize_and_settle(serializer, EndFrame())
     rec = next(r for r in caplog.records if r.message == "vobiz_serializer.hangup")
     assert rec.outcome == "failure"
     assert rec.status == "failure"

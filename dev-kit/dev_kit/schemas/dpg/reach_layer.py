@@ -239,6 +239,37 @@ class McpDpg(BaseModel):
     callers: list[CallerDpg] = Field(default_factory=list)
 
 
+class BridgeServerDpg(BaseModel):
+    """Uvicorn bind configuration for the Bridge channel service."""
+
+    model_config = ConfigDict(extra="forbid")
+    host: str = "0.0.0.0"
+    port: int = Field(default=8008, gt=0, lt=65536)
+
+
+class BridgeDpg(BaseModel):
+    """Defaults for the Bridge (OpenAI chat-completions) channel adapter.
+
+    Mirrors runtime ``reach_layer/base/schema/config.py:BridgeChannelConfig``.
+    The client owns turn-taking, so ``assembly_mode`` defaults to ``direct``.
+    ``terminal_word`` is per-domain and is only a placeholder at framework level.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
+    assembly_mode: AssemblyMode = "direct"
+    server: BridgeServerDpg = Field(default_factory=BridgeServerDpg)
+    agent_core_url: str = "http://agent_core:8000"  # NOSONAR S5332: in-cluster hostname, plain http is intended
+    terminal_word: str = ""
+    # Both are per-domain in practice and only placeholders at framework level.
+    # ``hangup_tool_name``: the client-offered tool called on session end so the
+    # client hangs up; empty disables it. ``tool_status_phrases``: tool name ->
+    # line spoken while that tool runs. Mirrors the runtime BridgeChannelConfig.
+    hangup_tool_name: str = ""
+    tool_status_phrases: dict[str, str] = Field(default_factory=dict)
+    timeout_s: float = Field(default=60.0, gt=0)
+
+
 class ChannelsDpg(BaseModel):
     """Container for all Reach Layer channel adapter defaults."""
 
@@ -247,6 +278,10 @@ class ChannelsDpg(BaseModel):
     web: WebDpg
     voice: VoiceDpg
     mcp: McpDpg
+    # Optional, unlike its siblings: the runtime's ChannelsConfig makes every
+    # channel optional so a deployment can omit any it does not run, and a
+    # framework YAML predating the bridge channel must still validate.
+    bridge: Optional[BridgeDpg] = None
 
 
 class ReachLayerInner(BaseModel):

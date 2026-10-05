@@ -121,7 +121,11 @@ async def test_websocket_passes_caller_id_from_stored_form():
         with client.websocket_connect("/ws/call-xyz"):
             pass
 
-    assert captured.get("caller_id") == "+911111111111"
+    # /answer normalises E.164 to the bare 10-digit local number (server.py strips
+    # the leading "+" and the "91" country code), because upstreams such as
+    # Blue Dots' fetch_profile expect the local form. This assertion previously
+    # expected the raw "+911111111111", which predates that change.
+    assert captured.get("caller_id") == "1111111111"
     assert captured.get("call_sid") == "call-xyz"
 
 

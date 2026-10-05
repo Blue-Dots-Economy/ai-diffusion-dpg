@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from aioresponses import aioresponses
+from tests._fake_http import fake_http
 
 from src.recordings.sources.vobiz_source import VobizRecordingSource
 
@@ -55,7 +55,7 @@ def _src(
 async def test_begin_accepts_minimal_response(registry):
     """The production Vobiz response has only api_id+message; begin() must accept it."""
     src = _src(registry)
-    with aioresponses() as m:
+    with fake_http() as m:
         m.post(
             "https://api.vobiz.ai/api/v1/Account/A/Call/CALL1/Record/",
             status=202, payload=_start_payload_minimal(),
@@ -69,7 +69,7 @@ async def test_end_finds_url_via_recording_list(registry):
     """When the webhook never fires, end() discovers the URL by polling /Recording/."""
     src = _src(registry, webhook_timeout=10.0, poll_max=5.0)
     list_url = "https://media.vobiz.ai/v1/Account/A/Recording/rec-1.mp3"
-    with aioresponses() as m:
+    with fake_http() as m:
         m.post(
             "https://api.vobiz.ai/api/v1/Account/A/Call/CALL1/Record/",
             status=202, payload=_start_payload_minimal(),
@@ -90,7 +90,7 @@ async def test_end_finds_url_via_recording_list(registry):
 async def test_end_prefers_webhook_when_it_arrives_first(registry):
     """Webhook is a fast-path: if it fires before the list poll succeeds, use it."""
     src = _src(registry, webhook_timeout=5.0, poll_interval=10.0, poll_max=10.0)
-    with aioresponses() as m:
+    with fake_http() as m:
         m.post(
             "https://api.vobiz.ai/api/v1/Account/A/Call/CALL1/Record/",
             status=202, payload=_start_payload_minimal(),
@@ -118,7 +118,7 @@ async def test_end_skips_list_entries_for_other_calls(registry):
              "recording_url": target_url},
         ],
     }
-    with aioresponses() as m:
+    with fake_http() as m:
         m.post(
             "https://api.vobiz.ai/api/v1/Account/A/Call/CALL1/Record/",
             status=202, payload=_start_payload_minimal(),
@@ -138,7 +138,7 @@ async def test_end_skips_list_entries_for_other_calls(registry):
 async def test_end_raises_when_no_url_discoverable(registry):
     """If list never shows our call and webhook never fires, raise with clear log."""
     src = _src(registry, webhook_timeout=0.2, poll_interval=0.05, poll_max=0.2)
-    with aioresponses() as m:
+    with fake_http() as m:
         m.post(
             "https://api.vobiz.ai/api/v1/Account/A/Call/CALL1/Record/",
             status=202, payload=_start_payload_minimal(),
@@ -166,7 +166,7 @@ async def test_end_raises_when_begin_not_called(registry):
 async def test_begin_raises_on_bad_status(registry):
     """Non-2xx responses on Record/ start must raise."""
     src = _src(registry)
-    with aioresponses() as m:
+    with fake_http() as m:
         m.post(
             "https://api.vobiz.ai/api/v1/Account/A/Call/CALL1/Record/",
             status=500, payload={},

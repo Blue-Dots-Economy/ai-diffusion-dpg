@@ -109,10 +109,20 @@ def test_rejects_unknown_key_on_endpoint():
 
 def test_rejects_unknown_key_on_param():
     tool = _valid_rest_tool()
-    tool["endpoints"][0]["params"][0]["default"] = "foo"  # removed field
+    # Must be a key ParamDefinition does NOT declare. This previously planted
+    # "default" as a "removed field", but `default` was re-added to the model
+    # (#284), so it validates and nothing raised. extra="forbid" itself is intact.
+    tool["endpoints"][0]["params"][0]["not_a_param_field"] = "foo"
     with pytest.raises(ValidationError) as exc:
         MergedConfig.validate_full({"tools": [tool]})
-    assert "default" in str(exc.value)
+    assert "not_a_param_field" in str(exc.value)
+
+
+def test_accepts_default_on_param():
+    """`default` is a declared ParamDefinition field and must validate."""
+    tool = _valid_rest_tool()
+    tool["endpoints"][0]["params"][0]["default"] = "foo"
+    MergedConfig.validate_full({"tools": [tool]})  # must not raise
 
 
 def test_rejects_unknown_key_on_response():

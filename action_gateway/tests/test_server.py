@@ -5,7 +5,7 @@ GET /tools, POST /execute, and GET /health.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -364,13 +364,22 @@ class TestMockProfileAndApply:
         registry = AdapterRegistry()
         return TestClient(create_app(registry))
 
-    def test_get_profile_returns_deterministic_payload(self):
+    # mock_get_profile is RANDOM by design (server.py): it returns the full
+    # profile when ``random.random() > 0.67`` (~33% of calls) and an empty
+    # ``{"user_id": ...}`` otherwise, so a demo exercises both the returning-user
+    # and onboarding paths. The tests below pin ``random.random`` to select each
+    # branch. The previous single test asserted the full profile with no pinning,
+    # so it passed only ~1 run in 3 — and its "same caller, identical payload"
+    # premise stopped holding when the mock became random.
+
+    def test_get_profile_returns_full_profile_for_returning_user(self):
         client = self._client()
-        r1 = client.get("/mock/profile/+919876543210")
-        r2 = client.get("/mock/profile/+919876543210")
+        with patch("random.random", return_value=0.9):
+            r1 = client.get("/mock/profile/+919876543210")
+            r2 = client.get("/mock/profile/+919876543210")
         assert r1.status_code == 200
         assert r2.status_code == 200
-        # Deterministic: same caller → identical payload across calls.
+        # With the branch pinned, the same caller gets an identical payload.
         assert r1.json() == r2.json()
 
         body = r1.json()
@@ -379,6 +388,14 @@ class TestMockProfileAndApply:
         assert body["trade"] == "electrician"
         assert body["location"] == "Hubli"
         assert isinstance(body["languages"], list)
+
+    def test_get_profile_returns_empty_object_for_new_user(self):
+        client = self._client()
+        with patch("random.random", return_value=0.1):
+            response = client.get("/mock/profile/+919876543210")
+        assert response.status_code == 200
+        # The documented "new user" shape: just the id, no profile fields.
+        assert response.json() == {"user_id": "+919876543210"}
 
     def test_update_profile_acknowledges_fields(self):
         client = self._client()

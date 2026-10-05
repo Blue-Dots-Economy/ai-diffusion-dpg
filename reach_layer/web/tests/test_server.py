@@ -13,12 +13,15 @@ Covers:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import respx
 import httpx
 from fastapi.testclient import TestClient
 from unittest.mock import MagicMock, patch
 
+import server as server_module
 from server import create_app, _join_sentences
 from src.web_reach import WebReachLayer
 
@@ -76,7 +79,37 @@ def test_health_returns_ok(client):
 # GET / — serves HTML
 # ---------------------------------------------------------------------------
 
-def test_index_returns_html(client):
+@pytest.fixture
+def spa_entrypoint():
+    """Provide ``dist/index.html`` for the duration of a test.
+
+    ``GET /`` serves the Vite build output from ``reach_layer/web/dist``, which
+    is gitignored and produced from ``web-src/`` inside the Docker image. A
+    Python unit test should not need a Node build, and CI does not run one, so
+    without this the test only passed on machines where somebody had built the
+    frontend. The server reads the file per request, so creating it before the
+    request is enough.
+
+    Never touches a real build: if ``index.html`` already exists it is left
+    alone, and anything created here is removed afterwards.
+    """
+    dist = Path(server_module.__file__).parent / "dist"
+    index = dist / "index.html"
+    if index.exists():
+        yield index
+        return
+    created_dist = not dist.exists()
+    dist.mkdir(exist_ok=True)
+    index.write_text("<!doctype html><title>stub</title>")
+    try:
+        yield index
+    finally:
+        index.unlink(missing_ok=True)
+        if created_dist:
+            dist.rmdir()
+
+
+def test_index_returns_html(client, spa_entrypoint):
     response = client.get("/")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]

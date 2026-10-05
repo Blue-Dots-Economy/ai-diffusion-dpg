@@ -806,7 +806,11 @@ class TestRestApiAdapterPathTemplating:
 
         assert result.success is True
         url = mock_client.request.call_args.kwargs["url"]
-        assert url == "http://memory_layer:8002/profile/+919876543210"
+        # _quote_for_path (rest_api.py) deliberately percent-encodes path values
+        # with safe="" — its docstring lists "+" among the escaped characters — so
+        # the E.164 "+" arrives as %2B. The receiving route decodes it back, so
+        # the lookup key is unchanged. This used to assert the raw "+".
+        assert url == "http://memory_layer:8002/profile/%2B919876543210"
 
     @pytest.mark.asyncio
     async def test_empty_user_id_leaves_path_bare(self, rest_profile_config):
