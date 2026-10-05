@@ -31,6 +31,11 @@ class TargetCfg:
     redis_container: str = "redis"
     agent_container: str | None = "agent_core"
     no_idle_handling: bool = False
+    # Pull the published images instead of building them. The target's code
+    # then comes from DPG_IMAGE_TAG, not from the worktree, so the worktree
+    # supplies only config — point `compose` at an image-based file such as
+    # automation/docker/docker-compose.dev.yml.
+    pull_images: bool = False
 
 
 # Remote mode talks to a Signals cluster that is already running and shared with
@@ -206,7 +211,8 @@ def _target(d: dict) -> TargetCfg:
                      compose=d.get("compose") or _DEFAULT_COMPOSE,
                      redis_container=d.get("redis_container") or "redis",
                      agent_container=d.get("agent_container", "agent_core"),
-                     no_idle_handling=bool(d.get("no_idle_handling", False)))
+                     no_idle_handling=bool(d.get("no_idle_handling", False)),
+                     pull_images=bool(d.get("pull_images", False)))
 
 
 def load_config(path: str | Path, overrides: dict | None = None) -> BenchConfig:

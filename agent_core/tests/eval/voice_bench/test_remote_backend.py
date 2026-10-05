@@ -301,3 +301,16 @@ def test_run_salt_is_two_digits_and_moves_between_runs():
     assert run_salt(now=0) == "00"
     assert len(run_salt(now=1_700_000_000)) == 2
     assert run_salt(now=1_700_000_000) != run_salt(now=1_700_000_000 + 600)
+
+
+# ---- pull_images -------------------------------------------------------------------------------------------
+def test_pull_images_defaults_off_so_existing_targets_are_unchanged():
+    from eval.voice_bench.config import _target
+    assert _target({"name": "m", "git_ref": "abc1234"}).pull_images is False
+
+
+def test_pull_images_is_read_from_the_target():
+    from eval.voice_bench.config import _target
+    t = _target({"name": "ghcr", "git_ref": "abc1234",
+                 "compose": "automation/docker/docker-compose.dev.yml", "pull_images": True})
+    assert t.pull_images is True and t.compose.endswith("docker-compose.dev.yml")

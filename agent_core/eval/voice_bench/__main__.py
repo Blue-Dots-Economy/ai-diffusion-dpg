@@ -144,13 +144,19 @@ def _run_target(t, stack, cfg: BenchConfig, store: ResultStore, plan, personas, 
         _merge_meta(store, commit, {"name": t.name, "commit": commit, "unmeasurable": str(e)})
         _say(f"{t.name} unmeasurable: {e}")
         return
-    _merge_meta(store, commit, {"name": t.name, "commit": commit}, drop=("unmeasurable",))
+    # image_tag records what actually ran when the images were pulled rather
+    # than built: the worktree commit alone would misdescribe the code.
+    meta = {"name": t.name, "commit": commit}
+    if getattr(stack, "image_tag", None):
+        meta["image_tag"] = stack.image_tag
+    _merge_meta(store, commit, meta, drop=("unmeasurable",))
     deps = DriveDeps(bridge=BridgeClient(url, cfg.status_phrases, cfg.terminal_words), tap=tap,
                      redis_container=t.redis_container, scraper=LogScraper(t.agent_container), caller=caller,
                      judge_llm=judge_llm, cleanup=backend.cleanup)
     drive_meta = dict(target=t.name, target_commit=commit, suite_version=SUITE_VERSION, seed_version=seed_version,
                       caller_model=cfg.caller.model, judge_model=cfg.judge.model,
-                      backend_mode=cfg.backend.mode, phone_salt=phone_salt)
+                      backend_mode=cfg.backend.mode, phone_salt=phone_salt,
+                      image_tag=getattr(stack, "image_tag", None))
     for pid, runs in plan:
         persona = personas[pid]
         for run in range(runs):
