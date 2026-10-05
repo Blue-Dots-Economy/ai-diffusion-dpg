@@ -5,10 +5,11 @@
 replicaCount: 1
 
 image:
-  # Published by .github/workflows/build-images.yaml; same default tag as
-  # automation/docker/docker-compose.dev.yml (DPG_IMAGE_TAG).
+  # Published by .github/workflows/build-images.yaml. sha-28f0517 is main at
+  # #385, the build these charts were verified with; earlier images reject
+  # the current dev-kit configs.
   repository: ghcr.io/blue-dots-economy/ai-diffusion-dpg/action-gateway
-  tag: "sha-646216d"
+  tag: "sha-28f0517"
   pullPolicy: IfNotPresent
 
 service:

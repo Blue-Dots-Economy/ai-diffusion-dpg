@@ -7,7 +7,7 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-voice
-  tag: "sha-646216d"
+  tag: "sha-28f0517"
   pullPolicy: IfNotPresent
 
 # Vobiz must reach /answer and /ws/{call_sid} through publicUrl, so production

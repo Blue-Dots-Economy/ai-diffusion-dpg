@@ -8,7 +8,7 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-bridge
-  tag: "sha-646216d"
+  tag: "sha-28f0517"
   pullPolicy: IfNotPresent
 
 # The bridge has no authentication by design: keep it ClusterIP, never expose
