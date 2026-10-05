@@ -259,7 +259,7 @@ class BridgeDpg(BaseModel):
     enabled: bool = True
     assembly_mode: AssemblyMode = "direct"
     server: BridgeServerDpg = Field(default_factory=BridgeServerDpg)
-    agent_core_url: str = "http://agent_core:8000"
+    agent_core_url: str = "http://agent_core:8000"  # NOSONAR S5332: in-cluster hostname, plain http is intended
     terminal_word: str = ""
     # Both are per-domain in practice and only placeholders at framework level.
     # ``hangup_tool_name``: the client-offered tool called on session end so the
