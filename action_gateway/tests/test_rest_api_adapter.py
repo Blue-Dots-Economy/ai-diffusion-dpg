@@ -12,7 +12,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from src.adapters.rest_api import RestApiAdapter
+from src.adapters.rest_api import RestApiAdapter, _render_body_template
 from src.models import ToolDefinition, ToolResult
 
 
@@ -1497,3 +1497,30 @@ class TestRestApiAdapterSessionSourcedParams:
         schema = adapter.get_tool_definitions()[0].input_schema
         assert "name" in schema["properties"]
         assert "age" not in schema["properties"]
+
+
+# --- array-typed upstream fields written as ["{placeholder}"] ---------------
+
+def test_array_placeholder_renders_as_a_single_element_list():
+    out = _render_body_template({"natureOfJobsInterestedIn": ["{job_nature}"]},
+                                {"job_nature": "Full-time"})
+    assert out == {"natureOfJobsInterestedIn": ["Full-time"]}
+
+
+def test_array_placeholder_is_omitted_when_the_value_is_absent():
+    """Not [] — an empty array writes 'answered with nothing' for a question never asked."""
+    assert _render_body_template({"natureOfJobsInterestedIn": ["{job_nature}"]}, {}) == {}
+    assert _render_body_template({"otherHelpNeeded": ["{help_needed}"]},
+                                 {"help_needed": ""}) == {}
+
+
+def test_a_populated_sibling_still_survives_an_omitted_array():
+    out = _render_body_template(
+        {"name": "{name}", "natureOfJobsInterestedIn": ["{job_nature}"]},
+        {"name": "Ajay"})
+    assert out == {"name": "Ajay"}
+
+
+def test_non_empty_literal_lists_are_untouched():
+    out = _render_body_template({"compliance": ["user_terms", "user_privacy"]}, {})
+    assert out == {"compliance": ["user_terms", "user_privacy"]}

@@ -366,6 +366,22 @@ class InvocationRules(BaseModel):
     context are the case that needs it — a fabricated one is well-formed, so
     only checking it against what upstreams actually returned catches it.
     """
+    session_only_params: dict[str, list[str]] = Field(default_factory=dict)
+    """Params the model may not supply itself: param -> session keys to read.
+
+    ``grounded_params`` checks a value against earlier tool results, which suits
+    identifiers. This covers the other case: optional fields the framework
+    collects from the user. The model sees them in the tool schema and will fill
+    plausible-looking values for a user who never gave one — measured on a live
+    call, a write went out carrying three optional fields the user never
+    mentioned and which were empty in session.
+
+    Each listed param is REPLACED by the first non-empty session value among its
+    keys, and DROPPED when none has one. The model's own value is never used, so
+    invention is structurally impossible rather than merely discouraged. Use it
+    for optional fields only: dropping a required param guarantees an upstream
+    rejection.
+    """
     on_empty: str = ""
     on_failure: str = ""
     bridge_line: str = ""

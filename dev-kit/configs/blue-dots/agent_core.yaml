@@ -514,6 +514,30 @@ connectors:
           # the wrong tool's.
           profile_item_id: [fetch_profile, save_profile]
         required_before_calling: [name, phone]
+        # must_not_substitute states this for the model to read; this enforces
+        # it. The prompt already said "only if the caller volunteered them
+        # unprompted" and was ignored: a seeker who said only their name, trade
+        # and city went out with work_experience="Returning after a break",
+        # experience_years="1 Year" and job_nature="Full-time" — none uttered,
+        # all three empty in session, slot_provenance listing only
+        # [consent_response, name, age, trade, location].
+        #
+        # Each param here is taken from the FIRST non-empty session key listed
+        # and dropped when none has a value, so the model's own value is never
+        # used. `name` is deliberately absent: it is required, and dropping it
+        # would guarantee an upstream rejection.
+        session_only_params:
+          gender:           [gender]
+          age:              [age]
+          work_experience:  [work_experience]
+          experience_years: [experience_years]
+          qualification:    [qualification]
+          job_nature:       [job_nature]
+          help_needed:      [help_needed]
+          # A returning caller's values live under stored_*; their own words
+          # this call win, which is the order profile_resolve writes them in.
+          location:         [location, stored_location]
+          trade:            [trade, stored_trade]
         must_not_substitute: >
           Never invent profile fields. Each must come from the user
           or from the chosen profile's existing state (for update
@@ -691,6 +715,19 @@ preprocessing:
       - { acts: [deny], pending: consent, relation: answers_pending, intent: decline }
       - { acts: [select], pending: select_job, intent: job_pick }
       - { acts: [select], pending: submit_confirm, intent: job_pick }
+      # UNREACHABLE as written, kept because routing still names apply_now.
+      # Measured over 108 live NLU turns: `affirm` + `submit_confirm` never
+      # co-occurred once. The confirm turn ("yes, send it") always arrived as
+      # `affirm` + pending=none, because the pick routes the caller into
+      # profile_setup first and the submit_confirm pending is declared on
+      # job_match — so it stops resolving the moment the caller leaves that
+      # phase, even though the question asked there carries the trigger phrase.
+      #
+      # The OUTCOME is already correct: those turns reach apply_confirm through
+      # the catch-all rules and the application is created. Scoping the pending
+      # so this row can fire would change which rule wins on the apply path,
+      # which is the most irreversible step in the call — not worth doing
+      # blind. Fix it with a measured run, or delete the row.
       - { acts: [affirm], pending: submit_confirm, relation: answers_pending, intent: apply_now }
       # "नहीं, कोई दूसरी दिखाइए" refuses this job and asks for another: explore, not a bare decline.
       - { acts: [deny, request_change], pending: submit_confirm, intent: explore_more }
@@ -1205,6 +1242,20 @@ agent_workflow:
     value in the same turn as the answer. If the phase owes a WRITE —
     saving the profile — do the write. Never offer the next step before the
     step you are on has actually happened.
+
+    ## Never state a saved value you were not given (HARD RULE)
+    The mirror of the rule below, and the more damaging direction. If a
+    `stored_*` value is absent or empty in <state>, you do not have it. Do
+    not describe it, do not guess it, and do not name a city, trade or
+    employer as something the caller "has on file".
+
+    Measured on a live call: a first-time caller with NO profile at all —
+    `stored_location` empty, `profile_item_id` empty, fetch_profile having
+    returned nothing — was told "आपकी जानकारी में बेंगलुरु है" ("your
+    information has Bengaluru"). Bengaluru was never said by anyone in that
+    call. The caller then has to argue with a record that does not exist.
+
+    If there is no saved profile, say so plainly and ask for what you need.
 
     ## Never claim you lack something you were given (HARD RULE)
     Before saying you do not know a detail, look at the profile and session
@@ -1901,7 +1952,13 @@ agent_workflow:
       # present, and only when the caller's own turn carried no entities — if
       # they name a trade or city themselves their words win, and the model
       # handles that turn as before (Path B, below).
-      fixed_opening: "मुझे आपकी जानकारी मिली — {stored_location} में {stored_trade}। क्या इन्हीं से नौकरियाँ ढूंढूँ?"
+      # {stored_location} was substituted RAW, so a profile created through
+      # the portal (a geocoded postal address, not a city) was read out in
+      # full: "31, 6th Main, Rajajinagar, Bengaluru, Karnataka 560010". A
+      # fixed line bypasses the "speak a city, not an address" rule, which
+      # only constrains what the MODEL writes. Referring to the saved city
+      # without reciting it keeps the turn short and cannot leak an address.
+      fixed_opening: "मुझे आपकी जानकारी मिली — {stored_trade}। क्या आपके सेव किए गए शहर में ही नौकरियाँ ढूंढूँ?"
       fixed_opening_requires: [stored_trade, stored_location]
       opening_phrase: >
         आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?

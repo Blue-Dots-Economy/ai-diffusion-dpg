@@ -326,8 +326,13 @@ tools:
             workExperienceYearsConditional: "{experience_years}"
             nameOfJobRolesInterestedIn: "{trade}"
             highestQualificationOrSkill: "{qualification}"
-            natureOfJobsInterestedIn: "{job_nature}"
-            otherHelpNeeded: "{help_needed}"
+            # Both are `array of string` upstream. Sent as bare strings they
+            # rejected the WHOLE write with 400 INVALID_ITEM_STATE
+            # "must be array", so one optional field the model chose to fill
+            # lost the entire profile. Verified against UAT: "Full-time" -> 400,
+            # ["Full-time"] -> 201.
+            natureOfJobsInterestedIn: ["{job_nature}"]
+            otherHelpNeeded: ["{help_needed}"]
         # `required: true` here is not documentation — it becomes the
         # `required` list of the JSON Schema handed to the LLM, which the
         # provider's function-calling validation enforces. Anything marked
@@ -438,8 +443,14 @@ tools:
             type: string
             required: false
             description: >
-              otherHelpNeeded. One of: "Training", "Accommodation",
-              "Travel", "Other".
+              otherHelpNeeded. NONE of the earlier values here existed
+              upstream, so every call that used this field was rejected.
+              These seven are the schema's enum, all verified accepted:
+              "Skilling & Vocational Training", "Job Placement Assistance",
+              "Apprenticeship Program", "Career Counseling & Interview Prep",
+              "Financial Aid / Scheme Enrolment",
+              "Other Support (Accommodation / Travel)",
+              "No Other Help Needed".
     response:
       max_size_chars: 4000
       # Lift the new profile's identity into session the moment it exists, so

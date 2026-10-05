@@ -108,3 +108,40 @@ def check_tool_call(
     if hit is not None:
         return GuardVerdict("hit", hit)
     return GuardVerdict("go")
+
+
+def apply_session_only(tc: Any, spec: dict | None, session: dict | None) -> list[str]:
+    """Force ``session_only_params`` to their session value; drop what session lacks.
+
+    The model sees every optional field in the tool schema and will fill
+    plausible values for a caller who never gave one. Checking the model's value
+    is not enough — the fix is to stop using it. Each listed param is replaced by
+    the first non-empty session value among its keys, and removed entirely when
+    none has one, so a field that was never collected cannot be sent.
+
+    Args:
+        tc: The pending ToolCall; ``input_params`` is mutated in place.
+        spec: ``session_only_params`` for this tool (param -> session keys).
+        session: The session dict.
+
+    Returns:
+        Names of params that were dropped, for logging. Empty when nothing changed.
+    """
+    if not spec or not isinstance(getattr(tc, "input_params", None), dict):
+        return []
+    session = session or {}
+    dropped: list[str] = []
+    for param, keys in spec.items():
+        value = ""
+        for key in (keys or [param]):
+            v = session.get(key)
+            if v not in (None, "", []):
+                value = v
+                break
+        if value == "":
+            if param in tc.input_params:
+                tc.input_params.pop(param, None)
+                dropped.append(param)
+        else:
+            tc.input_params[param] = value
+    return dropped

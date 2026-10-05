@@ -72,6 +72,13 @@ class InvocationRulesConfig(BaseModel):
             "Enforces what must_not_substitute describes in prose."
         ),
     )
+    session_only_params: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Params the model may not supply: param -> session keys to read. "
+            "Taken from session or dropped, so a field never collected cannot be sent."
+        ),
+    )
     on_empty: str = Field(
         default="",
         description="What the agent says when the tool returns empty results",

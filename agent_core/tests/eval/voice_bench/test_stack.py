@@ -87,9 +87,16 @@ def test_compose_override_generates_different_secrets(tmp_path):
 
 
 def test_tool_result_secret_redacted_in_compose_failure(tmp_path, monkeypatch):
-    """When docker compose fails, the tool_result_secret is redacted in the error."""
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-key-12345")
-    (tmp_path / "bd.env").write_text("BLUE_DOTS_API_KEY=blue-api-secret-xyz\n")
+    """When docker compose fails, the tool_result_secret is redacted in the error.
+
+    The dummy below is deliberately NOT shaped like a real key. A literal
+    beginning "sk-" tripped gitleaks on every commit that moved this line, and
+    the .gitleaksignore fingerprint is commit:path:rule:LINE — so each shift
+    re-reddened the scan on main for a value that was never a secret. The test
+    only needs a distinctive string to find in the redacted output.
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "DUMMY-REDACTION-PROBE-OPENAI")
+    (tmp_path / "bd.env").write_text("BLUE_DOTS_API_KEY=DUMMY-REDACTION-PROBE-BD\n")
 
     class FailOnComposeRun(FakeRun):
         def __call__(self, argv, **kw):
@@ -102,7 +109,7 @@ def test_tool_result_secret_redacted_in_compose_failure(tmp_path, monkeypatch):
                 (wt / "automation/docker").mkdir(parents=True)
             # Fail compose up with a message containing secrets from env
             if argv[0] == "docker" and "compose" in argv and "up" in argv:
-                self.stderr = "docker error: auth failed with blue-api-secret-xyz and sk-secret-key-12345"
+                self.stderr = "docker error: auth failed with DUMMY-REDACTION-PROBE-BD and DUMMY-REDACTION-PROBE-OPENAI"
                 return SimpleNamespace(returncode=1, stdout="", stderr=self.stderr)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -115,8 +122,8 @@ def test_tool_result_secret_redacted_in_compose_failure(tmp_path, monkeypatch):
     # The error message should redact secrets from OPENAI_API_KEY and env_file
     assert "***" in msg
     # The original secrets should not appear in the error message
-    assert "blue-api-secret-xyz" not in msg
-    assert "sk-secret-key-12345" not in msg
+    assert "DUMMY-REDACTION-PROBE-BD" not in msg
+    assert "DUMMY-REDACTION-PROBE-OPENAI" not in msg
 
 
 def test_patch_applies_cleanly_to_every_milestone_ref():
@@ -167,7 +174,7 @@ def _stack(tmp_path, run, target=None, client=None, **kw):
 
 
 def test_up_creates_worktree_patches_and_composes(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "DUMMY-PROBE-OPENAI")
     run = FakeRun(tmp_path)
     s = _stack(tmp_path, run)
     assert s.up() == "http://127.0.0.1:18008"
@@ -180,7 +187,7 @@ def test_up_creates_worktree_patches_and_composes(tmp_path, monkeypatch):
     assert str(wt / "automation/docker/voice-bench.override.yml") in up
     assert up[-4:] == ["up", "-d", "--build", "reach_layer_bridge"]
     env = run.envs[run.calls.index(up)]
-    assert env["DOMAIN"] == "blue-dots" and env["GIT_SHA"] == "abc1234" and env["OPENAI_API_KEY"] == "sk-secret"
+    assert env["DOMAIN"] == "blue-dots" and env["GIT_SHA"] == "abc1234" and env["OPENAI_API_KEY"] == "DUMMY-PROBE-OPENAI"
     patched = (wt / "dev-kit/configs/blue-dots/action_gateway.yaml").read_text()
     assert 'base_url: "http://host.docker.internal:18742"' in patched
     ov = yaml.safe_load((wt / "automation/docker/voice-bench.override.yml").read_text())
@@ -207,14 +214,14 @@ def test_up_skips_patch_when_ref_has_env_expand(tmp_path):
 
 
 def test_compose_failure_redacts_secrets(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
-    (tmp_path / "bd.env").write_text("BLUE_DOTS_API_KEY=key-12345\nBLUE_DOTS_ORG_ID=org-9\n")
-    run = FakeRun(tmp_path, fail_on="up", stderr="bad line BLUE_DOTS_API_KEY=key-12345 sk-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "DUMMY-PROBE-OPENAI")
+    (tmp_path / "bd.env").write_text("BLUE_DOTS_API_KEY=DUMMY-PROBE-BD\nBLUE_DOTS_ORG_ID=org-9\n")
+    run = FakeRun(tmp_path, fail_on="up", stderr="bad line BLUE_DOTS_API_KEY=DUMMY-PROBE-BD DUMMY-PROBE-OPENAI")
     s = _stack(tmp_path, run)
     with pytest.raises(StackError) as ei:
         s.up()
     msg = str(ei.value)
-    assert "***" in msg and "key-12345" not in msg and "sk-secret" not in msg
+    assert "***" in msg and "DUMMY-PROBE-BD" not in msg and "DUMMY-PROBE-OPENAI" not in msg
     assert any("worktree" in c and "remove" in c for c in run.calls)
 
 
