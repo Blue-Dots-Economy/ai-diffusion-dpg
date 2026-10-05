@@ -2753,28 +2753,10 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
     resources = body.get("resources", {})
     preview: dict[str, str] = {}
 
-    from dev_kit.agent.deployer.dependencies import SERVICE_CHART_MAP, HELM_INFRA_DIR
-
     # Infra charts — pass edited values.yaml and secrets
     for svc_name in ["redis", "memgraph", "otel_collector", "jaeger", "prometheus", "loki", "grafana"]:
-        chart_dir = svc_name.replace("_", "-")
-        chart_path = str(_helm_base / "infra" / chart_dir)
-        set_values: dict[str, str] = {}
-
-        # Use the edited values.yaml from the infra Helm chart
-        infra_chart_dir = SERVICE_CHART_MAP.get(svc_name, chart_dir)
-        infra_values = HELM_INFRA_DIR / infra_chart_dir / "values.yaml"
-        values_files: list[str] = []
-        if infra_values.exists():
-            values_files.append(str(infra_values))
-
-        # Inject secrets into infra services
-        if svc_name == "redis" and secrets.get("redis_password"):
-            set_values["password"] = secrets["redis_password"]
-        elif svc_name == "memgraph" and secrets.get("memgraph_password"):
-            set_values["password"] = secrets["memgraph_password"]
-        elif svc_name == "grafana" and secrets.get("grafana_admin_password"):
-            set_values["adminPassword"] = secrets["grafana_admin_password"]
+        chart_path = str(_helm_base / "infra" / svc_name.replace("_", "-"))
+        set_values, values_files = _infra_helm_values(svc_name, secrets)
 
         cmd = build_template_command(
             chart_path, svc_name.replace("_", "-"),
@@ -2798,6 +2780,26 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
         preview[block_name] = result["stdout"] if result["success"] else f"# Error: {result['stderr']}"
 
     return {"target": target, "preview": preview}
+
+
+# Strong references to fire-and-forget tasks. The event loop keeps only weak
+# references, so an unreferenced task can be garbage-collected mid-run.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_background(coro) -> asyncio.Task:
+    """Run a coroutine as a background task, keeping it referenced until it finishes.
+
+    Args:
+        coro: The coroutine to schedule on the running event loop.
+
+    Returns:
+        The created task.
+    """
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
 
 
 @app.post("/api/projects/{slug}/deploy/execute")
@@ -2968,13 +2970,13 @@ async def execute_deploy(slug: str, body: dict) -> dict:
                 ),
             )
         selected_channels = list(_intake.selected_channels)
-        asyncio.create_task(
+        _spawn_background(
             _run_docker_deploy(slug, state, secrets, resources, selected_channels, _intake)
         )
     else:
         kubeconfig_content = body.get("kubeconfig", "")
         namespace = body.get("namespace", "dpg")
-        asyncio.create_task(
+        _spawn_background(
             _run_k8s_deploy(
                 slug, state, secrets, resources, kubeconfig_content, namespace,
                 selected_channels=_selected_channels_for(slug),
@@ -3195,6 +3197,117 @@ def _domain_declares_channel(slug: str, channel: str) -> bool:
     return isinstance(channels, dict) and channel in channels
 
 
+# Deploy secret -> Helm value, per block. Values are set only when the secret is non-empty.
+_SECRET_HELM_VALUES: dict[str, dict[str, str]] = {
+    "memory_layer": {"memgraph_password": "memgraph.password"},
+    "knowledge_engine": {
+        "azure_storage_account": "azure.storageAccount",
+        "azure_storage_key": "azure.storageKey",
+        "azure_container_name": "azure.containerName",
+        "reach_to_ke_api_key": "uploadAuth.reachToKeApiKey",
+        "ke_to_devkit_api_key": "uploadAuth.keToDevkitApiKey",
+        "ke_devkit_callback_url": "uploadAuth.devkitCallbackUrl",
+    },
+    # Upload chain auth for the Reach web channel's ingest proxy.
+    "reach_layer": {
+        "devkit_to_reach_api_key": "web.uploadAuth.devkitToReachApiKey",
+        "reach_to_ke_api_key": "web.uploadAuth.reachToKeApiKey",
+        "ke_internal_url": "web.uploadAuth.keInternalUrl",
+    },
+}
+
+
+def _mapped_secret_values(svc_name: str, secrets: dict) -> dict[str, str]:
+    """Return the Helm values for a block's non-empty secrets in _SECRET_HELM_VALUES.
+
+    Args:
+        svc_name: Block name with underscores.
+        secrets: Decrypted deploy secrets.
+
+    Returns:
+        ``{helm_value_key: secret}`` for every mapped secret that is set.
+    """
+    mapping = _SECRET_HELM_VALUES.get(svc_name, {})
+    return {key: secrets[name] for name, key in mapping.items() if secrets.get(name)}
+
+
+def _derived_secret_values(svc_name: str, secrets: dict) -> dict[str, str]:
+    """Return Helm values a block builds from secrets rather than copying them.
+
+    Args:
+        svc_name: Block name with underscores.
+        secrets: Decrypted deploy secrets.
+
+    Returns:
+        memory_layer: ``redis.url`` with the Redis password; action_gateway: one
+        ``extraSecrets.<ENV_VAR>`` per non-empty tool secret; otherwise empty.
+    """
+    if svc_name == "memory_layer" and secrets.get("redis_password"):
+        return {"redis.url": f"redis://:{secrets['redis_password']}@redis:6379/0"}
+    if svc_name == "action_gateway":
+        # Domain-specific tool API keys become extraSecrets.<ENV_VAR>.
+        return {
+            f"extraSecrets.{env_var}": value
+            for env_var, value in secrets.get("tool_secrets", {}).items()
+            if value
+        }
+    return {}
+
+
+def _resource_values(block_resources: dict, prefix: str = "") -> dict[str, str]:
+    """Return ``resources.{limits,requests}.{cpu,memory}`` values from a preset.
+
+    Args:
+        block_resources: One block's entry from the deploy resources dict.
+        prefix: Prepended to every key (``web.`` for the reach-layer parent chart).
+
+    Returns:
+        Only the resource keys that are set.
+    """
+    values: dict[str, str] = {}
+    for bound in ("limits", "requests"):
+        for kind in ("cpu", "memory"):
+            value = (block_resources.get(bound) or {}).get(kind)
+            if value:
+                values[f"{prefix}resources.{bound}.{kind}"] = value
+    return values
+
+
+def _reach_channel_values(
+    slug: str,
+    selected_channels: list[str] | None,
+    expose_reach_node_port: bool,
+) -> dict[str, str]:
+    """Return the reach-layer parent chart's NodePort and channel switches.
+
+    Args:
+        slug: Project slug; its agent_core.yaml decides whether bridge runs.
+        selected_channels: Wizard channels; None leaves the chart defaults (web only).
+        expose_reach_node_port: Publish the web channel on NodePort 30805.
+
+    Returns:
+        ``web.service.*``, ``web.webMode`` and ``<channel>.enabled`` values.
+    """
+    values: dict[str, str] = {}
+    if expose_reach_node_port:
+        # Fixed port 30805 avoids conflicts and is predictable for the ingest proxy.
+        values["web.service.type"] = "NodePort"
+        values["web.service.nodePort"] = "30805"
+    if selected_channels is not None:
+        # web always runs (it serves the ingest proxy); without the web channel
+        # selected it runs in routing_only mode, as in compose.
+        values["web.webMode"] = "full" if "web" in selected_channels else "routing_only"
+        for channel in ("voice", "mcp"):
+            if channel in selected_channels:
+                values[f"{channel}.enabled"] = "true"
+    # bridge is not a wizard channel (compose always keeps it). Run it when the
+    # domain's Agent Core config declares a bridge channel, since Agent Core
+    # rejects bridge turns otherwise.
+    if _domain_declares_channel(slug, "bridge"):
+        values["bridge.enabled"] = "true"
+    return values
+
+
 def _dpg_helm_values(
     svc_name: str,
     slug: str,
@@ -3225,87 +3338,115 @@ def _dpg_helm_values(
     """
     is_reach = svc_name == "reach_layer"
     file_prefix = "global." if is_reach else ""
-    value_prefix = "web." if is_reach else ""
-    set_values: dict[str, str] = {}
+
     set_files: dict[str, str] = {}
+    for name, path in (("dpgConfig", DPG_DIR / f"{svc_name}.yaml"),
+                       ("domainConfig", CONFIGS_DIR / slug / f"{svc_name}.yaml")):
+        if path.exists():
+            set_files[f"{file_prefix}{name}"] = str(path)
 
-    dpg_file = DPG_DIR / f"{svc_name}.yaml"
-    domain_file = CONFIGS_DIR / slug / f"{svc_name}.yaml"
-    if dpg_file.exists():
-        set_files[f"{file_prefix}dpgConfig"] = str(dpg_file)
-    if domain_file.exists():
-        set_files[f"{file_prefix}domainConfig"] = str(domain_file)
-    if secrets.get("anthropic_api_key"):
-        set_values["anthropicApiKey"] = secrets["anthropic_api_key"]
-    if secrets.get("openai_api_key"):
-        set_values["openaiApiKey"] = secrets["openai_api_key"]
-
-    # Inject infra secrets into DPG blocks that connect to them
-    if svc_name == "memory_layer":
-        if secrets.get("memgraph_password"):
-            set_values["memgraph.password"] = secrets["memgraph_password"]
-        if secrets.get("redis_password"):
-            set_values["redis.url"] = f"redis://:{secrets['redis_password']}@redis:6379/0"
-
-    # Inject domain-specific tool API keys as extraSecrets for action-gateway
-    if svc_name == "action_gateway":
-        for env_var, secret_value in secrets.get("tool_secrets", {}).items():
-            if secret_value:
-                set_values[f"extraSecrets.{env_var}"] = secret_value
-
-    # Inject Azure creds and upload chain auth into knowledge-engine
-    if svc_name == "knowledge_engine":
-        if secrets.get("azure_storage_account"):
-            set_values["azure.storageAccount"] = secrets["azure_storage_account"]
-        if secrets.get("azure_storage_key"):
-            set_values["azure.storageKey"] = secrets["azure_storage_key"]
-        if secrets.get("azure_container_name"):
-            set_values["azure.containerName"] = secrets["azure_container_name"]
-        if secrets.get("reach_to_ke_api_key"):
-            set_values["uploadAuth.reachToKeApiKey"] = secrets["reach_to_ke_api_key"]
-        if secrets.get("ke_to_devkit_api_key"):
-            set_values["uploadAuth.keToDevkitApiKey"] = secrets["ke_to_devkit_api_key"]
-        if secrets.get("ke_devkit_callback_url"):
-            set_values["uploadAuth.devkitCallbackUrl"] = secrets["ke_devkit_callback_url"]
-
+    set_values: dict[str, str] = {}
+    for secret_name, key in (("anthropic_api_key", "anthropicApiKey"), ("openai_api_key", "openaiApiKey")):
+        if secrets.get(secret_name):
+            set_values[key] = secrets[secret_name]
+    set_values.update(_mapped_secret_values(svc_name, secrets))
+    set_values.update(_derived_secret_values(svc_name, secrets))
     if is_reach:
-        # Upload chain auth for the web channel's ingest proxy.
-        if secrets.get("devkit_to_reach_api_key"):
-            set_values["web.uploadAuth.devkitToReachApiKey"] = secrets["devkit_to_reach_api_key"]
-        if secrets.get("reach_to_ke_api_key"):
-            set_values["web.uploadAuth.reachToKeApiKey"] = secrets["reach_to_ke_api_key"]
-        if secrets.get("ke_internal_url"):
-            set_values["web.uploadAuth.keInternalUrl"] = secrets["ke_internal_url"]
-        if expose_reach_node_port:
-            # Fixed port 30805 avoids conflicts and is predictable for the ingest proxy.
-            set_values["web.service.type"] = "NodePort"
-            set_values["web.service.nodePort"] = "30805"
-        if selected_channels is not None:
-            # web always runs (it serves the ingest proxy); without the web
-            # channel selected it runs in routing_only mode, as in compose.
-            set_values["web.webMode"] = "full" if "web" in selected_channels else "routing_only"
-            for channel in ("voice", "mcp"):
-                if channel in selected_channels:
-                    set_values[f"{channel}.enabled"] = "true"
-        # bridge is not a wizard channel (compose always keeps it). Run it when
-        # the domain's Agent Core config declares a bridge channel, since Agent
-        # Core rejects bridge turns otherwise.
-        if _domain_declares_channel(slug, "bridge"):
-            set_values["bridge.enabled"] = "true"
+        set_values.update(_reach_channel_values(slug, selected_channels, expose_reach_node_port))
 
-    block_res = resources.get(svc_name, {})
-    limits = block_res.get("limits", {})
-    requests = block_res.get("requests", {})
-    if limits.get("cpu"):
-        set_values[f"{value_prefix}resources.limits.cpu"] = limits["cpu"]
-    if limits.get("memory"):
-        set_values[f"{value_prefix}resources.limits.memory"] = limits["memory"]
-    if requests.get("cpu"):
-        set_values[f"{value_prefix}resources.requests.cpu"] = requests["cpu"]
-    if requests.get("memory"):
-        set_values[f"{value_prefix}resources.requests.memory"] = requests["memory"]
-
+    set_values.update(_resource_values(resources.get(svc_name, {}), "web." if is_reach else ""))
     return set_values, set_files
+
+
+# Infra charts under automation/helm/infra/, deployed before the DPG blocks.
+_INFRA_SERVICES: frozenset[str] = frozenset(
+    {"redis", "memgraph", "otel_collector", "jaeger", "prometheus", "loki", "grafana"}
+)
+
+# Infra chart -> (deploy secret, Helm value) for charts that take a password.
+_INFRA_SECRET_VALUES: dict[str, tuple[str, str]] = {
+    "redis": ("redis_password", "password"),
+    "memgraph": ("memgraph_password", "password"),
+    "grafana": ("grafana_admin_password", "adminPassword"),
+}
+
+
+def _infra_helm_values(svc_name: str, secrets: dict) -> tuple[dict[str, str], list[str]]:
+    """Build the --set values and -f values files for one infra chart's release.
+
+    The values file is the chart's own values.yaml, which the dev-kit's
+    dependencies UI edits in place.
+
+    Args:
+        svc_name: Infra service name, e.g. ``otel_collector``.
+        secrets: Decrypted deploy secrets.
+
+    Returns:
+        A ``(set_values, values_files)`` tuple.
+    """
+    from dev_kit.agent.deployer.dependencies import SERVICE_CHART_MAP, HELM_INFRA_DIR
+
+    values_files: list[str] = []
+    infra_values = HELM_INFRA_DIR / SERVICE_CHART_MAP.get(svc_name, svc_name.replace("_", "-")) / "values.yaml"
+    if infra_values.exists():
+        values_files.append(str(infra_values))
+
+    set_values: dict[str, str] = {}
+    secret_name, key = _INFRA_SECRET_VALUES.get(svc_name, ("", ""))
+    if secret_name and secrets.get(secret_name):
+        set_values[key] = secrets[secret_name]
+    return set_values, values_files
+
+
+def _k8s_release(
+    helm_base: Path,
+    svc_name: str,
+    slug: str,
+    secrets: dict,
+    resources: dict,
+    selected_channels: list[str] | None,
+) -> tuple[str, dict[str, str], dict[str, str], list[str]]:
+    """Resolve the chart and values for one service's Kubernetes deploy release.
+
+    Args:
+        helm_base: The automation/helm directory.
+        svc_name: Service name from DEPLOY_PHASES.
+        slug: Project slug.
+        secrets: Decrypted deploy secrets.
+        resources: Per-block resource overrides.
+        selected_channels: Reach channels chosen in the wizard, or None.
+
+    Returns:
+        ``(chart_path, set_values, set_files, values_files)``.
+    """
+    if svc_name in _INFRA_SERVICES:
+        set_values, values_files = _infra_helm_values(svc_name, secrets)
+        return str(helm_base / "infra" / svc_name.replace("_", "-")), set_values, {}, values_files
+    set_values, set_files = _dpg_helm_values(
+        svc_name, slug, secrets, resources,
+        selected_channels=selected_channels,
+        expose_reach_node_port=True,
+    )
+    return _dpg_chart_path(helm_base, svc_name), set_values, set_files, []
+
+
+def _record_helm_result(state, svc_name: str, result: dict) -> None:
+    """Mark one service running or failed in the deploy state from a helm result.
+
+    Args:
+        state: The project's DeployState.
+        svc_name: Service the helm command deployed.
+        result: ``run_helm_command`` output with ``success`` and ``stderr``.
+    """
+    if result["success"]:
+        state.set_service(svc_name, "running")
+        return
+    state.set_service(svc_name, "failed", result["stderr"][:200])
+    logger.error(
+        "k8s_deploy_service_failed: %s",
+        result["stderr"][:500],
+        extra={"operation": "_run_k8s_deploy", "status": "failure", "service": svc_name},
+    )
 
 
 async def _run_k8s_deploy(
@@ -3335,49 +3476,16 @@ async def _run_k8s_deploy(
     tmp.close()
     state.kubeconfig_path = tmp.name
 
-    infra_services = {"redis", "memgraph", "otel_collector", "jaeger", "prometheus", "loki", "grafana"}
-    from dev_kit.agent.deployer.dependencies import SERVICE_CHART_MAP, HELM_INFRA_DIR
-
     try:
         for phase in DEPLOY_PHASES:
             for svc_name in phase["services"]:
                 state.set_service(svc_name, "starting")
-
-                chart_dir = svc_name.replace("_", "-")
-                if svc_name in infra_services:
-                    chart_path = str(_helm_base / "infra" / chart_dir)
-                else:
-                    chart_path = _dpg_chart_path(_helm_base, svc_name)
-
-                release_name = chart_dir
-                set_values: dict[str, str] = {}
-                set_files: dict[str, str] = {}
-                values_files: list[str] = []
-
-                if svc_name in infra_services:
-                    # Use the edited values.yaml from the infra Helm chart
-                    infra_chart_dir = SERVICE_CHART_MAP.get(svc_name, chart_dir)
-                    infra_values = HELM_INFRA_DIR / infra_chart_dir / "values.yaml"
-                    if infra_values.exists():
-                        values_files.append(str(infra_values))
-
-                    # Inject secrets into infra services that need them
-                    if svc_name == "redis" and secrets.get("redis_password"):
-                        set_values["password"] = secrets["redis_password"]
-                    elif svc_name == "memgraph" and secrets.get("memgraph_password"):
-                        set_values["password"] = secrets["memgraph_password"]
-                    elif svc_name == "grafana" and secrets.get("grafana_admin_password"):
-                        set_values["adminPassword"] = secrets["grafana_admin_password"]
-                else:
-                    set_values, set_files = _dpg_helm_values(
-                        svc_name, slug, secrets, resources,
-                        selected_channels=selected_channels,
-                        expose_reach_node_port=True,
-                    )
-
+                chart_path, set_values, set_files, values_files = _k8s_release(
+                    _helm_base, svc_name, slug, secrets, resources, selected_channels,
+                )
                 cmd = build_helm_command(
                     chart_path=chart_path,
-                    release_name=release_name,
+                    release_name=svc_name.replace("_", "-"),
                     namespace=namespace,
                     kubeconfig_path=tmp.name,
                     set_values=set_values or None,
@@ -3385,21 +3493,7 @@ async def _run_k8s_deploy(
                     values_files=values_files or None,
                     upgrade=True,
                 )
-
-                result = await run_helm_command(cmd)
-                if result["success"]:
-                    state.set_service(svc_name, "running")
-                else:
-                    state.set_service(svc_name, "failed", result["stderr"][:200])
-                    logger.error(
-                        "k8s_deploy_service_failed: %s",
-                        result["stderr"][:500],
-                        extra={
-                            "operation": "_run_k8s_deploy",
-                            "status": "failure",
-                            "service": svc_name,
-                        },
-                    )
+                _record_helm_result(state, svc_name, await run_helm_command(cmd))
 
         # Determine overall status
         statuses = {s["status"] for s in state.services.values()}
@@ -3747,7 +3841,7 @@ async def destroy_deploy(slug: str, body: dict) -> dict:
     if state:
         state.overall = "destroying"
 
-    asyncio.create_task(_run_docker_destroy(slug, compose_path, project_name, remove_volumes))
+    _spawn_background(_run_docker_destroy(slug, compose_path, project_name, remove_volumes))
     return {"status": "started"}
 
 
