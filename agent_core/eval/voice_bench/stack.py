@@ -115,6 +115,13 @@ class TargetStack:
         self._tool_result_secret: str | None = None
 
     @property
+    def image_tag(self) -> str | None:
+        """The tag the images were pulled at, or None when they were built."""
+        if not self.target.pull_images:
+            return None
+        return (os.environ.get("DPG_IMAGE_TAG") or "").strip() or None
+
+    @property
     def commit(self) -> str:
         if self.target.bridge_url:
             return "external-" + hashlib.sha1(self.target.bridge_url.encode()).hexdigest()[:7]
@@ -185,8 +192,23 @@ class TargetStack:
             override_text, self._tool_result_secret = compose_override(BRIDGE_HOST_PORT, self.env_file, self.tap_url,
                                                                        self.instance_url)
             (compose.parent / OVERRIDE_NAME).write_text(override_text, encoding="utf-8")
-            self._exec(self._compose_argv("up", "-d", "--build", "reach_layer_bridge"),
-                       "docker compose up", env=self._env())
+            if self.target.pull_images:
+                # The image carries the code, so nothing is built here. The tag
+                # must be explicit: the compose file has a default, and silently
+                # measuring that instead of the tag you meant is worse than
+                # refusing to start.
+                if not (os.environ.get("DPG_IMAGE_TAG") or "").strip():
+                    raise StackError(
+                        f"target {self.target.name}: pull_images needs DPG_IMAGE_TAG in the environment "
+                        "(e.g. export DPG_IMAGE_TAG=sha-84a7139); without it compose would silently use "
+                        "its own default tag and the results would be labelled with the wrong code")
+                self._exec(self._compose_argv("pull", "reach_layer_bridge"),
+                           "docker compose pull", env=self._env())
+                self._exec(self._compose_argv("up", "-d", "reach_layer_bridge"),
+                           "docker compose up", env=self._env())
+            else:
+                self._exec(self._compose_argv("up", "-d", "--build", "reach_layer_bridge"),
+                           "docker compose up", env=self._env())
             url = f"http://127.0.0.1:{BRIDGE_HOST_PORT}"
             self._wait_healthy(url)
             return url

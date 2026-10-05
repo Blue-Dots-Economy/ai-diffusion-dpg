@@ -18,6 +18,18 @@ targets:                                    # what to measure
   #   bridge_url: http://127.0.0.1:8008     # an already-running bridge: no build
   #   redis_container: dpg_redis
   #   agent_container: dpg_agent_core
+  #
+  # Pull the published images instead of building them. The worktree then
+  # supplies config only — the code under test is whatever DPG_IMAGE_TAG
+  # points at, so point `compose` at the image-based file and export the tag:
+  #     export DPG_IMAGE_TAG=sha-84a7139
+  # The run refuses to start if that variable is unset, because compose has a
+  # default tag of its own and measuring that by accident is worse than
+  # failing. The tag is recorded in the target metadata next to the commit.
+  # - name: ghcr
+  #   git_ref: 84a7139                      # resolves the worktree for config
+  #   compose: automation/docker/docker-compose.dev.yml
+  #   pull_images: true
 models:
   caller: { provider: openai, model: gpt-4.1, temperature: 0.3 }
   judge:  { provider: openai, model: gpt-4.1, temperature: 0 }
