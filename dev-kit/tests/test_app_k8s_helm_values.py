@@ -186,6 +186,34 @@ def test_reach_channels_follow_selection(config_dirs, selected, expected_enabled
     assert "bridge.enabled" not in set_values
 
 
+def test_reach_bridge_enabled_when_domain_declares_it(config_dirs):
+    _, project = config_dirs
+    (project / "agent_core.yaml").write_text("channels:\n  bridge:\n    system_prompt_suffix: ''\n")
+    set_values, _ = app_module._dpg_helm_values("reach_layer", "proj", {}, {}, selected_channels=["web"])
+    assert set_values["bridge.enabled"] == "true"
+
+
+def test_reach_bridge_stays_off_for_other_channels(config_dirs):
+    _, project = config_dirs
+    (project / "agent_core.yaml").write_text("channels:\n  mcp: {}\n")
+    set_values, _ = app_module._dpg_helm_values("reach_layer", "proj", {}, {})
+    assert "bridge.enabled" not in set_values
+
+
+def test_reach_bridge_stays_off_for_unreadable_domain_config(config_dirs):
+    _, project = config_dirs
+    (project / "agent_core.yaml").write_text("channels: [unclosed\n")
+    set_values, _ = app_module._dpg_helm_values("reach_layer", "proj", {}, {})
+    assert "bridge.enabled" not in set_values
+
+
+def test_bridge_rule_does_not_apply_to_other_blocks(config_dirs):
+    _, project = config_dirs
+    (project / "agent_core.yaml").write_text("channels:\n  bridge: {}\n")
+    set_values, _ = app_module._dpg_helm_values("agent_core", "proj", {}, {})
+    assert "bridge.enabled" not in set_values
+
+
 # ---------------------------------------------------------------------------
 # _selected_channels_for
 # ---------------------------------------------------------------------------

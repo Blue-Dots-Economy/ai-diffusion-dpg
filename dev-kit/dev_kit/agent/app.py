@@ -3170,6 +3170,31 @@ def _selected_channels_for(slug: str) -> list[str] | None:
         return None
 
 
+def _domain_declares_channel(slug: str, channel: str) -> bool:
+    """Return True when the project's agent_core.yaml has a ``channels.<channel>`` entry.
+
+    Args:
+        slug: Project slug under dev-kit/configs/.
+        channel: Channel name, e.g. ``bridge``.
+
+    Returns:
+        False when the file is missing, unreadable, or has no such channel.
+    """
+    path = CONFIGS_DIR / slug / "agent_core.yaml"
+    if not path.is_file():
+        return False
+    try:
+        config = yaml.safe_load(path.read_text()) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        logger.warning(
+            "devkit.domain_channel_check_failed",
+            extra={"operation": "_domain_declares_channel", "status": "skipped", "error": f"{type(exc).__name__}: {exc}"},
+        )
+        return False
+    channels = config.get("channels") if isinstance(config, dict) else None
+    return isinstance(channels, dict) and channel in channels
+
+
 def _dpg_helm_values(
     svc_name: str,
     slug: str,
@@ -3262,6 +3287,11 @@ def _dpg_helm_values(
             for channel in ("voice", "mcp"):
                 if channel in selected_channels:
                     set_values[f"{channel}.enabled"] = "true"
+        # bridge is not a wizard channel (compose always keeps it). Run it when
+        # the domain's Agent Core config declares a bridge channel, since Agent
+        # Core rejects bridge turns otherwise.
+        if _domain_declares_channel(slug, "bridge"):
+            set_values["bridge.enabled"] = "true"
 
     block_res = resources.get(svc_name, {})
     limits = block_res.get("limits", {})
