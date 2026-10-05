@@ -83,7 +83,7 @@ python3 -c "import yaml,sys; print(list((yaml.safe_load(open(sys.argv[1])) or {}
 **Connector secrets.** Action Gateway refuses to start while any `secret_env` declared in the domain's `action_gateway.yaml` is unset. Keep them in the same per-domain file the Docker Compose setup uses (gitignored); dummy values are enough to boot:
 
 ```bash
-grep -E '^\s*secret_env:' dev-kit/configs/$DOMAIN/action_gateway.yaml   # what the domain needs
+grep -oE '^\s*secret_env: *[A-Z0-9_]+' dev-kit/configs/$DOMAIN/action_gateway.yaml | awk '{print $2}' | sort -u   # what the domain needs
 cp dev-kit/configs/$DOMAIN/secrets.env.example dev-kit/configs/$DOMAIN/secrets.env
 # edit dev-kit/configs/$DOMAIN/secrets.env: one KEY=value line per secret_env
 ```
@@ -213,17 +213,26 @@ The `reach-layer` release runs one Deployment per enabled channel. Each channel 
 | voice | `--set voice.enabled=true` | `reach-layer-voice` :8006 | `voice.vobiz.authId`, `voice.vobiz.authToken`, `voice.vobiz.fromNumber`, `voice.rayaApiKey`, `voice.publicUrl`; Vobiz must reach `publicUrl`, so production needs an Ingress (not part of these charts) |
 | bridge | `--set bridge.enabled=true` | `reach-layer-bridge` :8008 | no authentication by design: keep it ClusterIP, never expose it |
 
-Add the flags to the `reach-layer` command in step 3, for example:
+Channels are switched on through `REACH_CHANNELS` in step 3. Every `helm upgrade` keeps only the values passed on that run, so list every channel you want each time and keep the `web.auth.*` flags: leaving them out turns sign-in off (the web channel then exits) and leaving out a channel removes it. For example, to add voice to the `blue-dots` setup from step 3:
 
 ```bash
-helm upgrade --install reach-layer automation/helm/dpg-services/reach-layer -n $NS \
+REACH_CHANNELS=(--set bridge.enabled=true
+                --set voice.enabled=true
+                --set-string voice.vobiz.authId=... --set-string voice.vobiz.authToken=...
+                --set-string voice.vobiz.fromNumber=... --set-string voice.rayaApiKey=...
+                --set-string voice.publicUrl=https://...)
+
+# The reach-layer command from step 3, unchanged:
+helm upgrade --install reach-layer automation/helm/dpg-services/reach-layer -n $NS --create-namespace \
   --set-file global.dpgConfig=dev-kit/dpg/reach_layer.yaml \
   --set-file global.domainConfig=dev-kit/configs/$DOMAIN/reach_layer.yaml \
-  --set voice.enabled=true \
-  --set-string voice.vobiz.authId=... --set-string voice.vobiz.authToken=... \
-  --set-string voice.vobiz.fromNumber=... --set-string voice.rayaApiKey=... \
-  --set-string voice.publicUrl=https://...
+  --set web.auth.enabled=true --set-string web.auth.googleClientId=$GOOGLE_CLIENT_ID \
+  --set web.auth.sessionSecretName=reach-layer-auth \
+  "${REACH_CHANNELS[@]}"
+kubectl -n $NS rollout status deploy/reach-layer-voice
 ```
+
+`vobiz.fromNumber` takes digits only. Voice starts with placeholder values; placing calls needs real Vobiz credentials and a `publicUrl` Vobiz can reach.
 
 The dev-kit enables `voice` and `mcp` from the channels selected in the wizard (web always runs; without web selected it runs in `routing_only` mode), as the compose deploy does. `bridge` is not a wizard channel; the dev-kit enables it when the domain's `agent_core.yaml` declares a `bridge` channel.
 
@@ -236,6 +245,7 @@ All four channels were verified Ready on Colima with `sha-28f0517`, and a chat c
 dpg agent-core "${LLM_KEYS[@]}"   # always re-pass secrets (or use --reuse-values)
 ```
 
+- **`kubectl wait --all` on a re-run** can print `Error from server (NotFound)` for a pod that is being replaced (for example a channel you just switched off); run it again once the rollout settles.
 - **Config changes roll pods automatically.** Every chart that renders a ConfigMap carries a `checksum/<configmap>` pod annotation, so editing `dev-kit/configs/<domain>/*.yaml` and upgrading restarts the affected block. The services only read config at startup.
 - **`memgraph` and `knowledge-engine` use `strategy: Recreate`.** Both are single-writer stores on ReadWriteOnce PVCs; a rolling update would start a second pod against the same volume, and memgraph exits when you do that.
 - **Switching domain** in place: change `DOMAIN` and the keys, then re-run step 3. Every DPG chart's config changes, so every block restarts.
@@ -245,9 +255,11 @@ dpg agent-core "${LLM_KEYS[@]}"   # always re-pass secrets (or use --reuse-value
 
 ```bash
 for r in $(helm list -n dpg --short); do helm uninstall $r -n dpg --wait; done
-kubectl get pvc,pv -n dpg          # expect nothing left
+kubectl get pvc,pv -n dpg          # PVCs gone; Released PVs disappear within a few seconds
 kubectl delete ns dpg              # optional
 ```
+
+`kubectl delete ns dpg` also removes the `reach-layer-auth` Secret from step 3, which is not part of any release.
 
 Then stop or delete the cluster: `colima stop`, `kind delete cluster --name dpg`, `k3d cluster delete dpg`, or `minikube stop`.
 
