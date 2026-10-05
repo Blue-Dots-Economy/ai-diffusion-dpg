@@ -132,16 +132,22 @@ def apply_session_only(tc: Any, spec: dict | None, session: dict | None) -> list
     session = session or {}
     dropped: list[str] = []
     for param, keys in spec.items():
-        value = ""
-        for key in (keys or [param]):
-            v = session.get(key)
-            if v not in (None, "", []):
-                value = v
-                break
-        if value == "":
-            if param in tc.input_params:
-                tc.input_params.pop(param, None)
+        value = _first_session_value(session, keys or [param])
+        if value is None:
+            if tc.input_params.pop(param, _MISSING) is not _MISSING:
                 dropped.append(param)
         else:
             tc.input_params[param] = value
     return dropped
+
+
+_MISSING = object()
+
+
+def _first_session_value(session: dict, keys: list) -> Any | None:
+    """First non-empty session value among ``keys``, or None when none has one."""
+    for key in keys:
+        v = session.get(key)
+        if v not in (None, "", []):
+            return v
+    return None

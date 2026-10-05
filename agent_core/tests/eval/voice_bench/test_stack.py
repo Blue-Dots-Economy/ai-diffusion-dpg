@@ -187,7 +187,9 @@ def test_up_creates_worktree_patches_and_composes(tmp_path, monkeypatch):
     assert str(wt / "automation/docker/voice-bench.override.yml") in up
     assert up[-4:] == ["up", "-d", "--build", "reach_layer_bridge"]
     env = run.envs[run.calls.index(up)]
-    assert env["DOMAIN"] == "blue-dots" and env["GIT_SHA"] == "abc1234" and env["OPENAI_API_KEY"] == "DUMMY-PROBE-OPENAI"
+    assert env["DOMAIN"] == "blue-dots"
+    assert env["GIT_SHA"] == "abc1234"
+    assert env["OPENAI_API_KEY"] == "DUMMY-PROBE-OPENAI"
     patched = (wt / "dev-kit/configs/blue-dots/action_gateway.yaml").read_text()
     assert 'base_url: "http://host.docker.internal:18742"' in patched
     ov = yaml.safe_load((wt / "automation/docker/voice-bench.override.yml").read_text())
@@ -221,7 +223,9 @@ def test_compose_failure_redacts_secrets(tmp_path, monkeypatch):
     with pytest.raises(StackError) as ei:
         s.up()
     msg = str(ei.value)
-    assert "***" in msg and "DUMMY-PROBE-BD" not in msg and "DUMMY-PROBE-OPENAI" not in msg
+    assert "***" in msg
+    assert "DUMMY-PROBE-BD" not in msg
+    assert "DUMMY-PROBE-OPENAI" not in msg
     assert any("worktree" in c and "remove" in c for c in run.calls)
 
 
