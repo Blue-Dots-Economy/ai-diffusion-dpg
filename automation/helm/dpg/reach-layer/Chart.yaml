@@ -1,6 +1,0 @@
-apiVersion: v2
-name: reach-layer
-description: DPG Reach Layer — channel adapter (CLI for PoC, replace with WhatsApp/Web for production)
-type: application
-version: 0.1.0
-appVersion: "0.1.0"
