@@ -2,8 +2,9 @@
 # Blue Dots — Reach Layer domain config.
 # Deep-merged on top of dev-kit/dpg/reach_layer.yaml at startup.
 #
-# Voice channel only. Web is left disabled but present so the config
-# is structurally complete and easy to flip on later.
+# Bridge channel only (OpenAI chat-completions compatible). The other
+# channels (web, CLI, voice, MCP) are optional: see "AI Diffusion Optional
+# Channels" on the docs site for the blocks to add and how to start them.
 
 reach_layer:
 
@@ -12,80 +13,41 @@ reach_layer:
       domain: "blue_dot"
 
   channels:
-
-    cli:
-      prompt: "You: "
-      agent_prefix: "Agent: "
-
-    web:
-      auth:
-        enabled: false
-        google_client_id: ""
-        cookie_secure: false
-      ui:
-        app_name: "Blue Dots"
-        app_tagline: "Voice job assistant"
-        app_icon: "🔵"
-        agent_avatar: "🔵"
-        user_avatar: "👤"
-        setup_heading: "Welcome to Blue Dots"
-        # The country code is required. What is typed here becomes
-        # session.user_id, which the Action Gateway substitutes into
-        # `?phone_number={user_id}` for the lookup and `"+{user_id}"` for the
-        # write — and /admin/participant keys on the account phone, which
-        # carries the code. A 10-digit entry still "works" end to end, but it
-        # stores a malformed number that will never match the same caller
-        # arriving by voice.
-        setup_subtitle: "Enter your phone number with the country code to begin a session."
-        user_id_placeholder: "e.g. 919876543210"
-        user_id_hint: "12 digits — country code first, no + and no spaces."
-        start_btn_label: "Start →"
-        new_session_msg: "Hello! I'm the Blue Dots assistant. How can I help you find work today?"
-        returning_user_msg: "Welcome back!"
-        storage_key: "blue_dots_user_id"
-        theme_storage_key: "blue_dots_theme"
-        sign_out_confirm: "Sign out?"
-        switch_user_confirm: "Switch user? Your current session will be closed."
-        delete_conversation_confirm: "Delete this conversation? This cannot be undone."
-
     bridge:
       # GH-137-style: spoken/written just before the caller's client closes
       # the call. The shim never ends the call itself, so this word is the
       # only signal the caller gets that the conversation is finished.
-      terminal_word: "Thank you"
-
-    voice:
-      # English / Hindi / Gujarati. VAD tuned for English (shorter
-      # pauses than Hindi-only callers); Hindi/Gujarati turns still
-      # land within the ceiling.
-      vad:
-        stop_secs: 0.7
-      raya:
-        stt_language: "en"
-        tts_language: "en-in"
-        voice_id: "0f24fb66-e495-4781-9e84-1224aa7dacde"   # Nayra, en-in
-      agent_core:
-        timeout_ms: 15000
-        # Opening line on call pickup is emitted by Agent Core as the
-        # entry subagent's opening_phrase (greet_consent). Do not add
-        # a static greeting here.
-        fallback_phrase: "Sorry, I didn't catch that. Could you say it again?"
-        # GH-152: brief acknowledgement spoken when the caller barges
-        # in mid-response. TTS already flushed by the time this plays.
-        barge_in_acknowledgement: "One second."
-      # GH-242: short filler if the first SentenceEvent hasn't reached
-      # TTS within filler_threshold_ms of submit_input completing.
-      filler_threshold_ms: 1500
-      filler_phrase: "One second"
-      # GH-137: spoken just before WebSocket close on bot-initiated hangup.
-      terminal_word: "Thank you"
-      recording:
-        source: pipeline
-        consent_purpose: storage    # piggy-backs on the storage consent grant.
-        min_duration_ms: 500
-        caller_id_hash_salt: "blue-dots-local-salt-change-me-32chars+"
-        store:
-          backend: local
-          local:
-            base_path: /var/recordings
-        start_on_connect: true
+      #
+      # Hindi, because it is emitted VERBATIM — the bridge appends it to the
+      # stream on session end without any translation step. On the 24 Sep
+      # PoC calls it was the English "Thank you", spoken to Hindi callers at
+      # the end of every terminated turn.
+      terminal_word: "धन्यवाद"
+      # VoicERA offers this tool when the agent has automatic_call_ending
+      # and graceful_llm_call_ending enabled. On session end the bridge calls
+      # it after the goodbye, and VoicERA hangs up. Without it the line
+      # stayed open until the platform's max-duration timeout.
+      hangup_tool_name: "end_conversation"
+      # Spoken while a tool runs, so a 5-7 s turn is not silence the caller
+      # fills with "hello?" (which the client treats as barge-in and cancels
+      # the turn). One line per turn at most, never once the reply has started.
+      # Hindi, emitted verbatim. end_session is deliberately unmapped.
+      # Blue Dots: "Call them silently... No waiting message and no status
+      # narration before, during or immediately after any of them." A hold is
+      # permitted, but it is a NEUTRAL hold and "must never reveal what is
+      # happening" — so every phrase here is the same two words.
+      #
+      # What the previous phrases broke:
+      #   fetch_profile "मैं देख रही हूँ"  — on the spec's explicit banned list
+      #   fetch_jobs    "नौकरियाँ देख रही हूँ" — reveals the lookup
+      #   save_profile  "सेव कर रही हूँ"   — status narration
+      #   apply_job     "आवेदन भेज रही हूँ" — hard law 4: claims the apply
+      #                 BEFORE a result exists. apply_job is not in the
+      #                 spec's permitted-hold list at all, so it gets none.
+      tool_status_phrases:
+        fetch_profile: "एक मिनट।"
+        fetch_jobs: "एक मिनट।"
+        save_profile: "एक मिनट।"
+        # Not a workflow tool: Agent Core emits it while a human handoff is
+        # being escalated (identity/handoff spec §5.3).
+        request_human: "एक मिनट।"

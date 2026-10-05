@@ -117,6 +117,9 @@ class AnthropicChatProvider(ChatProviderBase):
 
         Args:
             config: Runtime configuration dict with required and optional keys.
+                Optional: ``sdk_max_retries`` (int; absent keeps the SDK
+                default) and ``retry_on_timeout`` (bool, default True; False
+                stops retrying after a timeout).
 
         Raises:
             ProviderConfigError: If required keys are missing or invalid.
@@ -157,8 +160,13 @@ class AnthropicChatProvider(ChatProviderBase):
         }
 
         self._active_model: str = self._primary_model
-        self._client = anthropic.Anthropic()
-        self._async_client = anthropic.AsyncAnthropic()
+        # sdk_max_retries: None keeps the SDK default; NLU sets 0 so this
+        # class's loop is the only retry layer (NLU dialogue-acts spec §9.1).
+        sdk_max_retries = config.get("sdk_max_retries")
+        client_kwargs: dict = {} if sdk_max_retries is None else {"max_retries": int(sdk_max_retries)}
+        self._retry_on_timeout: bool = bool(config.get("retry_on_timeout", True))
+        self._client = anthropic.Anthropic(**client_kwargs)
+        self._async_client = anthropic.AsyncAnthropic(**client_kwargs)
 
     # ------------------------------------------------------------------
     # Public ChatProviderBase methods (filled in subsequent tasks)
@@ -299,6 +307,8 @@ class AnthropicChatProvider(ChatProviderBase):
                         "latency_ms": int((time.time() - start) * 1000),
                     },
                 )
+                if isinstance(e, anthropic.APITimeoutError) and not self._retry_on_timeout:
+                    break
 
             except anthropic.APIError as e:
                 # Surface the API error in the log MESSAGE itself — not just
@@ -638,7 +648,9 @@ class AnthropicChatProvider(ChatProviderBase):
             )
             forced_tool_name = "respond_with_json"
 
-        if tools and request.tool_choice != "none":
+        # "none" still sends the definitions: a request whose messages carry
+        # tool_use/tool_result blocks must define the tools they name.
+        if tools:
             wire["tools"] = [self._tool_to_wire(t) for t in tools]
 
         # tool_choice mapping
@@ -649,8 +661,8 @@ class AnthropicChatProvider(ChatProviderBase):
         elif choice == "any":
             wire["tool_choice"] = {"type": "any"}
         elif choice == "none":
-            # Already handled above by skipping wire["tools"].
-            pass
+            if "tools" in wire:
+                wire["tool_choice"] = {"type": "none"}
         else:
             # Named tool (either user-forced or synthetic respond_with_json)
             wire["tool_choice"] = {"type": "tool", "name": choice}

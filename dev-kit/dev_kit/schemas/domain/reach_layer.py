@@ -38,7 +38,7 @@ class WebUiConfig(BaseModel):
 class WebAuthConfig(BaseModel):
     """Web channel auth toggle (Google SSO etc.). Mirrors runtime WebAuthConfig.
 
-    Domains may override individual fields (kkb sets cookie_secure=False for
+    Domains may override individual fields (blue-dots sets cookie_secure=False for
     local dev); session cookie name + TTL stay framework defaults.
     """
     model_config = ConfigDict(extra="forbid")
@@ -94,7 +94,7 @@ class VoiceAgentCoreClient(BaseModel):
 class VadConfig(BaseModel):
     """Silero VAD tuning for telephony audio (8 kHz). Mirrors runtime VadConfig.
 
-    KKB tightens stop_secs to 1.0 for Hindi cadence with rural callers.
+    Blue Dots tightens stop_secs to 1.0 for Hindi cadence with rural callers.
     """
     model_config = ConfigDict(extra="forbid")
     stop_secs: float = Field(default=0.4, ge=0.0, le=10.0)
@@ -174,6 +174,8 @@ class BridgeChannelSection(BaseModel):
     port: Optional[int] = None
     agent_core_url: Optional[str] = None
     terminal_word: Optional[str] = None
+    hangup_tool_name: Optional[str] = None
+    tool_status_phrases: Optional[dict[str, str]] = None
     timeout_s: Optional[float] = Field(default=None, gt=0)
 
 

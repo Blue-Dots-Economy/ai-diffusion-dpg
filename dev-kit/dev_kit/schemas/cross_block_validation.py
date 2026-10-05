@@ -2,7 +2,7 @@
 
 Per-block Pydantic schemas can only see one block's data. Many real
 runtime constraints span two or more blocks (e.g. ``intent_filters``
-keys must reference real NLU intents in ``agent_core``). Those rules
+keys must name a routing intent the ``agent_core`` NLU can derive). Those rules
 live here so they can run from two places:
 
 1. Inside the LLM tool loop, on every ``set_phase`` advance, so the
@@ -88,6 +88,455 @@ def _validate_recording(reach_layer_block: dict) -> list[str]:
     return errors
 
 
+def _as_int(value: object, default: int, label: str, errors: list[str]) -> Optional[int]:
+    """Coerce a config value to int, recording an error instead of raising.
+
+    Args:
+        value: Raw config value (``None``/falsy falls back to ``default``).
+        default: Value used when ``value`` is missing or falsy.
+        label: Config path used in the error message.
+        errors: Error list appended to when ``value`` is not numeric.
+
+    Returns:
+        The integer, or ``None`` if ``value`` was not numeric.
+    """
+    if not value:
+        return default
+    try:
+        return int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        errors.append(f"{label}: '{value}' is not a number")
+        return None
+
+
+def _tool_result_agent_rules(ac: dict) -> list[str]:
+    """Agent_core-only tool-result rules (mirror runtime ``MergedConfig._check_tool_result_rules``).
+
+    Args:
+        ac: The agent_core block.
+
+    Returns:
+        Error strings for user-scope TTLs above ``tool_results.max_user_ttl_seconds``,
+        a ``memory_tool.name`` colliding with a connector, and ``grounded_in``
+        entries that are not connector names.
+    """
+    errors: list[str] = []
+    connectors = ac.get("connectors") or {}
+    names = {c["name"] for g in ("read", "write", "identity", "internal")
+             for c in (connectors.get(g) or []) if isinstance(c, dict) and c.get("name")}
+    cap = _as_int((ac.get("tool_results") or {}).get("max_user_ttl_seconds"), 86400,
+                  "tool_results.max_user_ttl_seconds", errors)
+    for c in connectors.get("read") or []:
+        cache = c.get("cache") if isinstance(c, dict) else None
+        if not isinstance(cache, dict) or cache.get("scope") != "user" or cap is None:
+            continue
+        ttl = _as_int(cache.get("ttl_seconds"), 0, f"connectors.{c.get('name', '?')}.cache.ttl_seconds", errors)
+        if ttl is not None and ttl > cap:
+            errors.append(f"connector '{c.get('name', '?')}': user-scope ttl_seconds {ttl} "
+                          f"exceeds tool_results.max_user_ttl_seconds {cap}")
+    mt = ac.get("memory_tool")
+    if isinstance(mt, dict):
+        mt_name = mt.get("name") or "remember"
+        if mt_name in names:
+            errors.append(f"memory_tool.name '{mt_name}' collides with a connector")
+        for fname, f in (mt.get("fields") or {}).items():
+            for src in (f or {}).get("grounded_in") or []:
+                if src not in names:
+                    errors.append(f"memory_tool.fields.{fname}.grounded_in: unknown connector '{src}'")
+    return errors
+
+
+def _tool_result_memory_rules(ac: dict, ml: dict) -> list[str]:
+    """Cross-block rules for tool-result caching and the memory tool (agent_core ↔ memory_layer).
+
+    Args:
+        ac: The agent_core block.
+        ml: The memory_layer block.
+
+    Returns:
+        Error strings for session TTLs beyond the session lifetime, undeclared
+        ``vary_on`` fields, and ``memory_tool`` fields missing from the session
+        schema or ``UserProfile.declared_fields``.
+    """
+    errors: list[str] = []
+    session = ((ml.get("state") or {}).get("session") or {})
+    schema = session.get("schema") or {}
+    minutes = _as_int(session.get("ttl_minutes"), 60, "memory_layer.state.session.ttl_minutes", errors)
+    session_ttl = (minutes if minutes is not None else 60) * 60
+    declared = (((((ml.get("state") or {}).get("persistent") or {}).get("graph") or {})
+                 .get("subnodes") or {}).get("UserProfile") or {}).get("declared_fields") or []
+    for group in (ac.get("connectors") or {}).values():
+        for c in group or []:
+            cache = (c or {}).get("cache") if isinstance(c, dict) else None
+            if not isinstance(cache, dict):
+                continue
+            name = c.get("name", "?")
+            ttl = _as_int(cache.get("ttl_seconds"), 0, f"connectors.{name}.cache.ttl_seconds", errors)
+            if cache.get("scope") == "session" and ttl is not None and ttl > session_ttl:
+                errors.append(f"connectors.{name}.cache.ttl_seconds exceeds the session lifetime "
+                              f"({session_ttl}s from memory_layer.state.session.ttl_minutes)")
+            for f in cache.get("vary_on") or []:
+                if f not in schema:
+                    errors.append(f"connectors.{name}.cache.vary_on: '{f}' is not a declared session field")
+    for fname, f in (((ac.get("memory_tool") or {}).get("fields")) or {}).items():
+        scope = (f or {}).get("scope")
+        if scope == "session" and fname not in schema:
+            errors.append(f"memory_tool.fields.{fname}: not declared in memory_layer session schema")
+        if scope == "persistent" and fname not in declared:
+            errors.append(f"memory_tool.fields.{fname}: not in UserProfile.declared_fields")
+    return errors
+
+
+def _session_bootstrap_rules(ac: dict, ml: dict) -> list[str]:
+    """Cross-block rules for session bootstrap and prompt_session_fields (agent_core ↔ memory_layer)."""
+    errors: list[str] = []
+    schema = (((ml.get("state") or {}).get("session") or {}).get("schema")) or {}
+    for f in ((ac.get("agent") or {}).get("prompt_session_fields")) or []:
+        if f not in schema:
+            errors.append(f"agent.prompt_session_fields: '{f}' is not a declared session field")
+    read = {c.get("name") for c in ((ac.get("connectors") or {}).get("read") or []) if isinstance(c, dict)}
+    for i, s in enumerate(((ac.get("session_bootstrap") or {}).get("steps")) or []):
+        tool = (s or {}).get("tool") if isinstance(s, dict) else None
+        if tool not in read:
+            errors.append(f"session_bootstrap.steps[{i}]: '{tool}' is not a read connector")
+    return errors
+
+
+_FRAMEWORK_HANDLED_INTENTS = frozenset({"language_switch_request"})  # mirrors runtime
+_PREDISPATCH_BUILTINS = frozenset({"title", "lower"})
+
+
+def _predispatch_rules(ac: dict, ag: dict) -> list[str]:
+    """Pre-dispatch rule checks, mirroring ``MergedConfig._check_predispatch_rules``.
+
+    Plus plan ruling 5: every rule arg key must be a ``source: agent`` param of
+    the matching ``action_gateway.tools[id]`` (checked when that tool exists).
+
+    Args:
+        ac: The merged agent_core config dict.
+        ag: The action_gateway block.
+
+    Returns:
+        List of human-readable error strings, empty when all rules pass.
+    """
+    errors: list[str] = []
+    conns = ac.get("connectors") or {}
+    groups = {
+        g: {c.get("name") for c in (conns.get(g) or []) if isinstance(c, dict)}
+        for g in ("read", "write", "identity")
+    }
+    known = set().union(*groups.values())
+    writes = groups["write"] | groups["identity"]
+    tables = set((ac.get("predispatch_tables") or {}))
+    nlu = (ac.get("preprocessing") or {}).get("nlu_processor") or {}
+    producible = {
+        r.get("intent") for r in (nlu.get("act_intents") or []) if isinstance(r, dict)
+    } | set(_FRAMEWORK_HANDLED_INTENTS)
+    wf = ac.get("agent_workflow") or {}
+    global_tools = set(wf.get("global_tools") or [])
+    gw_params: dict[str, set[str]] = {}
+    for t in (ag.get("tools") or []):
+        if isinstance(t, dict) and t.get("id"):
+            gw_params[t["id"]] = {
+                p["name"]
+                for ep in (t.get("endpoints") or []) if isinstance(ep, dict)
+                for p in (ep.get("params") or [])
+                if isinstance(p, dict) and p.get("source") == "agent" and p.get("name")
+            }
+    for sa in (wf.get("subagents") or []):
+        if not isinstance(sa, dict):
+            continue
+        sa_tools = set(sa.get("tools") or [])
+        for i, rule in enumerate(sa.get("predispatch") or []):
+            if not isinstance(rule, dict):
+                continue
+            where = f"agent_workflow.subagents[{sa.get('id')}].predispatch[{i}]"
+            tool = rule.get("tool")
+            if tool not in known:
+                errors.append(f"{where}: tool '{tool}' is not a declared connector")
+            if (sa_tools or global_tools) and tool not in sa_tools and tool not in global_tools:
+                errors.append(f"{where}: tool '{tool}' is not in the subagent's tools or global_tools")
+            if tool in writes and rule.get("enabled") is None:
+                errors.append(f"{where}: '{tool}' is a write tool; set 'enabled' explicitly")
+            for intent in rule.get("on_intent") or []:
+                if intent not in producible:
+                    errors.append(f"{where}: on_intent '{intent}' is not produced by any act_intents row")
+            for name, arg in (rule.get("args") or {}).items():
+                if not isinstance(arg, dict):
+                    continue
+                if tool in gw_params and name not in gw_params[tool]:
+                    errors.append(
+                        f"{where}.args.{name}: not a source=agent param of "
+                        f"action_gateway.tools[id={tool!r}] (have {sorted(gw_params[tool])})"
+                    )
+                norm = arg.get("normalise")
+                names: list = []
+                if arg.get("template") is not None:
+                    if norm is not None and not isinstance(norm, dict):
+                        errors.append(f"{where}.args.{name}: normalise on a template must be a dict")
+                    names += [v for v in (norm.values() if isinstance(norm, dict) else []) if isinstance(v, str)]
+                elif isinstance(norm, str):
+                    names.append(norm)
+                if arg.get("reject"):
+                    names.append(arg["reject"])
+                for n in names:
+                    if n not in tables and n not in _PREDISPATCH_BUILTINS:
+                        errors.append(f"{where}.args.{name}: unknown table '{n}'")
+    return errors
+
+
+def _tool_result_session_mapping_rules(ac: dict, ag: dict) -> list[str]:
+    """Reject user-scope caching of a connector whose tool declares ``session_mapping``.
+
+    A cache hit returns stored data only: it carries no ``session_values``, so
+    the tool's ``response.session_mapping`` runs only when the result is first
+    fetched live. With session scope that is within the same session, where the
+    mapped values are already in session state; with user scope a later session
+    would get the hit but never the mapped values.
+
+    Args:
+        ac: The agent_core block.
+        ag: The action_gateway block.
+
+    Returns:
+        One error string per user-scope cached connector whose matching
+        action_gateway tool (by ``id`` or ``name``) declares
+        ``response.session_mapping``.
+    """
+    errors: list[str] = []
+    mapped: set[str] = set()
+    for t in ag.get("tools") or []:
+        if not isinstance(t, dict) or not ((t.get("response") or {}).get("session_mapping")):
+            continue
+        mapped.update(str(k) for k in (t.get("id"), t.get("name")) if k)
+    for group in (ac.get("connectors") or {}).values():
+        for c in group or []:
+            if not isinstance(c, dict):
+                continue
+            cache = c.get("cache")
+            name = c.get("name")
+            if isinstance(cache, dict) and cache.get("scope") == "user" and name in mapped:
+                errors.append(
+                    f"connectors.{name}.cache.scope is 'user' but action_gateway tool '{name}' "
+                    f"declares response.session_mapping. A cache hit does not replay "
+                    f"session_mapping, so a later session would miss the mapped values. "
+                    f"Use scope: session for this connector."
+                )
+    return errors
+
+
+def _dialogue_act_session_mapping_rules(ac: dict, ag: dict) -> list[str]:
+    """Reject dialogue-act NLU state keys that a connector session_mapping also writes.
+
+    NLU slots (mapped through ``entity_to_profile_field``) and pending
+    ``resolves_to`` keys are written by Agent Core's SlotWriter; a
+    ``response.session_mapping`` target of the same name would make two
+    writers race on one field (NLU dialogue-acts spec §7.3).
+
+    Args:
+        ac: The agent_core block.
+        ag: The action_gateway block.
+
+    Returns:
+        One error per colliding key.
+    """
+    nlu = ((ac.get("preprocessing") or {}).get("nlu_processor")) or {}
+    emap = ac.get("entity_to_profile_field") or {}
+    keys = {emap.get(n, n) for n in (nlu.get("slots") or {})}
+    for s in ((ac.get("agent_workflow") or {}).get("subagents")) or []:
+        for p in (s or {}).get("pending") or []:
+            if (p or {}).get("resolves_to"):
+                keys.add(p["resolves_to"])
+    errors: list[str] = []
+    for t in ag.get("tools") or []:
+        for m in ((t or {}).get("response") or {}).get("session_mapping") or []:
+            target = (m or {}).get("target")
+            if target in keys:
+                errors.append(
+                    f"action_gateway tool '{t.get('id') or t.get('name')}' session_mapping target "
+                    f"'{target}' is also a dialogue_act NLU state key; rename one of them.")
+    return errors
+
+
+_FRAMEWORK_HANDLED_INTENTS: frozenset[str] = frozenset({"language_switch_request", "human_request"})
+"""Mirrors runtime ``_FRAMEWORK_HANDLED_INTENTS``: derived but never routed."""
+
+_DEFAULT_OFF_TRACK_INTENT = "off_track"
+_ANY_INPUT_INTENT = "any_input"
+
+
+def _nlu_block(ac: dict) -> dict:
+    nlu = (ac.get("preprocessing") or {}).get("nlu_processor") or {}
+    return nlu if isinstance(nlu, dict) else {}
+
+
+def _off_track_intent(nlu: dict) -> str:
+    off_track = nlu.get("off_track") or {}
+    if isinstance(off_track, dict) and off_track.get("intent"):
+        return str(off_track["intent"])
+    return _DEFAULT_OFF_TRACK_INTENT
+
+
+def _act_intent_rows(nlu: dict) -> list[dict]:
+    return [r for r in (nlu.get("act_intents") or []) if isinstance(r, dict)]
+
+
+def _dialogue_act_routing_rules(ac: dict) -> list[str]:
+    """Mirror runtime ``MergedConfig._check_dialogue_act_rules`` routing checks.
+
+    Every ``act_intents`` intent must be used by a subagent routing rule or
+    by ``agent_workflow.global_routing`` (``language_switch_request`` and
+    ``human_request`` are framework-handled), and the off-track intent must be routed whenever
+    the workflow has subagents. Messages match the runtime, prefixed with
+    ``agent_core.``.
+
+    Args:
+        ac: The ``agent_core`` block dict.
+
+    Returns:
+        One error string per violation; empty when consistent.
+    """
+    nlu = _nlu_block(ac)
+    workflow = ac.get("agent_workflow") or {}
+    subagents = [s for s in (workflow.get("subagents") or []) if isinstance(s, dict)]
+    routed: set[str] = {
+        r.get("intent")
+        for s in subagents
+        for r in (s.get("routing") or [])
+        if isinstance(r, dict)
+    } | {r.get("intent") for r in (workflow.get("global_routing") or []) if isinstance(r, dict)}
+
+    errors: list[str] = []
+    for i, row in enumerate(_act_intent_rows(nlu)):
+        intent = row.get("intent")
+        if intent and intent not in routed and intent not in _FRAMEWORK_HANDLED_INTENTS:
+            errors.append(
+                f"agent_core.preprocessing.nlu_processor.act_intents[{i}]: intent '{intent}' "
+                f"is not used by any routing rule"
+            )
+    off_track = _off_track_intent(nlu)
+    if subagents and off_track not in routed:
+        errors.append(
+            f"agent_core.preprocessing.nlu_processor.off_track.intent '{off_track}' "
+            f"is not used by any routing rule"
+        )
+    return errors
+
+
+def _handoff_rules(ac: dict) -> list[str]:
+    """``identity.human_handoff: request`` needs a ``handoff`` block and a ``handoff`` subagent.
+
+    Mirrors the runtime ``MergedConfig`` cross-check (identity/handoff spec §7).
+
+    Args:
+        ac: The ``agent_core`` block dict.
+
+    Returns:
+        A one-element error list when the rule fails, else empty.
+    """
+    identity = ac.get("identity") if isinstance(ac.get("identity"), dict) else {}
+    if identity.get("human_handoff") != "request":
+        return []
+    subagents = ((ac.get("agent_workflow") or {}).get("subagents")) or []
+    has_phase = any(isinstance(s, dict) and s.get("id") == "handoff" for s in subagents)
+    if ac.get("handoff") and has_phase:
+        return []
+    return ["agent_core.identity.human_handoff=request needs a handoff block and a 'handoff' subagent"]
+
+
+def _intent_filter_rules(ac: dict, ke: dict) -> list[str]:
+    """Check KE ``intent_filters`` keys against the routing intent set the NLU can derive.
+
+    The routing intent on a turn is an ``act_intents`` intent, ``any_input``,
+    the off-track intent, ``language_switch_request`` or ``human_request``; a filter keyed on
+    anything else never matches. Self-guards until ``act_intents`` is
+    authored (it is hand-written in ``agent_core.yaml`` for now, spec §16).
+
+    Args:
+        ac: The ``agent_core`` block dict.
+        ke: The ``knowledge_engine`` block dict.
+
+    Returns:
+        One error string per unknown key; empty when consistent.
+    """
+    nlu = _nlu_block(ac)
+    rows = _act_intent_rows(nlu)
+    if not rows:
+        return []
+    intent_filters = (
+        ((ke.get("knowledge") or {}).get("blocks") or {})
+        .get("static_knowledge_base", {})
+        .get("intent_filters") or {}
+    )
+    derivable = (
+        {r["intent"] for r in rows if r.get("intent")}
+        | {_ANY_INPUT_INTENT, _off_track_intent(nlu)}
+        | _FRAMEWORK_HANDLED_INTENTS
+    )
+    return [
+        f"knowledge_engine.intent_filters key '{key}' is not an intent the NLU can derive "
+        f"(an agent_core.preprocessing.nlu_processor.act_intents row intent, '{_ANY_INPUT_INTENT}', "
+        f"the off-track intent, 'language_switch_request' or 'human_request'). Queries for this key never "
+        f"match; rename it or remove it. Known: {sorted(derivable)}"
+        for key in intent_filters
+        if key not in derivable
+    ]
+
+
+_NUMBER_CONVERTERS = ("english", "hindi")  # mirrors runtime MergedConfig._check_output_rules
+_CHANNEL_NAMES = ("voice", "web", "cli", "mcp", "bridge")
+
+
+def _output_contract_rules(ac: dict) -> list[str]:
+    """Output-contract language rules, mirroring ``MergedConfig._check_output_rules``.
+
+    - every ``language_normalisation.supported_languages`` entry needs a contract entry
+    - ``numbers: words`` only for languages with a spoken-number converter
+    - a connector ``result_shaping.spoken`` needs a converter for ``default_language``
+
+    Args:
+        ac: The merged agent_core config dict.
+
+    Returns:
+        List of human-readable error strings, empty when all rules pass.
+    """
+    errors: list[str] = []
+    ln = ((ac.get("preprocessing") or {}).get("language_normalisation")) or {}
+    supported = [x for x in (ln.get("supported_languages") or []) if isinstance(x, str)]
+    default_lang = str(ln.get("default_language") or "")
+    channels = ac.get("channels") or {}
+    for name in _CHANNEL_NAMES:
+        ch = channels.get(name)
+        contract = ch.get("output_contract") if isinstance(ch, dict) else None
+        if not isinstance(contract, dict):
+            continue
+        langs = contract.get("languages") or {}
+        missing = [x for x in supported if x not in langs]
+        if missing:
+            errors.append(
+                f"agent_core.channels.{name}.output_contract lacks languages {missing} "
+                f"listed in language_normalisation.supported_languages"
+            )
+        for lang, entry in langs.items():
+            if (isinstance(entry, dict) and entry.get("numbers") == "words"
+                    and lang not in _NUMBER_CONVERTERS):
+                errors.append(
+                    f"agent_core.channels.{name}.output_contract.languages.{lang}: numbers=words "
+                    f"needs a spoken-number converter (have {list(_NUMBER_CONVERTERS)})"
+                )
+    conns = ac.get("connectors") or {}
+    for group in ("read", "write", "identity"):
+        for c in conns.get(group) or []:
+            rs = c.get("result_shaping") if isinstance(c, dict) else None
+            if isinstance(rs, dict) and rs.get("spoken") and default_lang not in _NUMBER_CONVERTERS:
+                errors.append(
+                    f"agent_core.connectors.{group}[{c.get('name')}].result_shaping.spoken renders in "
+                    f"language_normalisation.default_language '{default_lang}', which has no "
+                    f"spoken-number converter (have {list(_NUMBER_CONVERTERS)})"
+                )
+    return errors
+
+
 def validate_cross_block(
     blocks: dict[str, dict],
     selected_channels: Iterable[str],
@@ -141,18 +590,12 @@ def validate_cross_block(
 
     workflow = ac.get("agent_workflow") or {}
     global_tools: list[str] = workflow.get("global_tools") or []
-    global_intents: set[str] = set(workflow.get("global_intents") or [])
 
     declared_subagent_ids: set[str] = {
         sa["id"]
         for sa in (workflow.get("subagents") or [])
         if isinstance(sa, dict) and sa.get("id")
     }
-    all_subagent_intents: set[str] = set()
-    for sa in workflow.get("subagents") or []:
-        if isinstance(sa, dict):
-            for intent in sa.get("valid_intents") or []:
-                all_subagent_intents.add(intent)
 
     # 1. Tool names in global_tools exist in connectors (skip MCP-namespaced).
     # Tied to the workflow phase — global_tools is populated there.
@@ -164,7 +607,7 @@ def validate_cross_block(
                     f"in any connectors.* list. Declared connectors: {sorted(declared_connectors)}"
                 )
 
-    # 2 & 3. Per-subagent tool names must be declared; global vs subagent intents must not overlap.
+    # 2. Per-subagent tool names must be declared.
     if applicable_after("workflow"):
         for sa in workflow.get("subagents") or []:
             if not isinstance(sa, dict):
@@ -176,12 +619,12 @@ def validate_cross_block(
                         f"agent_core.agent_workflow.subagents[{sa_id}].tools: '{tool}' is not "
                         f"declared in any connectors.* list. Declared connectors: {sorted(declared_connectors)}"
                     )
-        overlap = global_intents & all_subagent_intents
-        if overlap:
-            errors.append(
-                f"agent_core: intents {sorted(overlap)} appear in both global_intents and a "
-                f"subagent's valid_intents. Agent Core crashes at startup if there is any overlap."
-            )
+
+    # 3. Every act_intents row intent and the off-track intent must be routed
+    # (mirrors the runtime _check_dialogue_act_rules). Tied to the workflow phase.
+    if applicable_after("workflow"):
+        errors.extend(_dialogue_act_routing_rules(ac))
+        errors.extend(_handoff_rules(ac))
 
     # 4. knowledge_retrieval must be in connectors.internal (not connectors.read).
     # Tied to tools phase (when connectors.internal is populated) but only
@@ -204,25 +647,10 @@ def validate_cross_block(
                 "in connectors.internal. Add it under connectors.internal with route: knowledge_engine."
             )
 
-    # 5. intent_filters keys must be in NLU intents.
+    # 5. intent_filters keys must name a routing intent the NLU can derive.
     # Tied to the knowledge phase (intent_filters is configured there).
-    nlu_intents: set[str] = set(
-        (ac.get("preprocessing") or {}).get("nlu_processor", {}).get("intents") or []
-    )
-    intent_filters: dict = (
-        (ke.get("knowledge") or {})
-        .get("blocks", {})
-        .get("static_knowledge_base", {})
-        .get("intent_filters") or {}
-    )
     if applicable_after("knowledge"):
-        for intent_key in intent_filters:
-            if intent_key not in nlu_intents:
-                errors.append(
-                    f"knowledge_engine.intent_filters key '{intent_key}' is not declared in "
-                    f"agent_core.preprocessing.nlu_processor.intents. Queries for this intent "
-                    f"will bypass the filter. Add '{intent_key}' to the NLU intents list."
-                )
+        errors.extend(_intent_filter_rules(ac, ke))
 
     # 6. Voice selected → reach_layer.channels.voice fully configured.
     # Tied to the reach phase — the voice channel is configured there.
@@ -342,6 +770,18 @@ def validate_cross_block(
                 "'Does it sound like a script instead of a human call?']"
             )
 
+    # 13b. Tool-result cache / memory tool vs memory_layer session + profile.
+    if applicable_after("tools"):
+        errors.extend(_tool_result_memory_rules(ac, blocks.get("memory_layer") or {}))
+        errors.extend(_tool_result_agent_rules(ac))
+        errors.extend(_session_bootstrap_rules(ac, blocks.get("memory_layer") or {}))
+        # 13c. User-scope cache is unsafe where the tool declares session_mapping.
+        errors.extend(_tool_result_session_mapping_rules(ac, blocks.get("action_gateway") or {}))
+        # 13d. dialogue_act state keys must not collide with session_mapping targets.
+        errors.extend(_dialogue_act_session_mapping_rules(ac, blocks.get("action_gateway") or {}))
+        # 13e. Tool pre-dispatch rules (runtime MergedConfig._check_predispatch_rules).
+        errors.extend(_predispatch_rules(ac, blocks.get("action_gateway") or {}))
+
     # 14. Connector input_schema property names MUST match the action_gateway
     # tool's agent-source param names. The REST adapter passes the LLM's
     # parameters verbatim into the HTTP request — if the connector exposes
@@ -411,26 +851,8 @@ def validate_cross_block(
     if applicable_after("reach"):
         errors.extend(_validate_recording(rl))
 
-    # 15. Every intent referenced by the workflow MUST already be declared in
-    # nlu_processor.intents. Without this check, the renderer silently unions
-    # subagent valid_intents into the NLU intents list — which means new
-    # intents enter the config without the user ever approving them.
-    # Tied to the workflow phase.
-    if applicable_after("workflow") and workflow:
-        workflow_intents: set[str] = set(global_intents) | all_subagent_intents
-        workflow_intents.discard("other")
-        workflow_intents.discard("*")
-        missing_from_nlu = workflow_intents - nlu_intents
-        if missing_from_nlu:
-            errors.append(
-                f"agent_core.agent_workflow references intents {sorted(missing_from_nlu)} "
-                f"that are NOT declared in agent_core.preprocessing.nlu_processor.intents. "
-                f"NLU intents are signed off by the user in the language phase; introducing "
-                f"new ones in the workflow phase is silent expansion. If you genuinely need "
-                f"a new intent, ask the user first, then add it to "
-                f"preprocessing.nlu_processor.intents AND the subagent's valid_intents in "
-                f"the same response. Otherwise, rename the subagent intent to match an "
-                f"existing NLU intent."
-            )
+    # 17. Output-contract language cross-check (runtime MergedConfig._check_output_rules).
+    if applicable_after("reach"):
+        errors.extend(_output_contract_rules(ac))
 
     return errors

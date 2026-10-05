@@ -1,21 +1,40 @@
+# Grafana datasources, with fixed UIDs.
+#
+# A stable `uid` on each: provisioned alert rules (../alerting/rules.yaml) must
+# name their datasource by UID, and without one Grafana assigns a random UID
+# per install.
+#
+# deleteDatasources first removes any same-named datasource an existing
+# grafana_data volume already holds under a random UID, so an upgrade
+# re-creates it with the fixed one instead of failing on the name clash.
 apiVersion: 1
+
+deleteDatasources:
+  - { name: Prometheus, orgId: 1 }
+  - { name: Loki, orgId: 1 }
+  - { name: Jaeger, orgId: 1 }
 
 datasources:
   - name: Prometheus
+    uid: dpg-prometheus
     type: prometheus
     access: proxy
-    url: http://otelcol:8889
+    # The Prometheus SERVER, not the collector: otelcol:8889 is a plain
+    # /metrics page with no query API.
+    url: http://prometheus:9090
     isDefault: true
-    editable: true
-
-  - name: Jaeger
-    type: jaeger
-    access: proxy
-    url: http://jaeger:16686
-    editable: true
+    editable: false
 
   - name: Loki
+    uid: dpg-loki
     type: loki
     access: proxy
     url: http://loki:3100
-    editable: true
+    editable: false
+
+  - name: Jaeger
+    uid: dpg-jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    editable: false

@@ -7,7 +7,7 @@
 # OTel/telemetry/audit PII fields are DPG framework defaults — not needed here.
 
 observability:
-  domain: ""  # Required. Short domain identifier, e.g. "kkb", "fasal_doctor".
+  domain: ""  # Required. Short domain identifier, e.g. "blue-dots", "fasal_doctor".
 
   sli:
     turn_latency_p99_ms: 1200  # P99 latency threshold in ms. Override if your domain needs

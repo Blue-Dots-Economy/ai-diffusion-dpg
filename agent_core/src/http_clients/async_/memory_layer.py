@@ -81,6 +81,7 @@ class AsyncMemoryLayerHttpClient(AsyncMemoryLayerBase):
                 session=data.get("session") or {},
                 profile=data.get("profile") or {},
                 journey=data.get("journey"),
+                tool_results=data.get("tool_results") or [],
             )
 
             logger.info(
@@ -377,3 +378,56 @@ class AsyncMemoryLayerHttpClient(AsyncMemoryLayerBase):
                 },
             )
             return []
+
+    async def apply_tool_results(self, session_id: str, user_id: str, batch: dict) -> None:
+        """POST /tool_results/apply. Logs and swallows every failure.
+
+        Args:
+            session_id: Session owner.
+            user_id: User owner.
+            batch: ``{"invalidate": [tool, ...], "puts": [entry, ...]}``.
+        """
+        start = time.time()
+        try:
+            resp = await self._client.post(
+                f"{self._endpoint}/tool_results/apply",
+                json={"session_id": session_id, "user_id": user_id,
+                      "invalidate": list(batch.get("invalidate") or []),
+                      "puts": list(batch.get("puts") or [])},
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            logger.error("async_memory_client.apply_tool_results_error", extra={
+                "operation": "async_memory_client.apply_tool_results", "status": "failure",
+                "error": f"{type(e).__name__}: {e}",
+                "latency_ms": int((time.time() - start) * 1000)})
+
+    async def write_strict(self, session_id: str, user_id: str, scope: str, key: str,
+                     value: Any) -> tuple[bool, str]:
+        """POST /write_strict. Returns ``(accepted, reason)``; never raises.
+
+        Args:
+            session_id: Session owner.
+            user_id: User owner.
+            scope: ``session`` or ``user``.
+            key: Field key.
+            value: Field value.
+
+        Returns:
+            ``(True, "")`` when accepted, ``(False, reason)`` when rejected, and
+            ``(False, "memory layer unavailable")`` on transport failure.
+        """
+        try:
+            resp = await self._client.post(
+                f"{self._endpoint}/write_strict",
+                json={"session_id": session_id, "user_id": user_id, "scope": scope,
+                      "key": key, "value": value},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("status") == "ok", str(data.get("reason") or "")
+        except Exception as e:
+            logger.error("async_memory_client.write_strict_error", extra={
+                "operation": "async_memory_client.write_strict", "status": "failure",
+                "error": f"{type(e).__name__}: {e}"})
+            return False, "memory layer unavailable"

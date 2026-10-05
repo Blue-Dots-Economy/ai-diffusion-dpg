@@ -3,7 +3,7 @@ MergedConfig — strict schema for the Trust Layer merged runtime config.
 
 Merged config = dev-kit/dpg/trust_layer.yaml (framework defaults)
                 deep-merged with a domain YAML
-                (e.g. dev-kit/configs/kkb/trust_layer.yaml).
+                (e.g. dev-kit/configs/blue-dots/trust_layer.yaml).
 
 Every model sets ``extra="forbid"``: unknown keys at any nesting level
 fail at startup with a pydantic ValidationError, not at first request.
@@ -172,15 +172,17 @@ class ConsentConfig(BaseModel):
 class HitlConfig(BaseModel):
     """Human-in-the-loop escalation queue settings.
 
-    NOTE: ``notification_webhook`` is read but not yet dispatched —
-    webhook and redis backends are tracked in GH-36.
+    ``queue_backend: webhook`` POSTs the handoff to the URL in the
+    ``HITL_WEBHOOK_URL`` env var, signed with ``HITL_WEBHOOK_SECRET``
+    (HTTPS only unless ``HITL_WEBHOOK_ALLOW_HTTP=1``). ``notification_webhook``
+    is unused and deprecated: the URL never comes from config.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     queue_backend: QueueBackend = QueueBackend.log
     holding_message: str = ""
-    notification_webhook: Optional[str] = None  # GH-36
+    notification_webhook: Optional[str] = None  # unused, deprecated; see HITL_WEBHOOK_URL
 
 
 class ConsentStoreConfig(BaseModel):

@@ -1,0 +1,6 @@
+file: dev-kit/configs/blue-dots/action_gateway.yaml
+upstream_hosts: ["https://dev-signals.serveirc.com", "https://signals.bluedotseconomy.org"]
+rules:                       # applied in order; {host} = the one upstream host found in the file
+  - {find: 'value: "{host}"', replace: 'value: "{instance_url}"', count: 1}           # apply_job static instance_url
+  - {find: 'base_url: "{host}/signals-search"', replace: 'base_url: "{tap_url}/signals-search"', count: 1}
+  - {find: 'base_url: "{host}"', replace: 'base_url: "{tap_url}"', count: 3}

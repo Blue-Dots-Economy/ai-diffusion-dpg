@@ -41,7 +41,6 @@ def make_context(raw_input: str = "Hello there") -> KEContext:
         detected_language="english",
         intent="unknown",
         entities={},
-        sentiment="neutral",
         confidence=0.0,
         retrieval_chunks=[],
         always_include_chunks=[],

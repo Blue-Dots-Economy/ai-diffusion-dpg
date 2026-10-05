@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
 from src.http_clients.memory_layer import MemoryLayerHttpClient
@@ -422,3 +422,104 @@ def test_delete_user_connection_error_does_not_raise(client):
     with patch("src.http_clients.memory_layer.httpx.delete",
                side_effect=ConnectionError("refused")):
         client.delete_user("user-1")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Tool-result persistence: tool_results, apply_tool_results, write_strict
+# ---------------------------------------------------------------------------
+
+def test_context_bundle_carries_tool_results(client):
+    payload = {"session": {}, "profile": {}, "journey": None, "tool_results": [{"tool": "t"}]}
+    with patch("httpx.post", return_value=_mock_response(payload)):
+        bundle = client.context_bundle("s1", "u1")
+    assert bundle.tool_results == [{"tool": "t"}]
+
+
+def test_context_bundle_without_tool_results_defaults_empty(client):
+    with patch("httpx.post", return_value=_mock_response({"session": {}, "profile": {}})):
+        bundle = client.context_bundle("s1", "u1")
+    assert bundle.tool_results == []
+
+
+def test_apply_tool_results_posts_batch(client):
+    with patch("httpx.post", return_value=_mock_response({"status": "ok"})) as mock_post:
+        client.apply_tool_results("s1", "u1", {"invalidate": ["t"], "puts": []})
+    assert mock_post.call_args.args[0] == "http://memory-layer:8002/tool_results/apply"
+    assert mock_post.call_args.kwargs["json"] == {
+        "session_id": "s1", "user_id": "u1", "invalidate": ["t"], "puts": [],
+    }
+
+
+def test_apply_tool_results_swallows_connect_error(client):
+    with patch("httpx.post", side_effect=httpx.ConnectError("down")):
+        assert client.apply_tool_results("s1", "u1", {"invalidate": [], "puts": []}) is None
+
+
+@pytest.mark.parametrize("body,expected", [
+    ({"status": "ok", "reason": ""}, (True, "")),
+    ({"status": "rejected", "reason": "nope"}, (False, "nope")),
+])
+def test_write_strict_maps_status(client, body, expected):
+    with patch("httpx.post", return_value=_mock_response(body)) as mock_post:
+        assert client.write_strict("s1", "u1", "session", "k", "v") == expected
+    assert mock_post.call_args.args[0] == "http://memory-layer:8002/write_strict"
+    assert mock_post.call_args.kwargs["json"] == {
+        "session_id": "s1", "user_id": "u1", "scope": "session", "key": "k", "value": "v",
+    }
+
+
+def test_write_strict_connect_error_returns_unavailable(client):
+    with patch("httpx.post", side_effect=httpx.ConnectError("down")):
+        assert client.write_strict("s1", "u1", "session", "k", "v") == (False, "memory layer unavailable")
+
+
+# --- async equivalents ------------------------------------------------------
+
+@pytest.fixture
+def async_client():
+    from src.http_clients.async_.memory_layer import AsyncMemoryLayerHttpClient
+    return AsyncMemoryLayerHttpClient(CONFIG)
+
+
+async def test_async_context_bundle_carries_tool_results(async_client):
+    payload = {"session": {}, "profile": {}, "journey": None, "tool_results": [{"tool": "t"}]}
+    async_client._client.post = AsyncMock(return_value=_mock_response(payload))
+    bundle = await async_client.context_bundle("s1", "u1")
+    assert bundle.tool_results == [{"tool": "t"}]
+
+
+async def test_async_context_bundle_without_tool_results_defaults_empty(async_client):
+    async_client._client.post = AsyncMock(return_value=_mock_response({"session": {}, "profile": {}}))
+    bundle = await async_client.context_bundle("s1", "u1")
+    assert bundle.tool_results == []
+
+
+async def test_async_apply_tool_results_posts_batch(async_client):
+    async_client._client.post = AsyncMock(return_value=_mock_response({"status": "ok"}))
+    await async_client.apply_tool_results("s1", "u1", {"invalidate": ["t"], "puts": []})
+    call = async_client._client.post.call_args
+    assert call.args[0] == "http://memory-layer:8002/tool_results/apply"
+    assert call.kwargs["json"] == {
+        "session_id": "s1", "user_id": "u1", "invalidate": ["t"], "puts": [],
+    }
+
+
+async def test_async_apply_tool_results_swallows_connect_error(async_client):
+    async_client._client.post = AsyncMock(side_effect=httpx.ConnectError("down"))
+    assert await async_client.apply_tool_results("s1", "u1", {"invalidate": [], "puts": []}) is None
+
+
+@pytest.mark.parametrize("body,expected", [
+    ({"status": "ok", "reason": ""}, (True, "")),
+    ({"status": "rejected", "reason": "nope"}, (False, "nope")),
+])
+async def test_async_write_strict_maps_status(async_client, body, expected):
+    async_client._client.post = AsyncMock(return_value=_mock_response(body))
+    assert await async_client.write_strict("s1", "u1", "session", "k", "v") == expected
+    assert async_client._client.post.call_args.args[0] == "http://memory-layer:8002/write_strict"
+
+
+async def test_async_write_strict_connect_error_returns_unavailable(async_client):
+    async_client._client.post = AsyncMock(side_effect=httpx.ConnectError("down"))
+    assert await async_client.write_strict("s1", "u1", "session", "k", "v") == (
+        False, "memory layer unavailable")

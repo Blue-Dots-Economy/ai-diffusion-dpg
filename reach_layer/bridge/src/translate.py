@@ -8,7 +8,10 @@ rule is testable without a server.
 from __future__ import annotations
 
 import json
+import logging
 import time
+import uuid
+from collections import OrderedDict
 from typing import Any, Optional
 
 from src.identity import IdentityError, extract_caller_phone
@@ -18,6 +21,8 @@ from src.openai_models import (
     build_completion,
     new_completion_id,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class RequestError(ValueError):
@@ -54,6 +59,78 @@ def _content_to_text(content: Any) -> str:
         ]
         return "".join(parts)
     return ""
+
+
+# Phone -> (session id, last-seen epoch) for the call in progress, used only
+# when the client sends no call identifier of its own. Bounded because a
+# long-lived bridge would otherwise hold one entry per caller forever.
+_MINTED_SESSIONS: "OrderedDict[str, tuple[str, float]]" = OrderedDict()
+_MINTED_SESSIONS_MAX = 1000
+
+# A gap longer than this means the previous call ended and this is a new one.
+# Turns inside a call arrive seconds apart (2-5 s of processing plus the
+# caller's reply); a redial is minutes later. Chosen generously so an unusually
+# long pause mid-call does not split the session, while still being four orders
+# of magnitude tighter than the 2-day session TTL that caused the bug.
+_CALL_IDLE_GAP_S = 120.0
+
+
+def session_id_for(
+    body: dict, phone: str, now: float | None = None
+) -> tuple[str, bool]:
+    """Session id for this turn: one per CALL, not one per caller.
+
+    The phone identifies the person and stays in ``user_id``, which is what
+    persistent profile state is keyed on. The session is the conversation, so
+    it must not outlive the call. Using the phone for both meant a caller who
+    rang back inside the session TTL resumed the previous call: observed on the
+    VM landing a caller mid-flow in `services_offer`, reading out a job no tool
+    had fetched, and announcing an application that was never attempted.
+
+    Preference order:
+      1. ``metadata.call_id`` from the client — genuinely unique per call,
+         stable across its turns, and unaffected by timing or restarts. This is
+         the intended source.
+      2. Idle-gap inference. The client sends only the newest utterance
+         (spec 11.1), so the request body cannot tell us whether a call is
+         starting — there is never any history in it. Time is the only signal
+         left: a turn arriving more than ``_CALL_IDLE_GAP_S`` after the last one
+         from this caller is treated as a new call.
+
+    Args:
+        body: Parsed chat-completions request body.
+        phone: The caller's phone number, already validated.
+        now: Epoch seconds; injectable for tests.
+
+    Returns:
+        ``(session_id, is_new_call)``. The second value tells Agent Core to
+        start clean: a new session id alone is not enough, because Memory Layer
+        ADOPTS the most recent session's state for the same ``user_id`` unless
+        ``fresh`` is set — and adoption copies ``current_subagent_id``, which
+        is exactly the state that must not survive a hang-up.
+    """
+    now = time.time() if now is None else now
+    call_id = (body.get("metadata") or {}).get("call_id")
+    if isinstance(call_id, str) and call_id.strip():
+        session = f"{phone}:{call_id.strip()}"
+        seen = _MINTED_SESSIONS.get(phone)
+        is_new = seen is None or seen[0] != session
+        _MINTED_SESSIONS[phone] = (session, now)
+        _MINTED_SESSIONS.move_to_end(phone)
+    else:
+        remembered = _MINTED_SESSIONS.get(phone)
+        if remembered is not None and now - remembered[1] <= _CALL_IDLE_GAP_S:
+            session, is_new = remembered[0], False
+            _MINTED_SESSIONS[phone] = (session, now)
+            _MINTED_SESSIONS.move_to_end(phone)
+        else:
+            session, is_new = f"{phone}:{uuid.uuid4().hex[:12]}", True
+            _MINTED_SESSIONS[phone] = (session, now)
+            _MINTED_SESSIONS.move_to_end(phone)
+
+    while len(_MINTED_SESSIONS) > _MINTED_SESSIONS_MAX:
+        _MINTED_SESSIONS.popitem(last=False)
+    return session, is_new
 
 
 def to_turn_request(body: dict, *, channel: str) -> dict[str, Any]:
@@ -117,13 +194,68 @@ def to_turn_request(body: dict, *, channel: str) -> dict[str, Any]:
     except IdentityError as exc:
         raise RequestError(str(exc), param=exc.param) from exc
 
+    _session, _is_new_call = session_id_for(body, phone)
     return {
-        "session_id": phone,
+        # One session per CALL; the phone stays as the identity in user_id,
+        # which is what persistent profile state is keyed on.
+        "session_id": _session,
         "user_id": phone,
+        # A new session id is not enough on its own: Memory Layer adopts the
+        # previous session's state for this user_id unless `fresh` is set, and
+        # adoption carries `current_subagent_id` — so a caller who hung up in
+        # services_offer would resume there despite the new id.
+        "fresh": _is_new_call,
         "user_message": user_text,
         "channel": channel,
         "timestamp_ms": int(time.time() * 1000),
     }
+
+
+def offered_hangup_tool(body: dict, name: str) -> Optional[str]:
+    """Return ``name`` if the client offered a function tool by that name.
+
+    The hangup call is only ever emitted against a tool the client declared in
+    ``tools``: a call to a function the client does not know is a protocol
+    error on its side, not a hangup.
+
+    Args:
+        body: Parsed chat-completions request body.
+        name: Configured hangup tool name. Empty disables hanging up.
+
+    Returns:
+        ``name`` when offered, otherwise None.
+    """
+    if not name:
+        return None
+    for tool in body.get("tools") or []:
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            continue
+        function = tool.get("function")
+        if isinstance(function, dict) and function.get("name") == name:
+            return name
+    return None
+
+
+def is_tool_result_followup(body: dict) -> bool:
+    """True when the request only carries a tool result back to the model.
+
+    After a ``tool_calls`` response the client runs the tool and re-invokes the
+    model with the result as the newest message. The only tool this shim ever
+    calls is the hangup, so there is nothing left to say — and forwarding the
+    request would replay the caller's last utterance (the goodbye) to Agent
+    Core as a fresh turn.
+
+    Args:
+        body: Parsed chat-completions request body.
+
+    Returns:
+        True if the newest message has role ``tool``.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return False
+    last = messages[-1]
+    return isinstance(last, dict) and last.get("role") == "tool"
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +293,9 @@ class StreamTranslator:
     exactly one request. Never share an instance across requests.
     """
 
-    def __init__(self, model: str, terminal_word: str = "") -> None:
+    def __init__(self, model: str, terminal_word: str = "",
+                 hangup_tool: Optional[str] = None,
+                 tool_status_phrases: Optional[dict[str, str]] = None) -> None:
         """Initialise a translator for a single response.
 
         Args:
@@ -170,9 +304,17 @@ class StreamTranslator:
                 value is the only meaningful one to report.
             terminal_word: Closing word spoken when the turn ends the session.
                 Empty disables it.
+            hangup_tool: Name of the client-offered tool to call when the
+                turn ends the session (see :func:`offered_hangup_tool`). None
+                when the client offered none — the stream then just stops.
+            tool_status_phrases: Tool name to the line spoken while that tool
+                runs (see :meth:`tool_status`). None or empty disables it.
         """
         self._model = model
         self._terminal_word = terminal_word
+        self._hangup_tool = hangup_tool
+        self._tool_status_phrases = tool_status_phrases or {}
+        self._status_spoken = False
         self._id = new_completion_id()
         self._created = int(time.time())
         self._emitted_content = False
@@ -208,6 +350,30 @@ class StreamTranslator:
             self._emitted_content = True
         return self._chunk(delta={"content": text})
 
+    def tool_status(self, tools: Any) -> Optional[dict]:
+        """Translate a ``tool_start`` signal into a spoken status line.
+
+        Rationed so status chatter cannot back up the client's TTS queue
+        behind the real reply: at most one line per response, never once the
+        reply has started, and only for tools the domain mapped (the first
+        mapped one, in call order).
+
+        Args:
+            tools: The signal's ``tools`` list — absent on an Agent Core that
+                predates the field.
+
+        Returns:
+            A content chunk, or None when nothing should be said.
+        """
+        if self._status_spoken or self._emitted_content or not isinstance(tools, list):
+            return None
+        for name in tools:
+            phrase = self._tool_status_phrases.get(name) if isinstance(name, str) else None
+            if phrase:
+                self._status_spoken = True
+                return self.sentence(phrase)
+        return None
+
     def finish(self, done: dict, *, include_usage: bool) -> list[dict]:
         """Build the chunks that close the stream from Agent Core's DoneEvent.
 
@@ -218,16 +384,42 @@ class StreamTranslator:
 
         Returns:
             The closing chunks in emission order. The caller appends
-            ``SSE_DONE`` after these. ``finish_reason`` is always the literal
-            ``"stop"`` — the only value this method ever emits, out of the
-            five the contract permits, since the DoneEvent carries no field
-            that maps to ``length``, ``tool_calls``, ``content_filter`` or
-            ``function_call``.
+            ``SSE_DONE`` after these. ``finish_reason`` is ``"tool_calls"``
+            when the session ended and the client offered a hangup tool —
+            the call to it follows the terminal word, so the client speaks
+            the goodbye before acting on the hangup — and ``"stop"``
+            otherwise.
         """
         out: list[dict] = []
-        if done.get("session_ended") and self._terminal_word:
+        ended = bool(done.get("session_ended"))
+        if ended and self._terminal_word:
             out.append(self.sentence(self._terminal_word))
-        out.append(self._chunk(delta={}, finish_reason="stop"))
+        if ended and not self._hangup_tool:
+            # Agent Core ended the session but nothing will hang the call
+            # up: either the domain configured no hangup tool, or the
+            # client did not offer the one it configured. Both look
+            # identical from the caller's side — the bot says goodbye and
+            # the line stays open — and both were previously silent, so a
+            # call that never ends gave an operator nothing to go on.
+            logger.warning(
+                "bridge.session_ended_without_hangup",
+                extra={
+                    "operation": "StreamTranslator.finish",
+                    "status": "skipped",
+                    "reason": "no hangup tool offered by the client or "
+                              "configured for the domain",
+                },
+            )
+        if ended and self._hangup_tool:
+            out.append(self._chunk(delta={"tool_calls": [{
+                "index": 0,
+                "id": "call_" + uuid.uuid4().hex[:24],
+                "type": "function",
+                "function": {"name": self._hangup_tool, "arguments": "{}"},
+            }]}))
+            out.append(self._chunk(delta={}, finish_reason="tool_calls"))
+        else:
+            out.append(self._chunk(delta={}, finish_reason="stop"))
         if include_usage:
             out.append(self._chunk(usage=ZERO_USAGE, empty_choices=True))
         return out

@@ -38,7 +38,7 @@ cd knowledge_engine && uv run python scripts/ingest.py --config config/domain.ya
 
 **Docker images:** every Dockerfile except `knowledge_engine/` builds on Docker Hardened Images (`dhi.io/python:<ver>-debian13-dev` → `dhi.io/python:<ver>-debian13`). The runtime stage has no shell or package manager and runs as `nonroot` (uid 65532): no `RUN` after the final `FROM`, healthchecks and compose `command:` must use exec form, never `sh -c` / `CMD-SHELL`. `knowledge_engine/Dockerfile` stays on `python:3.14-slim` (has a shell; compose runs its ingest-if-empty `sh -c` startup).
 
-**Config loading:** Each module deep-merges two YAML files at startup — `dev-kit/dpg/<module>.yaml` (framework defaults) overridden by `dev-kit/configs/<domain>/<module>.yaml` (domain values). Reference domain: `dev-kit/configs/kkb/`.
+**Config loading:** Each module deep-merges two YAML files at startup — `dev-kit/dpg/<module>.yaml` (framework defaults) overridden by `dev-kit/configs/<domain>/<module>.yaml` (domain values). Reference domain: `dev-kit/configs/blue-dots/`.
 
 ---
 
@@ -56,7 +56,7 @@ The framework assembles AI-powered voice/chat systems from **7 standardised DPG 
 
 ### Block responsibilities
 
-**Agent Core** — turn-time orchestrator and sole LLM caller. Runs Language Normalisation and NLU internally, then builds the system prompt (`manager_agent.build_system_prompt()` — subagent prompt + Trust constraints + required disclosures; KE chunks enter via the `knowledge_retrieval` tool result, not via KE-side prompt assembly). Owns the tool execution loop (LLM → tool → LLM) and retry. Knowledge Engine is called only when the LLM invokes the `knowledge_retrieval` internal tool (subagents that do not include `knowledge_retrieval` in their tool list never trigger a KE call). Stateless between turns — any instance can handle any session. All LLM calls go through `agent_core/src/chat_provider/`. The package owns provider selection (Anthropic + OpenAI + Google today; Azure/Ollama as follow-ups), neutral typing, retry/timeout, and OTel telemetry; the concrete provider files (`anthropic_provider.py`, `openai_provider.py`, `google_provider.py`) are the only places that import their respective SDKs. Also exposes `POST /internal/llm/call` as a future LLM proxy (implemented, not yet wired).
+**Agent Core** — turn-time orchestrator and sole LLM caller. Runs Language Normalisation and the dialogue-act NLU (`understanding/`, `TurnUnderstander`) internally, then builds the system prompt (`manager_agent.build_system_prompt()` — subagent prompt + Trust constraints + required disclosures; KE chunks enter via the `knowledge_retrieval` tool result, not via KE-side prompt assembly). Owns the tool execution loop (LLM → tool → LLM) and retry. Knowledge Engine is called only when the LLM invokes the `knowledge_retrieval` internal tool (subagents that do not include `knowledge_retrieval` in their tool list never trigger a KE call). Stateless between turns — any instance can handle any session. All LLM calls go through `agent_core/src/chat_provider/`. The package owns provider selection (Anthropic + OpenAI + Google today; Azure/Ollama as follow-ups), neutral typing, retry/timeout, and OTel telemetry; the concrete provider files (`anthropic_provider.py`, `openai_provider.py`, `google_provider.py`) are the only places that import their respective SDKs. Also exposes `POST /internal/llm/call` as a future LLM proxy (implemented, not yet wired).
 
 **Knowledge Engine** — returns ranked retrieval chunks (does **not** assemble the final LLM prompt — Agent Core does). Receives NLU results and session state from Agent Core in the request body. Stateless on the retrieval path. Internal components: Glossary & Domain Vocabulary, Static Knowledge Base (ChromaDB semantic RAG), Multimodal Input Handler, and an SQLite **ingestion ledger** that tracks per-document state (queued / ingested / failed / `refreshed_at`) for documents fed by `scripts/ingest.py` or by Reach Layer's document-upload endpoint.
 
@@ -76,11 +76,12 @@ The framework assembles AI-powered voice/chat systems from **7 standardised DPG 
 Reach Layer (input)
   → Agent Core: read state ← Memory Layer
   → Agent Core: consent gate (if ask_for_consent: true in config)
-  → Agent Core: NLU (internal) → early exit if low-confidence
   → Agent Core: input safety check → Trust Layer /check/input
   → Agent Core: Language Normalisation (internal)
-  → Agent Core: POST /assemble_constraints → Trust Layer (if active_risks present)
+  → Agent Core: dialogue-act NLU (internal): pending question → frame → strict NLU → post-processing; the structured understanding (acts, relation, resolved option, slot updates, signals) is rendered into the LLM prompt as <caller_turn>
+  → Agent Core: POST /assemble_constraints → Trust Layer
   → Agent Core: Manager Agent selects subagent + tools, builds system prompt
+  → Agent Core: tool pre-dispatch (optional `predispatch` rule; result handed to LLM call #1; any failure falls back)
   → Agent Core: LLM call #1
   → [tool_use] Agent Core routes by tool name:
         knowledge_retrieval → Knowledge Engine /retrieve (chunks)
@@ -92,11 +93,11 @@ Reach Layer (input)
   → [async] emit events → Observability Layer
 ```
 
-Two execution paths: `POST /process_turn` (sync JSON, used by web direct mode) and `POST /stream_turn` (SSE, used by CLI/voice session mode via TurnAssembler). Both run the same sequence.
+Two execution paths: `POST /process_turn` (sync JSON, fire-and-wait; web/CLI/MCP/voice in direct mode) and `POST /stream_turn` (SSE). Every streaming turn — `/stream_turn` and the session endpoints — runs through the TurnAssembler, which interrupts cooperatively and carries an interrupted turn's utterances and tool rounds to the next turn via Memory Layer. Both paths run the same sequence.
 
 ### Module interaction rules
 
-**Agent Core is the only turn-time orchestrator and the only LLM caller.** Every per-turn step (memory read → trust input → NLU → constraint assembly → prompt build → LLM → tool routing → trust output → deliver) runs inside Agent Core. The user only initiates a turn through Reach Layer → Agent Core.
+**Agent Core is the only turn-time orchestrator and the only LLM caller.** Every per-turn step (memory read → trust input → NLU → constraint assembly → prompt build → LLM → tool routing → output guard → trust output → deliver) runs inside Agent Core. The user only initiates a turn through Reach Layer → Agent Core.
 
 Other blocks may call each other directly **only under the approved scopes listed below**. New cross-block calls require an architecture-level decision; do not introduce them ad hoc.
 
@@ -105,6 +106,7 @@ Other blocks may call each other directly **only under the approved scopes liste
 | Caller | Callee | Purpose |
 |---|---|---|
 | Agent Core | Memory Layer | Read state at turn start; write state after response (async) |
+| Agent Core | Memory Layer | `POST /tool_results/apply` — persist/invalidate cached tool results (config-driven `cache` / `invalidates`; needs `TOOL_RESULT_KEY_SECRET`) |
 | Agent Core | Trust Layer | Check input; check output; assemble constraints; consent verify |
 | Agent Core | Knowledge Engine | `POST /retrieve` — ranked chunks, called only via the `knowledge_retrieval` internal tool |
 | Agent Core | Action Gateway | Execute LLM-requested external tool calls |
@@ -122,7 +124,7 @@ Other blocks may call each other directly **only under the approved scopes liste
 
 | Caller | Callee | Purpose |
 |---|---|---|
-| Action Gateway | Knowledge Engine, Memory Layer | Cache layer for tool results (#18) |
+| Action Gateway | Knowledge Engine | None currently planned. The tool-result cache (#18) shipped as Agent Core to Memory Layer (see above) |
 
 ### Key design decisions
 
@@ -177,7 +179,7 @@ When changing a runtime block's `<block>/src/schema/config.py`, also update the 
 
 ### PoC scope
 
-Full implementations: **Agent Core** (818 tests — sync + async streaming + TurnAssembler + multi-provider chat_provider), **Knowledge Engine** (192 tests), **Memory Layer** (226 tests, Redis + Memgraph + SQLite), **Action Gateway** (173 tests — RestApiAdapter + McpAdapter), **Domain Configuration Kit** (365 tests).
+Full implementations: **Agent Core** (1025 tests — sync + async streaming + TurnAssembler + multi-provider chat_provider), **Knowledge Engine** (192 tests), **Memory Layer** (226 tests, Redis + Memgraph + SQLite), **Action Gateway** (173 tests — RestApiAdapter + McpAdapter), **Domain Configuration Kit** (365 tests).
 
 Partial implementations (correct interface, some gaps): **Trust Layer** (138 tests — all 4 sub-blocks; HiTL log backend only, consent store in-process), **Reach Layer** (308 Python + 143 UI tests — CLI ✅, Web/React SPA ✅ (with `routing_only` mode for voice-only deployments), Voice/pipecat ✅, MCP server ✅), **Observability Layer** (101 tests — OTel functional; Grafana dashboards pending).
 

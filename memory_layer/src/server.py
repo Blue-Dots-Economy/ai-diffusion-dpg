@@ -7,6 +7,8 @@ Port: 8002
 Endpoints (per design doc Section 10):
   POST   /context_bundle           — context_bundle(session_id, user_id)
   POST   /write                    — write(session_id, user_id, scope, key, value)
+  POST   /tool_results/apply       — apply_tool_results(session_id, user_id, invalidate, puts)
+  POST   /write_strict             — write_strict(session_id, user_id, scope, key, value)
   POST   /flush_session            — flush_session(session_id, user_id, end_reason)
   GET    /sessions/{user_id}       — get_active_sessions(user_id)
   DELETE /user/{user_id}           — delete_user(user_id)
@@ -17,12 +19,12 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import FastAPI
 from opentelemetry import trace as otel_trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.memory_layer import MemoryLayer
 
@@ -87,6 +89,51 @@ class AuditTurnRequest(BaseModel):
     metadata: Optional[dict] = None
 
 
+class ToolResultPut(BaseModel):
+    """A single tool result entry to cache.
+
+    Attributes:
+        scope: Storage scope (session or user).
+        tool: Tool name matching [A-Za-z0-9_.-]{1,64}.
+        args_hash: Argument hash [a-f0-9]{4,64}.
+        data: The cached result data.
+        ttl_seconds: Time-to-live in seconds (must be > 0).
+        origin: Where this result came from (turn or bootstrap).
+    """
+    scope: Literal["session", "user"]
+    tool: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,64}$")
+    args_hash: str = Field(pattern=r"^[a-f0-9]{4,64}$")
+    data: Any = None
+    ttl_seconds: int = Field(gt=0)
+    origin: Literal["turn", "bootstrap"] = "turn"
+
+
+class ApplyToolResultsRequest(BaseModel):
+    """Request to apply a batch of tool-result invalidations and entries.
+
+    Attributes:
+        session_id: Session identifier.
+        user_id: User identifier.
+        invalidate: List of tool names to invalidate (remove from cache).
+        puts: List of tool result entries to cache.
+    """
+    session_id: str
+    user_id: str
+    invalidate: list[str] = Field(default_factory=list)
+    puts: list[ToolResultPut] = Field(default_factory=list)
+
+
+class StrictWriteResponse(BaseModel):
+    """Response for strict write operation.
+
+    Attributes:
+        status: ok if write succeeded, rejected if it failed validation.
+        reason: Explanation if rejected, empty string otherwise.
+    """
+    status: Literal["ok", "rejected"]
+    reason: str = ""
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -128,7 +175,7 @@ def create_app(memory: MemoryLayer) -> FastAPI:
         user_id = request.user_id.strip()
 
         if not session_id or not user_id:
-            return {"session": {}, "profile": {}, "journey": None}
+            return {"session": {}, "profile": {}, "journey": None, "tool_results": []}
 
         with _get_tracer().start_as_current_span("memory.read") as span:
             span.set_attribute("session_id", session_id)
@@ -162,7 +209,7 @@ def create_app(memory: MemoryLayer) -> FastAPI:
                         "latency_ms": int((time.time() - start) * 1000),
                     },
                 )
-                return {"session": {}, "profile": {}, "journey": None}
+                return {"session": {}, "profile": {}, "journey": None, "tool_results": []}
 
     @app.post("/write")
     def write(request: WriteRequest) -> StatusResponse:
@@ -208,6 +255,37 @@ def create_app(memory: MemoryLayer) -> FastAPI:
                 )
 
         return StatusResponse(status="ok")
+
+    @app.post("/tool_results/apply")
+    def apply_tool_results(request: ApplyToolResultsRequest) -> StatusResponse:
+        """Apply a batch of tool-result invalidations and entries. Always 200."""
+        session_id, user_id = request.session_id.strip(), request.user_id.strip()
+        if not session_id or not user_id:
+            return StatusResponse(status="ok")
+        try:
+            memory.apply_tool_results(session_id, user_id, list(request.invalidate),
+                                      [p.model_dump() for p in request.puts])
+        except Exception as e:
+            logger.error("memory_server.apply_tool_results_error", extra={
+                "operation": "memory_server.apply_tool_results", "status": "failure",
+                "error": f"{type(e).__name__}: {e}"})
+        return StatusResponse(status="ok")
+
+    @app.post("/write_strict")
+    def write_strict(request: WriteRequest) -> StrictWriteResponse:
+        """Write a declared field only if its value validates."""
+        session_id, user_id = request.session_id.strip(), request.user_id.strip()
+        if not session_id or not user_id or not request.key:
+            return StrictWriteResponse(status="rejected", reason="missing ids or key")
+        try:
+            ok, reason = memory.write_strict(session_id, user_id, request.scope,
+                                             request.key, request.value)
+        except Exception as e:
+            logger.error("memory_server.write_strict_error", extra={
+                "operation": "memory_server.write_strict", "status": "failure",
+                "error": f"{type(e).__name__}: {e}"})
+            return StrictWriteResponse(status="rejected", reason="memory layer error")
+        return StrictWriteResponse(status="ok" if ok else "rejected", reason=reason)
 
     @app.post("/flush_session")
     def flush_session(request: FlushSessionRequest) -> StatusResponse:

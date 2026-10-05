@@ -41,10 +41,11 @@ def test_bridge_prompt_rules_target_a_listener_not_a_reader():
     assert "markdown" in suffix
 
 
-def test_bridge_declares_tts_rules():
+def test_bridge_declares_output_contract():
     """No TTS sanitizer sits downstream here, so the model must produce
     speech-ready text itself."""
-    assert _channels()["bridge"].get("tts_rules")
+    contract = _channels()["bridge"]["output_contract"]
+    assert contract["languages"]["hindi"]["numbers"] == "words"
 
 
 def test_existing_channels_are_untouched():

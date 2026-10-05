@@ -3,6 +3,7 @@ Tests for stream_turn() orchestrator method and sentence splitter.
 """
 
 import asyncio
+import dataclasses
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,6 +30,7 @@ from src.chat_provider.types import (
     TokenUsage,
     ToolUseBlock,
 )
+from tests.fakes import fake_understander
 
 
 # ---------------------------------------------------------------------------
@@ -121,13 +123,11 @@ def _make_workflow():
         routing=[],
         tools=[],
         special_handler=None,
-        valid_intents=["greeting"],
         output_format=None,
     )
     wf = MagicMock(spec=AgentWorkflow)
     wf.start_subagent_id = "start"
     wf.subagents = {"start": sub}
-    wf.nlu_intent_set = {"start": ["greeting"]}
     wf.tool_defs = {"start": []}
     wf.global_routing = []
     wf.default_fallback_subagent_id = "start"
@@ -206,9 +206,19 @@ def _make_agent_core(**overrides):
         async_knowledge_engine=async_ke,
         async_gateway=async_gateway,
         async_learning=async_learning,
+        nlu_chat_provider=_nlu_provider_mock(),
     )
     defaults.update(overrides)
-    return AgentCore(**defaults)
+    agent = AgentCore(**defaults)
+    agent._understander = fake_understander()
+    return agent
+
+
+def _nlu_provider_mock() -> MagicMock:
+    """A dedicated-NLU provider stand-in (never called once the understander is faked)."""
+    p = MagicMock()
+    p.capabilities.supports_prompt_cache = False
+    return p
 
 
 async def _collect_events(agent, turn_input):
@@ -235,10 +245,9 @@ class TestStreamTurnBasic:
         # Patch NLU to return a simple result
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("Hello", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
-            intent="greeting", entities={}, sentiment="neutral", confidence=0.9
-        )
+        agent._understander = fake_understander(NLUResult(
+            intent="greeting", entities={}, confidence=0.9
+        ))
 
         events = await _collect_events(agent, _make_turn_input())
 
@@ -262,10 +271,9 @@ class TestStreamTurnBasic:
         )
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
-            intent="unknown", entities={}, sentiment="neutral", confidence=0.5
-        )
+        agent._understander = fake_understander(NLUResult(
+            intent="unknown", entities={}, confidence=0.5
+        ))
 
         events = await _collect_events(agent, _make_turn_input())
 
@@ -285,10 +293,9 @@ class TestStreamTurnBasic:
         )
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
-            intent="unknown", entities={}, sentiment="neutral", confidence=0.5
-        )
+        agent._understander = fake_understander(NLUResult(
+            intent="unknown", entities={}, confidence=0.5
+        ))
 
         events = await _collect_events(agent, _make_turn_input())
 
@@ -349,10 +356,9 @@ class TestStreamTurnToolUse:
         )
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
-            intent="search", entities={}, sentiment="neutral", confidence=0.9
-        )
+        agent._understander = fake_understander(NLUResult(
+            intent="search", entities={}, confidence=0.9
+        ))
 
         events = await _collect_events(agent, _make_turn_input())
 
@@ -364,6 +370,49 @@ class TestStreamTurnToolUse:
         assert len(tool_start) == 1
         assert len(tool_end) == 1
         assert done_events[0].was_tool_used is True
+
+    @pytest.mark.asyncio
+    async def test_tool_start_names_the_tools_being_run(self):
+        """Channels turn tool_start into caller-facing status ("looking up
+        jobs"), so the signal must say which tool — not just that one runs."""
+        agent = _make_agent_core()
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="fetch_jobs", tool_use_id="tu_1", input={}),
+                ])
+            if call_count == 2:
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="apply_job", tool_use_id="tu_2", input={}),
+                ])
+            yield "Done. "
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute.return_value = ToolResult(
+            tool_use_id="tu_1", tool_name="fetch_jobs",
+            result={}, success=True, result_text="ok"
+        )
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "english")
+        agent._understander = fake_understander(NLUResult(
+            intent="search", entities={}, confidence=0.9
+        ))
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        tool_start = [e for e in events
+                      if isinstance(e, SignalEvent) and e.stage == "tool_start"]
+        assert [e.tools for e in tool_start] == [["fetch_jobs"], ["apply_job"]]
+        assert '"tools": ["fetch_jobs"]' in tool_start[0].to_sse()
+
+    def test_signal_event_tools_default_empty(self):
+        """Every other stage leaves tools empty, so existing consumers that
+        ignore the field see no change."""
+        assert SignalEvent(stage="nlu", status="start").tools == []
 
 
 class TestStreamTurnTrustOutput:
@@ -382,10 +431,9 @@ class TestStreamTurnTrustOutput:
         )
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
-            intent="greeting", entities={}, sentiment="neutral", confidence=0.9
-        )
+        agent._understander = fake_understander(NLUResult(
+            intent="greeting", entities={}, confidence=0.9
+        ))
 
         events = await _collect_events(agent, _make_turn_input())
 
@@ -407,10 +455,9 @@ class TestStreamTurnTrustOutput:
         agent._async_trust.check_output.side_effect = Exception("Connection refused")
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
-            intent="greeting", entities={}, sentiment="neutral", confidence=0.9
-        )
+        agent._understander = fake_understander(NLUResult(
+            intent="greeting", entities={}, confidence=0.9
+        ))
 
         events = await _collect_events(agent, _make_turn_input())
 
@@ -453,10 +500,9 @@ class TestStreamTurnChannelValidation:
         agent._llm.stream = mock_stream
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("Hello", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
-            intent="greeting", entities={}, sentiment="neutral", confidence=0.9
-        )
+        agent._understander = fake_understander(NLUResult(
+            intent="greeting", entities={}, confidence=0.9
+        ))
 
         # "web" is in the config channels — should not raise
         turn = _make_turn_input(channel="web")
@@ -465,6 +511,175 @@ class TestStreamTurnChannelValidation:
         done_events = [e for e in events if isinstance(e, DoneEvent)]
         assert len(done_events) == 1
 
+
+
+class TestFixedOpening:
+    """A phase whose Path-A reply is one fixed sentence built from session
+    values speaks it verbatim. Generating it lost it: a returning caller was
+    asked for their trade in 2 of 3 runs despite stored_trade being in the
+    prompt."""
+
+    def _agent(self, session, entities=None):
+        agent = _make_agent_core()
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("x", "english")
+        agent._understander = fake_understander(NLUResult(
+            intent="any_input", entities=entities or {}, confidence=0.9,
+        ))
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening = "I found your details — {stored_trade} in {stored_location}."
+            sa.fixed_opening_requires = ["stored_trade", "stored_location"]
+        sess = {"current_subagent_id": "start"}
+        sess.update(session)
+        agent._async_memory.context_bundle.return_value = ContextBundle(
+            session=sess, profile={},
+        )
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_speaks_it_verbatim_without_the_model(self):
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad"})
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Welder in Ghaziabad" in spoken
+        done = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done) == 1
+        assert done[0].session_ended is False, (
+            "speaking a mid-conversation line must NOT hang up on the caller"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_callers_own_words_win(self):
+        """If they named a trade themselves, the model handles the turn."""
+        agent = self._agent(
+            {"stored_trade": "Welder", "stored_location": "Ghaziabad"},
+            entities={"trade": "Plumber"},
+        )
+
+        async def mock_stream(*a, **k):
+            yield "Plumber it is."
+
+        agent._llm.stream = mock_stream
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Plumber it is." in spoken
+        assert "I found your details" not in spoken
+
+    @pytest.mark.asyncio
+    async def test_a_missing_value_falls_back_to_the_model(self):
+        agent = self._agent({"stored_trade": "Welder", "stored_location": ""})
+
+        async def mock_stream(*a, **k):
+            yield "Which city?"
+
+        agent._llm.stream = mock_stream
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Which city?" in spoken
+
+
+class TestTerminalPhaseFixedCopy:
+    """A terminal subagent has no tools and verified copy. The model must not
+    be asked to paraphrase it — doing so told a 16-year-old that applications
+    are impossible "under sixteen", and returned empty turns on the consent
+    and age paths."""
+
+    def _agent_with_terminal(self, phrase):
+        agent = _make_agent_core()
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("x", "english")
+        agent._understander = fake_understander(NLUResult(
+            intent="any_input", entities={}, confidence=0.9
+        ))
+        for sa in agent._workflow.subagents.values():
+            sa.is_terminal = True
+            sa.opening_phrase = phrase
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_terminal_phase_speaks_config_verbatim_without_the_model(self):
+        agent = self._agent_with_terminal(
+            "उन्नीस साल से कम उम्र में फ़ोन पर आवेदन पूरा नहीं हो सकता।"
+        )
+
+        async def must_not_run(*args, **kwargs):
+            raise AssertionError("the model must not be called on a terminal phase")
+            yield  # pragma: no cover - generator marker
+
+        agent._llm.stream = must_not_run
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "उन्नीस साल" in spoken, "the configured threshold must be spoken verbatim"
+        done = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done) == 1
+        assert done[0].session_ended is True
+        assert done[0].model_used == "none"
+
+    @pytest.mark.asyncio
+    async def test_terminal_phase_without_copy_still_uses_the_model(self):
+        """The skip is guarded on copy existing — a terminal phase with no
+        opening_phrase still needs the model to produce something."""
+        agent = self._agent_with_terminal("")
+
+        async def mock_stream(*args, **kwargs):
+            yield "Goodbye."
+
+        agent._llm.stream = mock_stream
+
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Goodbye." in spoken
+
+
+class TestStreamTurnEmptyTurn:
+    """GH-204 F3: a turn that produces no text must never reach the caller as
+    silence — on a phone line that is indistinguishable from a dropped call."""
+
+    @pytest.mark.asyncio
+    async def test_empty_turn_speaks_the_configured_fallback(self):
+        agent = _make_agent_core()
+        agent._config["conversation"] = {
+            "empty_response_message": "माफ़ कीजिए, दोबारा बताइए।"
+        }
+
+        async def mock_stream(*args, **kwargs):
+            return
+            yield  # pragma: no cover - generator marker
+
+        agent._llm.stream = mock_stream
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "माफ़ कीजिए" in spoken, "an empty turn must still say something"
+        assert len([e for e in events if isinstance(e, DoneEvent)]) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_turn_with_text_is_left_alone(self):
+        """The backstop must not append to a turn that already spoke."""
+        agent = _make_agent_core()
+        agent._config["conversation"] = {
+            "empty_response_message": "माफ़ कीजिए, दोबारा बताइए।"
+        }
+
+        async def mock_stream(*args, **kwargs):
+            yield "Here is your answer."
+
+        agent._llm.stream = mock_stream
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Here is your answer." in spoken
+        assert "माफ़ कीजिए" not in spoken
 
 
 class TestStreamTurnEndSession:
@@ -492,10 +707,9 @@ class TestStreamTurnEndSession:
 
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("bye", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
-            intent="termination_intent", entities={}, sentiment="neutral", confidence=0.95
-        )
+        agent._understander = fake_understander(NLUResult(
+            intent="termination_intent", entities={}, confidence=0.95
+        ))
         return agent
 
     @pytest.mark.asyncio
@@ -534,6 +748,200 @@ class TestStreamTurnEndSession:
         assert len(done_events) == 1
         assert done_events[0].session_ended is True
         assert done_events[0].was_tool_used is True
+
+    @pytest.mark.asyncio
+    async def test_end_session_alone_skips_the_second_llm_call(self):
+        """GH-204: end_session resolves internally and its description asks the
+        model to speak the closing line alongside it, so a second pass would only
+        regenerate a goodbye that already exists. It must not be made."""
+        agent = self._make_end_session_agent()
+
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield "Goodbye, take care."
+                raise ChatToolUseRequested([
+                    ToolUseBlock(
+                        tool_name="end_session",
+                        tool_use_id="tu_end",
+                        input={"reason": "user_goodbye"},
+                    )
+                ])
+            raise AssertionError(
+                "LLM was called a second time for an end_session-only round"
+            )
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute = AsyncMock(
+            side_effect=AssertionError("end_session must not reach Action Gateway")
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        assert call_count == 1, "the second LLM pass must be skipped"
+        # The call still ends, and the caller still hears the goodbye.
+        done = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done) == 1
+        assert done[0].session_ended is True
+        spoken = " ".join(
+            e.text for e in events if isinstance(e, SentenceEvent)
+        )
+        assert "Goodbye" in spoken, "the closing line must still reach the caller"
+
+    @pytest.mark.asyncio
+    async def test_end_session_without_text_speaks_the_canned_line(self):
+        """GH-204 F27: the model calls end_session with no text on every real
+        call, so rather than spend a round trip regenerating a goodbye we
+        already have in config, speak the configured termination_message."""
+        agent = self._make_end_session_agent()
+        agent._config["conversation"] = {"termination_message": "अलविदा, धन्यवाद।"}
+
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ChatToolUseRequested([
+                    ToolUseBlock(
+                        tool_name="end_session",
+                        tool_use_id="tu_end",
+                        input={"reason": "user_goodbye"},
+                    )
+                ])
+                yield  # pragma: no cover - generator marker
+            raise AssertionError(
+                "LLM #2 must not run when a canned termination line exists"
+            )
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute = AsyncMock(
+            side_effect=AssertionError("end_session must not reach Action Gateway")
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        assert call_count == 1, "the second pass must be skipped"
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "अलविदा" in spoken, "the caller must still hear a goodbye"
+        done = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done) == 1 and done[0].session_ended is True
+
+    @pytest.mark.asyncio
+    async def test_terminal_phase_speaks_its_own_reason_not_the_generic_goodbye(self):
+        """GH-204 F10/F32: a phase that ends the call for a reason has that
+        reason in its opening_phrase. The caller must hear it, not the generic
+        termination_message — a 16-year-old needs to be told about the portal."""
+        agent = self._make_end_session_agent()
+        agent._config["conversation"] = {"termination_message": "आपका दिन शुभ हो।"}
+        for sa in agent._workflow.subagents.values():
+            sa.opening_phrase = "उन्नीस साल से कम उम्र में फ़ोन पर आवेदन नहीं हो सकता।"
+
+        async def mock_stream(*args, **kwargs):
+            raise ChatToolUseRequested([
+                ToolUseBlock(tool_name="end_session", tool_use_id="tu_end",
+                             input={"reason": "task_complete"})
+            ])
+            yield  # pragma: no cover - generator marker
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute = AsyncMock(
+            side_effect=AssertionError("end_session must not reach Action Gateway")
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "उन्नीस साल" in spoken, "the caller must hear WHY the call ended"
+        assert "आपका दिन शुभ हो" not in spoken, (
+            "the generic goodbye must not replace the phase's own reason"
+        )
+
+    @pytest.mark.asyncio
+    async def test_end_session_without_text_or_canned_line_falls_back_to_llm(self):
+        """With no configured termination_message there is nothing to speak, so
+        the second pass must still run — hanging up in silence is worse than a
+        round trip."""
+        agent = self._make_end_session_agent()
+        agent._config["conversation"] = {"termination_message": ""}
+
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ChatToolUseRequested([
+                    ToolUseBlock(
+                        tool_name="end_session",
+                        tool_use_id="tu_end",
+                        input={"reason": "user_goodbye"},
+                    )
+                ])
+                yield  # pragma: no cover - generator marker
+            else:
+                yield "Thank you for calling."
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute = AsyncMock(
+            side_effect=AssertionError("end_session must not reach Action Gateway")
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        assert call_count == 2, "with no text produced, the second pass must run"
+        spoken = " ".join(
+            e.text for e in events if isinstance(e, SentenceEvent)
+        )
+        assert "Thank you" in spoken
+
+    @pytest.mark.asyncio
+    async def test_end_session_alongside_another_tool_still_makes_the_second_call(self):
+        """A real tool in the same round returns a result the model has not seen.
+        Only an end_session-ONLY round may skip the pass."""
+        agent = self._make_end_session_agent()
+
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield "Let me check."
+                raise ChatToolUseRequested([
+                    ToolUseBlock(
+                        tool_name="fetch_jobs",
+                        tool_use_id="tu_jobs",
+                        input={"query_text": "welder jobs"},
+                    ),
+                    ToolUseBlock(
+                        tool_name="end_session",
+                        tool_use_id="tu_end",
+                        input={"reason": "task_complete"},
+                    ),
+                ])
+            else:
+                yield "Here is what I found."
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute = AsyncMock(
+            return_value=ToolResult(
+                tool_use_id="tu_jobs",
+                tool_name="fetch_jobs",
+                result={"items": []},
+                success=True,
+                result_text="no jobs",
+            )
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        assert call_count == 2, (
+            "a round carrying a real tool result must still run the second pass"
+        )
 
     @pytest.mark.asyncio
     async def test_session_ended_flag_cleared_between_turns(self):
@@ -576,9 +984,9 @@ class TestStreamTurnEndSession:
         assert agent._manager_agent._session_ended_flag is True
 
         # Turn 2 — must NOT inherit the previous flag.
-        agent._nlu_processor.process.return_value = NLUResult(
-            intent="greeting", entities={}, sentiment="neutral", confidence=0.9
-        )
+        agent._understander = fake_understander(NLUResult(
+            intent="greeting", entities={}, confidence=0.9
+        ))
         events2 = await _collect_events(agent, _make_turn_input())
         done2 = [e for e in events2 if isinstance(e, DoneEvent)][0]
         assert done2.session_ended is False
@@ -624,10 +1032,9 @@ class TestStreamTurnRecentToolExchanges:
         )
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
-            intent="search", entities={}, sentiment="neutral", confidence=0.9
-        )
+        agent._understander = fake_understander(NLUResult(
+            intent="search", entities={}, confidence=0.9
+        ))
 
         await _collect_events(agent, _make_turn_input())
 
@@ -684,10 +1091,9 @@ class TestStreamTurnRecentToolExchanges:
         agent._llm.stream = mock_stream
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
-            intent="follow_up", entities={}, sentiment="neutral", confidence=0.9
-        )
+        agent._understander = fake_understander(NLUResult(
+            intent="follow_up", entities={}, confidence=0.9
+        ))
 
         await _collect_events(agent, _make_turn_input(user_message="What was the wage?"))
 
@@ -750,10 +1156,9 @@ class TestStreamTurnRecentToolExchanges:
         )
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
-            intent="search", entities={}, sentiment="neutral", confidence=0.9
-        )
+        agent._understander = fake_understander(NLUResult(
+            intent="search", entities={}, confidence=0.9
+        ))
 
         await _collect_events(agent, _make_turn_input())
         await asyncio.sleep(0)
@@ -804,10 +1209,9 @@ class TestStreamTurnRecentToolExchanges:
         agent._llm.stream = mock_stream
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
-            intent="greeting", entities={}, sentiment="neutral", confidence=0.9
-        )
+        agent._understander = fake_understander(NLUResult(
+            intent="greeting", entities={}, confidence=0.9
+        ))
 
         await _collect_events(agent, _make_turn_input())
 
@@ -840,6 +1244,18 @@ class TestRecentToolExchangesHelpers:
         assert msgs[0].role == "assistant"
         assert msgs[1].role == "user"
 
+    def test_build_messages_skips_listed_tools_pairwise(self):
+        agent = _make_agent_core()
+        ex = [{"tool_uses": [{"type": "tool_use", "id": "a", "name": "fetch_profile", "input": {}},
+                             {"type": "tool_use", "id": "b", "name": "fetch_jobs", "input": {}}],
+               "tool_results": [{"type": "tool_result", "tool_use_id": "a", "content": "P"},
+                                {"type": "tool_result", "tool_use_id": "b", "content": "J"}]},
+              {"tool_uses": [{"type": "tool_use", "id": "c", "name": "fetch_profile", "input": {}}],
+               "tool_results": [{"type": "tool_result", "tool_use_id": "c", "content": "P2"}]}]
+        msgs = agent._build_tool_exchange_messages(ex, skip_tools={"fetch_profile"})
+        assert len(msgs) == 2                                  # second exchange dropped entirely
+        assert [b.tool_use_id for b in msgs[1].content] == ["b"]
+
     def test_truncate_tool_result_content(self):
         agent = _make_agent_core()
         assert agent._truncate_tool_result_content("hello", 0) == "hello"
@@ -859,3 +1275,495 @@ class TestRecentToolExchangesHelpers:
     def test_capture_tool_exchange_empty_returns_none(self):
         agent = _make_agent_core()
         assert agent._capture_tool_exchange([], [], 100) is None
+
+
+# ---------------------------------------------------------------------------
+# Tool-result persistence (stream path)
+# ---------------------------------------------------------------------------
+
+_TR_CONFIG = {
+    "connectors": {
+        "read": [
+            {"name": "get_balance", "cache": {"scope": "session", "ttl_seconds": 600}},
+            {"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 600}},
+        ],
+        "write": [{"name": "save_profile", "invalidates": ["fetch_profile"]}],
+    },
+    "memory_tool": {"name": "remember", "fields": {
+        "account": {"scope": "session", "grounded_in": ["get_balance"]}}},
+}
+
+
+def _tr_entry():
+    """A fresh stored get_balance result for account 12345."""
+    import time as _time
+    from src.tool_results import args_hash
+    return {"tool": "get_balance", "args_hash": args_hash({"account": "12345"}),
+            "data": {"account": "12345", "balance": 100}, "fetched_at": _time.time(),
+            "expires_at": 9e12, "origin": "turn", "scope": "session"}
+
+
+def _tr_agent(rounds, entries=None, gateway_text='{"balance": 5}', remember=False):
+    """AgentCore whose LLM requests each round in ``rounds`` in turn, then answers.
+
+    Returns ``(agent, order, requests)``: ``order`` records LLM calls
+    (``llm1``, ``llm2`` …) and ``apply`` persistence calls in the order they
+    happened; ``requests`` holds every stream request.
+    """
+    from src.remember import RememberTool
+    from src.tool_results import ToolResultPolicies
+
+    agent = _make_agent_core()
+    agent._tool_policies = ToolResultPolicies.from_config(_TR_CONFIG)
+    agent._remember = RememberTool.from_config(_TR_CONFIG) if remember else None
+    agent._async_memory.context_bundle.return_value = ContextBundle(
+        session={"current_subagent_id": "start"}, profile={},
+        tool_results=list(entries or []),
+    )
+    order: list[str] = []
+    requests: list = []
+    calls = {"n": 0}
+
+    async def mock_stream(request, *, abort_event=None):
+        calls["n"] += 1
+        requests.append(request)
+        order.append(f"llm{calls['n']}")
+        if calls["n"] <= len(rounds):
+            yield "Checking. "
+            raise ChatToolUseRequested(rounds[calls["n"] - 1])
+        yield "Done. "
+
+    async def _apply(*args, **kwargs):
+        order.append("apply")
+
+    agent._llm.stream = mock_stream
+    agent._async_memory.apply_tool_results = AsyncMock(side_effect=_apply)
+    agent._async_memory.write_strict = AsyncMock(return_value=(True, ""))
+    agent._async_gateway.execute = AsyncMock(side_effect=lambda tc, *a, **k: ToolResult(
+        tool_use_id=tc.tool_use_id, tool_name=tc.tool_name, result={}, success=True,
+        result_text=gateway_text, projected=True,
+    ))
+    agent._language_normaliser = MagicMock()
+    agent._language_normaliser.normalise.return_value = ("msg", "english")
+    agent._understander = fake_understander(NLUResult(
+        intent="search", entities={}, confidence=0.9
+    ))
+    return agent, order, requests
+
+
+def _last_tool_result_texts(request) -> list[str]:
+    """Tool-result contents of the final user message of a stream request."""
+    return [b.content for b in request.messages[-1].content if b.type == "tool_result"]
+
+
+class TestStreamTurnToolResultPersistence:
+
+    async def test_stream_cache_hit_skips_gateway(self):
+        agent, _order, requests = _tr_agent(
+            [[ToolUseBlock(tool_name="get_balance", tool_use_id="tu_1",
+                           input={"account": "12345"})]],
+            entries=[_tr_entry()],
+        )
+        await _collect_events(agent, _make_turn_input())
+        agent._async_gateway.execute.assert_not_awaited()
+        assert _last_tool_result_texts(requests[1])[0].startswith("(stored result")
+        agent._async_memory.apply_tool_results.assert_not_awaited()
+
+    async def test_stream_live_call_persists_immediately(self):
+        agent, order, _requests = _tr_agent(
+            [[ToolUseBlock(tool_name="get_balance", tool_use_id="tu_1",
+                           input={"account": "999", "force_refresh": True})]],
+        )
+        await _collect_events(agent, _make_turn_input())
+        agent._async_memory.apply_tool_results.assert_awaited_once()
+        sid, uid, batch = agent._async_memory.apply_tool_results.await_args.args
+        assert (sid, uid) == ("sess-1", "user-1")
+        assert batch["invalidate"] == [] and len(batch["puts"]) == 1
+        assert batch["puts"][0]["data"] == {"balance": 5}
+        assert order.index("apply") < order.index("llm2")
+        # force_refresh is framework-only and never reaches the connector.
+        sent = agent._async_gateway.execute.await_args.args[0]
+        assert "force_refresh" not in sent.input_params
+
+    async def test_stream_write_invalidation_survives_interruption(self):
+        from src.models import TurnRecord
+        from tests.test_stream_turn_lifecycle import _run
+
+        agent, _order, _requests = _tr_agent([
+            [ToolUseBlock(tool_name="save_profile", tool_use_id="tu_1", input={"name": "A"})],
+            [ToolUseBlock(tool_name="search", tool_use_id="tu_2", input={})],
+        ])
+        record = TurnRecord()
+        events = await _run(agent, record, abort_after_tool_end=1)
+        assert not any(isinstance(e, DoneEvent) for e in events)   # really interrupted
+        agent._async_memory.apply_tool_results.assert_awaited_once_with(
+            "sess-1", "user-1", {"invalidate": ["fetch_profile"], "puts": []},
+        )
+
+    @pytest.mark.parametrize("nested", [False, True])
+    async def test_stream_remember_routed_locally(self, nested):
+        remember = [ToolUseBlock(tool_name="remember", tool_use_id="tu_r",
+                                 input={"field": "account", "value": "12345"})]
+        rounds = ([[ToolUseBlock(tool_name="search", tool_use_id="tu_s", input={})], remember]
+                  if nested else [remember])
+        agent, _order, requests = _tr_agent(rounds, entries=[_tr_entry()], remember=True)
+        await _collect_events(agent, _make_turn_input())
+        agent._async_memory.write_strict.assert_awaited_once_with(
+            "sess-1", "user-1", "session", "account", "12345",
+        )
+        called = [c.args[0].tool_name for c in agent._async_gateway.execute.await_args_list]
+        assert "remember" not in called
+        assert _last_tool_result_texts(requests[-1]) == ["Saved account."]
+
+    async def test_stream_nested_round_uses_cache(self):
+        agent, _order, requests = _tr_agent(
+            [[ToolUseBlock(tool_name="search", tool_use_id="tu_1", input={})],
+             [ToolUseBlock(tool_name="get_balance", tool_use_id="tu_2",
+                           input={"account": "12345"})]],
+            entries=[_tr_entry()],
+        )
+        await _collect_events(agent, _make_turn_input())
+        called = [c.args[0].tool_name for c in agent._async_gateway.execute.await_args_list]
+        assert called == ["search"]
+        assert _last_tool_result_texts(requests[2])[0].startswith("(stored result")
+
+    async def test_gateway_result_is_shaped_once(self):
+        agent, _order, requests = _tr_agent(
+            [[ToolUseBlock(tool_name="get_balance", tool_use_id="tu_1", input={"account": "999"})]],
+        )
+        agent._result_shaper = MagicMock()
+        agent._result_shaper.shape.side_effect = lambda r: dataclasses.replace(
+            r, result_text='{"shaped": true}')
+        await _collect_events(agent, _make_turn_input())
+        assert agent._result_shaper.shape.call_count == 1
+        assert _last_tool_result_texts(requests[1])[0] == '{"shaped": true}'
+        sid, uid, batch = agent._async_memory.apply_tool_results.await_args.args
+        assert batch["puts"][0]["data"] == {"shaped": True}
+
+    async def test_cache_hit_is_not_reshaped(self):
+        call = [ToolUseBlock(tool_name="get_balance", tool_use_id="tu_1", input={"account": "999"})]
+        call2 = [ToolUseBlock(tool_name="get_balance", tool_use_id="tu_2", input={"account": "999"})]
+        agent, _order, requests = _tr_agent([call, call2])
+        agent._result_shaper = MagicMock()
+        agent._result_shaper.shape.side_effect = lambda r: r
+        await _collect_events(agent, _make_turn_input())
+        assert agent._async_gateway.execute.await_count == 1
+        assert _last_tool_result_texts(requests[2])[0].startswith("(stored result")
+        assert agent._result_shaper.shape.call_count == 1
+
+    async def test_stream_prompt_gets_known_facts_and_augmented_tools(self):
+        agent, _order, requests = _tr_agent([], entries=[_tr_entry()], remember=True)
+        agent._workflow.resolve_tools_for.return_value = [
+            {"name": "get_balance", "input_schema": {"type": "object", "properties": {}}}]
+        await _collect_events(agent, _make_turn_input())
+        kwargs = agent._manager_agent.build_system_prompt.call_args.kwargs
+        assert "get_balance" in kwargs["known_facts"]
+        tools = {t.name: t for t in requests[0].tools}
+        assert set(tools) == {"get_balance", "remember"}
+        assert "force_refresh" in tools["get_balance"].input_schema["properties"]
+
+    async def test_stream_replay_skips_tools_with_fresh_stored_results(self):
+        prior = {"tool_uses": [{"type": "tool_use", "id": "tu_p", "name": "get_balance",
+                                "input": {"account": "12345"}}],
+                 "tool_results": [{"type": "tool_result", "tool_use_id": "tu_p",
+                                   "content": '{"balance": 1}'}]}
+        agent, _order, requests = _tr_agent([], entries=[_tr_entry()])
+        agent._async_memory.context_bundle.return_value.session["recent_tool_exchanges"] = [prior]
+        await _collect_events(agent, _make_turn_input())
+        assert all(b.type != "tool_use" for m in requests[0].messages for b in m.content)
+
+    async def test_stream_persist_failure_is_logged_and_turn_completes(self, caplog):
+        agent, _order, _requests = _tr_agent(
+            [[ToolUseBlock(tool_name="get_balance", tool_use_id="tu_1",
+                           input={"account": "999"})]],
+        )
+        agent._async_memory.apply_tool_results = AsyncMock(side_effect=RuntimeError("down"))
+        events = await _collect_events(agent, _make_turn_input())
+        assert isinstance(events[-1], DoneEvent) and events[-1].turn_status == "completed"
+        errs = [r for r in caplog.records if r.message == "orchestrator.apply_tool_results_error"]
+        assert errs and errs[0].error == "RuntimeError"      # class only, never the message
+
+
+# ---------------------------------------------------------------------------
+# Session bootstrap wiring (session-bootstrap spec §5) — stream path
+# ---------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
+
+from src.session_bootstrap import LATCH, SessionBootstrap  # noqa: E402
+
+_BOOT_CONFIG = {
+    "connectors": {"read": [{"name": "fetch_profile", "cache": {"scope": "session", "ttl_seconds": 1800}}]},
+    "session_bootstrap": {"timeout_ms": 1500, "steps": [{"type": "tool", "tool": "fetch_profile"}]},
+}
+
+
+def _boot_result(success=True, **session_values):
+    return ToolResult(tool_use_id="bootstrap-0", tool_name="fetch_profile", result={}, success=success,
+                      result_text=_json.dumps({"items": [{"item_id": "p1"}]}), projected=True,
+                      session_values=session_values, error=None if success else "boom")
+
+
+def _boot_stream_agent(result=None, side_effect=None, **overrides):
+    """_make_agent_core with a configured bootstrap; returns (agent, order)."""
+    from src.tool_results import ToolResultPolicies
+
+    agent = _make_agent_core(**overrides)
+    agent._tool_policies = ToolResultPolicies.from_config(_BOOT_CONFIG)
+    agent._bootstrap = SessionBootstrap.from_config(_BOOT_CONFIG, agent._tool_policies)
+    order: list[str] = []
+
+    async def _execute(tc, *a, **kw):
+        order.append("bootstrap_execute")
+        if side_effect is not None:
+            raise side_effect
+        return result or _boot_result(has_age=True)
+
+    agent._async_gateway.execute = AsyncMock(side_effect=_execute)
+
+    async def mock_stream(*args, **kwargs):
+        order.append("llm")
+        yield "Hello there. "
+
+    agent._llm.stream = mock_stream
+    agent._language_normaliser = MagicMock()
+    agent._language_normaliser.normalise.return_value = ("Hello", "english")
+    agent._understander = fake_understander(NLUResult(
+        intent="greeting", entities={}, confidence=0.9))
+    return agent, order
+
+
+class TestStreamSessionBootstrap:
+
+    @pytest.mark.asyncio
+    async def test_stream_bootstrap_runs_once_before_llm_and_writes_latch(self):
+        agent, order = _boot_stream_agent()
+        events = await _collect_events(agent, _make_turn_input())
+        assert isinstance(events[-1], DoneEvent)
+
+        ex = agent._async_gateway.execute
+        assert ex.await_count == 1
+        tc = ex.await_args.args[0]
+        assert isinstance(tc, ToolCall) and tc.tool_name == "fetch_profile"
+        assert ex.await_args.args[1:3] == ("sess-1", "user-1")
+        assert "session_values" in ex.await_args.kwargs
+        assert order.index("bootstrap_execute") < order.index("llm")
+        keys = [c.args[3] for c in agent._async_memory.write.await_args_list]
+        assert LATCH in keys and "has_age" in keys
+        assert keys.index(LATCH) < keys.index("has_age")
+        batches = [c.args[2] for c in agent._async_memory.apply_tool_results.await_args_list]
+        assert any(p["tool"] == "fetch_profile" and p["origin"] == "bootstrap"
+                   for b in batches for p in b["puts"])
+
+        # Second turn: latch present on the (shared) bundle session → no re-run.
+        assert agent._async_memory.context_bundle.return_value.session[LATCH] is True
+        await _collect_events(agent, _make_turn_input())
+        assert ex.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_bootstrap_entry_reaches_known_facts(self):
+        agent, _order = _boot_stream_agent()
+        await _collect_events(agent, _make_turn_input())
+        facts = agent._manager_agent.build_system_prompt.call_args.kwargs["known_facts"]
+        assert "fetch_profile" in facts and "p1" in facts
+
+    @pytest.mark.asyncio
+    async def test_stream_no_bootstrap_when_not_configured(self):
+        agent, order = _boot_stream_agent()
+        agent._bootstrap = None
+        await _collect_events(agent, _make_turn_input())
+        agent._async_gateway.execute.assert_not_awaited()
+        assert "bootstrap_execute" not in order
+
+    @pytest.mark.asyncio
+    async def test_stream_bootstrap_exception_never_breaks_the_turn(self):
+        agent, _order = _boot_stream_agent(side_effect=RuntimeError("upstream down"))
+        events = await _collect_events(agent, _make_turn_input())
+        assert isinstance(events[-1], DoneEvent) and events[-1].turn_status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_stream_bootstrap_run_error_is_contained(self):
+        agent, _order = _boot_stream_agent()
+        agent._bootstrap = MagicMock()
+        agent._bootstrap.needed.return_value = True
+        agent._bootstrap.run_async = AsyncMock(side_effect=RuntimeError("bug"))
+        events = await _collect_events(agent, _make_turn_input())
+        assert isinstance(events[-1], DoneEvent) and events[-1].turn_status == "completed"
+
+
+class TestStreamSessionBootstrapOrdering:
+
+    @pytest.mark.asyncio
+    async def test_stream_memory_read_complete_and_step1_log_precede_bootstrap(self):
+        """Memory-read latency/signal exclude the bootstrap (ruling R7)."""
+        import logging
+        from tests.test_orchestrator import _OrderHandler
+
+        agent, order = _boot_stream_agent()
+        log = logging.getLogger("src.orchestrator")
+        handler, prev = _OrderHandler(order), log.level
+        log.addHandler(handler)
+        log.setLevel(logging.INFO)
+        try:
+            events = []
+            async for ev in agent.stream_turn(_make_turn_input()):
+                if isinstance(ev, SignalEvent) and ev.stage == "memory_read" and ev.status == "complete":
+                    order.append("memory_read_complete")
+                events.append(ev)
+        finally:
+            log.removeHandler(handler)
+            log.setLevel(prev)
+        assert order.index("memory_read_complete") < order.index("bootstrap_execute")
+        assert order.index("step1_logged") < order.index("bootstrap_execute") < order.index("llm")
+
+    @pytest.mark.asyncio
+    async def test_stream_bootstrap_skipped_without_gateway_logs_debug(self, caplog):
+        import logging
+        agent, _order = _boot_stream_agent()
+        agent._async_gateway = None
+        with caplog.at_level(logging.DEBUG, logger="src.orchestrator"):
+            await agent._run_session_bootstrap_async(
+                ContextBundle(session={}, profile={}), "sess-1", "user-1")
+        recs = [r for r in caplog.records if r.message == "orchestrator.session_bootstrap_skipped"]
+        assert len(recs) == 1 and recs[0].levelno == logging.DEBUG
+        assert not hasattr(recs[0], "session_id")
+
+
+class TestStreamUserState:
+
+    @pytest.mark.asyncio
+    async def test_stream_turn_resolves_and_persists_user_state(self):
+        """user_state_model enabled: the understander's user_state is resolved and written on the stream path."""
+        from src.models import UserStateClassification
+        agent = _make_agent_core()
+        agent._config["conversation"]["user_state_model"] = {
+            "enabled": True, "default_state": "fog",
+            "states": [{"id": "fog", "label": "Fog", "guidance": "g1"},
+                       {"id": "aware", "label": "Aware", "guidance": "g2"}],
+        }
+        agent._user_state_enabled = True
+        agent._user_state_default = "fog"
+        agent._understander = fake_understander(NLUResult(
+            intent="any_input", entities={}, confidence=1.0,
+            user_state=UserStateClassification(id="aware", confidence=0.9)))
+
+        async def mock_stream(*args, **kwargs):
+            yield "Hello. "
+
+        agent._llm.stream = mock_stream
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("Hello", "english")
+
+        await _collect_events(agent, _make_turn_input())
+
+        ctx = agent._understander.understand.call_args.args[0]
+        assert ctx.previous_user_state == "fog"
+        writes = [c.args for c in agent._memory.write.call_args_list if c.args[3] == "user_state"]
+        assert len(writes) == 1
+        assert writes[0][2] == "session" and writes[0][4]["id"] == "aware"
+
+
+# ── Spec D: <state> / <recent> reach the prompt; recent_turns retention ─────
+
+async def _stream_prompt_kwargs(agent):
+    async def mock_stream(*args, **kwargs):
+        yield "Ok. "
+
+    agent._llm.stream = mock_stream
+    await _collect_events(agent, _make_turn_input())
+    return agent._manager_agent.build_system_prompt.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_prompt_gets_state_and_recent():
+    agent = _make_agent_core()
+    sess = agent._async_memory.context_bundle.return_value.session
+    sess["recent_turns"] = [{"caller": "हाँ", "bot": "आपकी उम्र?", "interrupted": False}]
+    sess["applications_submitted"] = 0
+    agent._state_fields = ["applications_submitted"]
+    agent._agent_history_turns = 2
+    kw = await _stream_prompt_kwargs(agent)
+    assert kw["recent"] == "caller: हाँ\nbot: आपकी उम्र?"
+    assert kw["state"].startswith("phase: start") and "status: applications_submitted=0" in kw["state"]
+
+
+@pytest.mark.asyncio
+async def test_prompt_session_fields_reach_state():
+    agent = _make_agent_core()
+    agent._async_memory.context_bundle.return_value.session["profile_item_id"] = "p1"
+    agent._prompt_session_fields = ["profile_item_id"]
+    kw = await _stream_prompt_kwargs(agent)
+    assert "profile_item_id=p1" in kw["state"]
+
+
+@pytest.mark.asyncio
+async def test_recent_retention_is_max_of_nlu_and_agent_history_turns():
+    base = _make_agent_core()
+    agent = _make_agent_core(config={**base._config, "agent": {**base._config["agent"], "history_turns": 4}})
+    assert agent._recent_keep == 4 and agent._agent_history_turns == 4
+    prior = [{"caller": f"c{i}", "bot": f"b{i}", "interrupted": False} for i in range(3)]
+    agent._async_memory.context_bundle.return_value.session["recent_turns"] = prior
+    await _stream_prompt_kwargs(agent)
+    await asyncio.sleep(0)   # let the fire-and-forget session write run
+    writes = [c.args[4] for c in agent._async_memory.write.await_args_list if c.args[3] == "recent_turns"]
+    assert len(writes) == 1 and len(writes[0]) == 4 and writes[0][-1]["bot"] == "Ok."
+
+
+@pytest.mark.asyncio
+async def test_state_hides_seeded_string_zero_age_but_lists_zero_experience():
+    """#436 D1 survives Spec D's move of "collected" into <state>: a string "0"
+    for an int slot with a positive minimum (age) is the unset seed, while
+    experience_years accepts 0 as a real answer."""
+    base = _make_agent_core()
+    slots = {"age": {"type": "int", "min": 18, "max": 99},
+             "experience_years": {"type": "int", "min": 0, "max": 60}}
+    agent = _make_agent_core(config={**base._config, "preprocessing": {
+        **(base._config.get("preprocessing") or {}), "nlu_processor": {"slots": slots}}})
+    assert agent._zero_seed_fields == frozenset({"age"})
+    profile = agent._async_memory.context_bundle.return_value.profile
+    profile.update({"age": "0", "experience_years": "0"})
+    kw = await _stream_prompt_kwargs(agent)
+    assert "experience_years=0" in kw["state"]
+    assert "age=0" not in kw["state"]
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_still_writes_current_question_after_spec_d():
+    """See test_orchestrator's sync twin: #439 keys submit_confirm on it."""
+    agent = _make_agent_core()
+
+    async def mock_stream(*args, **kwargs):
+        yield "क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"
+
+    agent._llm.stream = mock_stream
+    await _collect_events(agent, _make_turn_input())
+    await asyncio.sleep(0)
+    sync = [c.args for c in agent._memory.write.call_args_list if c.args[3] == "current_question"]
+    asy = [c.args for c in agent._async_memory.write.await_args_list if c.args[3] == "current_question"]
+    writes = sync + asy
+    assert writes and writes[-1][4] == "क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"
+
+
+class TestStreamModelCallsIgnoreTrustConsent:
+    """Blue Dots records consent via NLU/session_writes, not the Trust Layer
+    ConsentStore, so model-initiated stream calls must not consult it."""
+
+    async def _run(self, rounds):
+        agent, _order, _requests = _tr_agent(rounds)
+        agent._tool_registry.requires_consent = MagicMock(return_value=True)
+        agent._async_trust.check_consent = AsyncMock(return_value=False)
+        await _collect_events(agent, _make_turn_input())
+        return agent
+
+    def _apply(self, i):
+        return ToolUseBlock(tool_name="apply_job", tool_use_id=f"tu_{i}", input={"job_id": "J"})
+
+    async def test_round_one_apply_reaches_gateway_without_consent_check(self):
+        agent = await self._run([[self._apply(1)]])
+        agent._async_gateway.execute.assert_awaited_once()
+        agent._async_trust.check_consent.assert_not_called()
+
+    async def test_nested_round_apply_reaches_gateway_without_consent_check(self):
+        agent = await self._run([[self._apply(1)], [self._apply(2)]])
+        assert agent._async_gateway.execute.await_count == 2
+        agent._async_trust.check_consent.assert_not_called()

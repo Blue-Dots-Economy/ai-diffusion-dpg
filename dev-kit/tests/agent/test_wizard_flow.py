@@ -66,11 +66,6 @@ _TEST_VALUES: dict[str, Any] = {
     "agent_core.preprocessing.language_normalisation.model": "claude-sonnet-4-6",
     "agent_core.preprocessing.nlu_processor.provider": "anthropic",
     "agent_core.preprocessing.nlu_processor.model": "claude-sonnet-4-6",
-    "agent_core.preprocessing.nlu_processor.domain_instruction": (
-        "Classify user intents."
-    ),
-    "agent_core.preprocessing.nlu_processor.intents": ["greeting", "question"],
-    "agent_core.preprocessing.nlu_processor.entities": ["topic"],
     "agent_core.hitl.response_message": "An agent will join shortly.",
     "agent_core.channels.web.system_prompt_suffix": "Web suffix.",
     # ---- agent_core: knowledge phase (knowledge_retrieval connector) ----
@@ -115,23 +110,6 @@ _TEST_VALUES: dict[str, Any] = {
     # ---- voice channel (reach phase) ----
     "agent_core.channels.voice.system_prompt_suffix": "Voice suffix.",
     "agent_core.channels.voice.terminal_word": "bye",
-    "agent_core.channels.voice.tts_rules.numbers": "Read digits one by one.",
-    "agent_core.channels.voice.tts_rules.money": "Speak rupee values clearly.",
-    "agent_core.channels.voice.tts_rules.dates": "Say dates as words.",
-    "agent_core.channels.voice.tts_rules.time": "Say time as words.",
-    "agent_core.channels.voice.tts_rules.phone": "Phone digits one by one.",
-    "agent_core.channels.voice.tts_rules.abbreviations": "Spell out abbreviations.",
-    "agent_core.channels.voice.tts_rules.output_script": "Devanagari",
-    "agent_core.channels.voice.tts_rules.english_loanwords": "Keep English words.",
-    "agent_core.channels.voice.tts_rules.email": "Read emails carefully.",
-    "agent_core.channels.voice.tts_rules.named_entities": "Pronounce names well.",
-    # semantic_gate is a structured SemanticGateConfig (mirror tightened
-    # to match runtime exactly — was earlier a free dict that silently
-    # accepted strings). Tests now write the canonical shape.
-    "agent_core.channels.voice.turn_assembler.semantic_gate": {
-        "enabled": True,
-        "confidence_threshold": 0.75,
-    },
     # ---- reach_layer ----
     "reach_layer.channels.web.ui.app_name": "TestBot",
     "reach_layer.channels.web.ui.app_tagline": "Helpful assistant",
@@ -421,7 +399,7 @@ def test_wizard_multi_turn_api_advances_and_populates(tmp_path: Path) -> None:
 
     Verifies the pipeline still runs when has_external_tools=True. The tools
     phase has chat fields gated by has_external_tools, so the accumulator
-    must surface at least some agent_core content (NLU intents/entities,
+    must surface at least some agent_core content (models,
     conversation messages).
     """
     intake_fields = _intake_multi_turn_api()

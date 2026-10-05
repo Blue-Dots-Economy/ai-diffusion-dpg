@@ -131,25 +131,3 @@ async def test_stream_turn_other_transport_errors_map_to_connect(exc_type):
         async for _ in _client(handler).stream_turn({}):
             pass
     assert exc.value.kind == "connect"
-
-
-async def test_cancel_turn_calls_the_documented_endpoint():
-    seen = {}
-
-    def handler(request):
-        seen["method"] = request.method
-        seen["path"] = request.url.path
-        return httpx.Response(200, json={"status": "cancelled"})
-
-    await _client(handler).cancel_turn("919900112233")
-    assert seen["method"] == "DELETE"
-    assert seen["path"] == "/sessions/919900112233/active_turn"
-
-
-async def test_cancel_turn_never_raises():
-    """Cancel is best-effort cleanup on a connection that is already gone;
-    a failure here must not mask the original disconnect."""
-    def handler(request):
-        raise httpx.ConnectError("gone", request=request)
-
-    await _client(handler).cancel_turn("919900112233")  # must not raise

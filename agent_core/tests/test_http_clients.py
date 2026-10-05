@@ -256,6 +256,104 @@ class TestTrustEscalate:
         with pytest.raises(ValueError):
             client.escalate(None, "reason", "msg", "ready")
 
+    def test_handoff_sent_and_delivery_returned(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        body = {"queued": True, "delivered": True, "reason": "delivered",
+                "ticket_id": "TKT-1", "holding_message": ""}
+        with patch("httpx.post", return_value=_mock_response(body)) as post:
+            r = client.escalate("s1", "human_request", "m", "job_match", handoff={"x": 1})
+        assert r["delivered"] is True
+        assert post.call_args.kwargs["json"]["handoff"] == {"x": 1}
+
+    def test_handoff_omitted_when_none(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", return_value=_mock_response({"queued": True})) as post:
+            client.escalate("s1", "reason", "msg", "ready")
+        assert "handoff" not in post.call_args.kwargs["json"]
+
+    def test_timeout_not_retried_and_unreachable(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", side_effect=httpx.TimeoutException("t")) as post:
+            r = client.escalate("s1", "human_request", "m", "job_match", handoff={"x": 1})
+        assert post.call_count == 1
+        assert r["queued"] is False and r["delivered"] is False
+        assert r["reason"] == "unreachable"
+
+    def test_http_error_not_retried(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", side_effect=_mock_http_error(503)) as post:
+            r = client.escalate("s1", "reason", "msg", "ready")
+        assert post.call_count == 1
+        assert r["delivered"] is False and r["reason"] == "unreachable"
+
+    def test_uses_escalate_timeout(self):
+        cfg = {**_BASE_CONFIG, "trust_client": {
+            "endpoint": "http://localhost:8003", "timeout_ms": 2000, "escalate_timeout_ms": 7000}}
+        with patch("httpx.post", return_value=_mock_response({"queued": True})) as post:
+            TrustLayerHttpClient(cfg).escalate("s1", "reason", "msg", "ready")
+        assert post.call_args.kwargs["timeout"] == 7.0
+
+    def test_escalate_timeout_defaults_to_8s(self):
+        with patch("httpx.post", return_value=_mock_response({"queued": True})) as post:
+            TrustLayerHttpClient(_BASE_CONFIG).escalate("s1", "reason", "msg", "ready")
+        assert post.call_args.kwargs["timeout"] == 8.0
+
+
+class TestAsyncTrustEscalate:
+    def _client(self, **trust_extra):
+        from src.http_clients.async_.trust_layer import AsyncTrustLayerHttpClient
+        cfg = {**_BASE_CONFIG, "trust_client": {
+            "endpoint": "http://localhost:8003", "timeout_ms": 2000, **trust_extra}}
+        return AsyncTrustLayerHttpClient(cfg)
+
+    async def test_handoff_sent_and_delivery_returned(self):
+        from unittest.mock import AsyncMock
+        client = self._client()
+        body = {"queued": True, "delivered": True, "reason": "delivered",
+                "ticket_id": "TKT-1", "holding_message": ""}
+        client._client.post = AsyncMock(return_value=_mock_response(body))
+        r = await client.escalate("s1", "human_request", "m", "job_match", handoff={"x": 1})
+        assert r["delivered"] is True
+        assert client._client.post.call_args.kwargs["json"]["handoff"] == {"x": 1}
+
+    async def test_handoff_omitted_when_none(self):
+        from unittest.mock import AsyncMock
+        client = self._client()
+        client._client.post = AsyncMock(return_value=_mock_response({"queued": True}))
+        await client.escalate("s1", "reason", "msg", "ready")
+        assert "handoff" not in client._client.post.call_args.kwargs["json"]
+
+    async def test_timeout_not_retried_and_unreachable(self):
+        from unittest.mock import AsyncMock
+        client = self._client()
+        client._client.post = AsyncMock(side_effect=httpx.TimeoutException("t"))
+        r = await client.escalate("s1", "human_request", "m", "job_match", handoff={"x": 1})
+        assert client._client.post.call_count == 1
+        assert r["queued"] is False and r["delivered"] is False
+        assert r["reason"] == "unreachable"
+
+    async def test_connect_error_not_retried(self):
+        from unittest.mock import AsyncMock
+        client = self._client()
+        client._client.post = AsyncMock(side_effect=httpx.ConnectError("c"))
+        r = await client.escalate("s1", "reason", "msg", "ready")
+        assert client._client.post.call_count == 1
+        assert r["reason"] == "unreachable"
+
+    async def test_uses_escalate_timeout(self):
+        from unittest.mock import AsyncMock
+        client = self._client(escalate_timeout_ms=7000)
+        client._client.post = AsyncMock(return_value=_mock_response({"queued": True}))
+        await client.escalate("s1", "reason", "msg", "ready")
+        assert client._client.post.call_args.kwargs["timeout"] == 7.0
+
+    async def test_escalate_timeout_defaults_to_8s(self):
+        from unittest.mock import AsyncMock
+        client = self._client()
+        client._client.post = AsyncMock(return_value=_mock_response({"queued": True}))
+        await client.escalate("s1", "reason", "msg", "ready")
+        assert client._client.post.call_args.kwargs["timeout"] == 8.0
+
 
 # ===========================================================================
 # ObservabilityLayerHttpClient
@@ -525,3 +623,50 @@ class TestActionGatewayExecute:
         client = ActionGatewayHttpClient(_BASE_CONFIG)
         with pytest.raises(ValueError):
             client.execute(None, "s1")
+
+
+class TestActionGatewayProjectedFlag:
+    def _call(self, response):
+        with patch("httpx.get", return_value=_mock_get_tools()):
+            client = ActionGatewayHttpClient(_BASE_CONFIG)
+        tc = ToolCall(tool_name="onest_market_lookup", tool_use_id="tu_1", input_params={})
+        with patch("httpx.post", return_value=_mock_response(response)):
+            return client.execute(tc, "s1")
+
+    def test_projected_true_is_carried(self):
+        result = self._call({"tool_use_id": "tu_1", "result": {}, "success": True, "projected": True})
+        assert result.projected is True
+
+    def test_projected_defaults_false(self):
+        result = self._call({"tool_use_id": "tu_1", "result": {}, "success": True})
+        assert result.projected is False
+
+
+class TestAsyncActionGatewayProjectedFlag:
+    async def _call(self, response):
+        from unittest.mock import AsyncMock
+        from src.http_clients.async_.action_gateway import AsyncActionGatewayHttpClient
+        client = AsyncActionGatewayHttpClient(_BASE_CONFIG)
+        client._client.post = AsyncMock(return_value=_mock_response(response))
+        tc = ToolCall(tool_name="onest_market_lookup", tool_use_id="tu_1", input_params={})
+        return await client.execute(tc, "s1")
+
+    async def test_projected_true_is_carried(self):
+        result = await self._call({"tool_use_id": "tu_1", "result": {}, "success": True, "projected": True})
+        assert result.projected is True
+
+    async def test_projected_defaults_false(self):
+        result = await self._call({"tool_use_id": "tu_1", "result": {}, "success": True})
+        assert result.projected is False
+
+
+class TestAsyncActionGatewayTimeout:
+    async def test_timeout_carries_the_sync_clients_tag(self):
+        """Spec E §5.3: a write's only budget is the gateway timeout; both clients tag it alike."""
+        from unittest.mock import AsyncMock
+        from src.http_clients.async_.action_gateway import AsyncActionGatewayHttpClient
+        client = AsyncActionGatewayHttpClient(_BASE_CONFIG)
+        client._client.post = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
+        tc = ToolCall(tool_name="apply_job", tool_use_id="tu_1", input_params={})
+        result = await client.execute(tc, "s1")
+        assert (result.success, result.error) == (False, "gateway_timeout: apply_job")

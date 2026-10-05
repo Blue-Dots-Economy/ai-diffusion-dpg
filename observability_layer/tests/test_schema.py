@@ -3,11 +3,11 @@ import pytest
 from pydantic import ValidationError
 
 
-def test_from_config_full_kkb_config():
+def test_from_config_full_blue_dots_config():
     from schema.config import ObservabilityConfig, InstrumentType
     config = {
         "observability": {
-            "domain": "kkb",
+            "domain": "blue-dots",
             "otel": {
                 "collector_endpoint": "http://otelcol:4317",
                 "sample_rate": 0.5,
@@ -28,7 +28,7 @@ def test_from_config_full_kkb_config():
         }
     }
     cfg = ObservabilityConfig.from_config(config)
-    assert cfg.domain == "kkb"
+    assert cfg.domain == "blue-dots"
     assert cfg.otel.collector_endpoint == "http://otelcol:4317"
     assert cfg.otel.sample_rate == 0.5
     assert len(cfg.outcomes.lifecycle) == 2
@@ -109,10 +109,10 @@ def test_merged_config_accepts_valid_full_config():
     from schema.config import MergedConfig
     cfg = MergedConfig.validate_full({
         "server": {"host": "0.0.0.0", "port": 8004},
-        "observability": {"domain": "kkb"},
+        "observability": {"domain": "blue-dots"},
     })
     assert cfg.server.port == 8004
-    assert cfg.observability.domain == "kkb"
+    assert cfg.observability.domain == "blue-dots"
 
 
 def test_merged_config_rejects_unknown_top_level_key():
@@ -120,7 +120,7 @@ def test_merged_config_rejects_unknown_top_level_key():
     with pytest.raises(ValidationError) as exc:
         MergedConfig.validate_full({
             "server": {"host": "0.0.0.0", "port": 8004},
-            "observability": {"domain": "kkb"},
+            "observability": {"domain": "blue-dots"},
             "typo_section": {"foo": "bar"},
         })
     assert "typo_section" in str(exc.value)
@@ -131,7 +131,7 @@ def test_merged_config_rejects_unknown_nested_key():
     with pytest.raises(ValidationError) as exc:
         MergedConfig.validate_full({
             "observability": {
-                "domain": "kkb",
+                "domain": "blue-dots",
                 "otel": {"collector_endpoint": "x", "sampl_rate": 0.5},  # typo
             }
         })

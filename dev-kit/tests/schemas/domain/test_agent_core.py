@@ -23,7 +23,7 @@ from dev_kit.schemas.domain.agent_core import (
     RoutingCondition,
     RoutingRule,
     SubAgent,
-    TtsRulesConfig,
+    OutputContractConfig,
     TurnAssemblerConfig,
     UserStateDefinition,
     UserStateModel,
@@ -211,28 +211,22 @@ def test_language_normalisation_provider_openai_with_anthropic_model_rejected():
 # -- NLUProcessorSection -----------------------------------------------------
 
 def test_nlu_processor_minimal():
-    n = NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=["greet"])
-    assert n.confidence_threshold == 0.5
+    n = NLUProcessorSection(model=_ANTHROPIC_PRIMARY)
     assert n.user_state_confidence_threshold == 0.4
+    assert n.slots == {} and n.act_intents == []
 
 
-def test_nlu_processor_intents_required_min_1():
-    """workflow_loader rejects empty intents list."""
+def test_nlu_processor_user_state_confidence_threshold_range():
+    NLUProcessorSection(model=_ANTHROPIC_PRIMARY, user_state_confidence_threshold=0.0)
+    NLUProcessorSection(model=_ANTHROPIC_PRIMARY, user_state_confidence_threshold=1.0)
     with pytest.raises(ValidationError):
-        NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=[])
-
-
-def test_nlu_processor_confidence_threshold_range():
-    NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=["x"], confidence_threshold=0.0)
-    NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=["x"], confidence_threshold=1.0)
-    with pytest.raises(ValidationError):
-        NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=["x"], confidence_threshold=1.1)
+        NLUProcessorSection(model=_ANTHROPIC_PRIMARY, user_state_confidence_threshold=1.1)
 
 
 def test_nlu_processor_provider_validation():
-    NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=["x"], provider="anthropic")
+    NLUProcessorSection(model=_ANTHROPIC_PRIMARY, provider="anthropic")
     with pytest.raises(ValidationError, match="not valid for provider"):
-        NLUProcessorSection(model=_OPENAI_PRIMARY, intents=["x"], provider="anthropic")
+        NLUProcessorSection(model=_OPENAI_PRIMARY, provider="anthropic")
 
 
 # -- PreprocessingSection ----------------------------------------------------
@@ -240,16 +234,16 @@ def test_nlu_processor_provider_validation():
 def test_preprocessing_section_full():
     p = PreprocessingSection(
         language_normalisation=LanguageNormalisationSection(**_lang_norm_kwargs()),
-        nlu_processor=NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=["x"]),
+        nlu_processor=NLUProcessorSection(model=_ANTHROPIC_PRIMARY),
     )
-    assert p.nlu_processor.confidence_threshold == 0.5
+    assert p.nlu_processor.user_state_confidence_threshold == 0.4
 
 
 def test_preprocessing_section_extra_forbidden():
     with pytest.raises(ValidationError):
         PreprocessingSection(
             language_normalisation=LanguageNormalisationSection(**_lang_norm_kwargs()),
-            nlu_processor=NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=["x"]),
+            nlu_processor=NLUProcessorSection(model=_ANTHROPIC_PRIMARY),
             unknown="x",
         )
 
@@ -329,13 +323,20 @@ def test_user_state_model_enabled_with_states_still_validates_default():
         )
 
 
-# -- TtsRulesConfig ----------------------------------------------------------
+# -- OutputContractConfig ----------------------------------------------------
 
-def test_tts_rules_includes_email_and_named_entities():
-    """KKB has these fields."""
-    t = TtsRulesConfig(email="Spell email", named_entities="Speak entities")
-    assert t.email == "Spell email"
-    assert t.named_entities == "Speak entities"
+def test_output_contract_default_language_must_be_declared():
+    with pytest.raises(ValidationError, match="default_language"):
+        OutputContractConfig(default_language="tamil", languages={"hindi": {"numbers": "words"}})
+
+
+def test_output_contract_parses():
+    c = OutputContractConfig(
+        default_language="hindi",
+        languages={"hindi": {"script": "devanagari", "numbers": "words"}},
+        guard={"rewrite_digits": True},
+    )
+    assert c.languages["hindi"].numbers == "words" and c.guard.rewrite_digits
 
 
 # -- ChannelsSection ---------------------------------------------------------
@@ -421,7 +422,12 @@ def test_routing_condition_typed():
 
 def test_routing_condition_invalid_operator():
     with pytest.raises(ValidationError):
-        RoutingCondition(field="x", operator="contains", value="y")
+        RoutingCondition(field="x", operator="startswith", value="y")
+
+
+def test_routing_condition_contains_accepted():
+    c = RoutingCondition(field="current_question", operator="contains", value=["a", "b"])
+    assert c.operator.value == "contains"
 
 
 # -- RoutingRule + session_writes scalar validator ---------------------------
@@ -497,7 +503,7 @@ def _make_subagent(id="greeting", **kw):
 
 def _workflow_kwargs(**overrides):
     base = dict(
-        workflow_id="kkb_demo",
+        workflow_id="blue_dots_demo",
         version="1.0.0",
         agent_system_prompt="A demo agent for testing the workflow validators.",
         subagents=[_make_subagent(is_start=True)],
@@ -509,7 +515,7 @@ def _workflow_kwargs(**overrides):
 
 def test_workflow_minimal_valid():
     w = AgentWorkflowSection(**_workflow_kwargs())
-    assert w.workflow_id == "kkb_demo"
+    assert w.workflow_id == "blue_dots_demo"
 
 
 def test_workflow_workflow_id_pattern():
@@ -547,14 +553,6 @@ def test_workflow_global_routing_target_must_be_declared():
     with pytest.raises(ValidationError, match="unknown subagent"):
         AgentWorkflowSection(**_workflow_kwargs(
             global_routing=[RoutingRule(intent="next", next_subagent_id="ghost")],
-        ))
-
-
-def test_workflow_global_intents_must_not_overlap():
-    with pytest.raises(ValidationError, match="both global_intents"):
-        AgentWorkflowSection(**_workflow_kwargs(
-            subagents=[_make_subagent(is_start=True, valid_intents=["help"])],
-            global_intents=["help"],
         ))
 
 
@@ -608,7 +606,7 @@ def test_observability_section_domain_pattern():
     `workflow_id` / `collection_name` fields.
     """
     # Both separator styles must round-trip.
-    ObservabilitySection(domain="kkb")
+    ObservabilitySection(domain="blue-dots")
     ObservabilitySection(domain="employ-voice-bot")
     ObservabilitySection(domain="go-guide")
     ObservabilitySection(domain="go_guide")          # underscore — newly accepted
@@ -632,3 +630,252 @@ def test_entity_to_profile_field_open_map():
     e = EntityToProfileFieldSection(user_name="name", user_location="location", anything_goes="here")
     # extra="allow" — values are just stored
     assert hasattr(e, "user_name") or e.model_extra
+
+
+
+class TestTurnAssemblerLifecycleMirror:
+    """Mirror of runtime InterruptionConfig / FoldConfig / CarryoverConfig."""
+
+    def test_accepts_valid(self):
+        ta = TurnAssemblerConfig.model_validate({
+            "interruption": {"on_new_input": "replace", "on_disconnect": "continue",
+                             "drain_max_ms": 100},
+            "fold": {"max_segments": 2},
+            "carryover": {"max_age_ms": 10, "undelivered_note": "n"},
+            "session_idle_ttl_ms": 1000,
+        })
+        assert ta.fold.max_segments == 2
+
+    @pytest.mark.parametrize("payload", [
+        {"interruption": {"on_new_input": "explode"}},
+        {"fold": {"max_segments": -1}},
+        {"carryover": {"enabled": True}},
+        {"semantic_gate": {"enabled": False}},
+    ])
+    def test_rejects_invalid(self, payload):
+        with pytest.raises(ValidationError):
+            TurnAssemblerConfig.model_validate(payload)
+
+
+# -- tool-result persistence --------------------------------------------------
+
+def test_connectors_section_accepts_cache_and_invalidates():
+    s = ConnectorsSection.model_validate({
+        "read": [{"name": "fetch_jobs", "cache": {"scope": "session", "ttl_seconds": 60, "vary_on": ["trade"]}}],
+        "write": [{"name": "apply", "invalidates": ["fetch_jobs"]}],
+    })
+    assert s.read[0].cache.ttl_seconds == 60
+    assert s.write[0].invalidates == ["fetch_jobs"]
+
+
+@pytest.mark.parametrize("payload", [
+    {"write": [{"name": "w", "cache": {"scope": "user", "ttl_seconds": 5}}]},
+    {"read": [{"name": "r", "invalidates": ["r"]}]},
+    {"write": [{"name": "w", "invalidates": ["ghost"]}]},
+    {"internal": [{"name": "i", "cache": {"scope": "user", "ttl_seconds": 5}}]},
+    {"internal": [{"name": "i", "invalidates": ["r"]}], "read": [{"name": "r"}]},
+    {"read": [{"name": "r", "cache": {"scope": "user", "ttl_seconds": 0}}]},
+    {"read": [{"name": "r", "cache": {"scope": "global", "ttl_seconds": 5}}]},
+])
+def test_connectors_section_rejects_bad_cache_rules(payload):
+    with pytest.raises(ValidationError):
+        ConnectorsSection.model_validate(payload)
+
+
+def test_tool_results_and_memory_tool_sections():
+    from dev_kit.schemas.domain.agent_core import MemoryToolSection, ToolResultsSection
+    assert ToolResultsSection().max_user_ttl_seconds == 86400
+    m = MemoryToolSection.model_validate({"fields": {"x": {"scope": "session", "grounded_in": ["a"]}}})
+    assert m.name == "remember"
+    with pytest.raises(ValidationError):
+        MemoryToolSection.model_validate({"fields": {}})
+    with pytest.raises(ValidationError):
+        ToolResultsSection.model_validate({"max_user_ttl_seconds": 0})
+    with pytest.raises(ValidationError):
+        ToolResultsSection.model_validate({"bogus": 1})
+
+
+def test_validation_registry_has_tool_result_sections():
+    from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS
+    assert ("agent_core", "tool_results") in DOMAIN_SECTION_SCHEMAS
+    assert ("agent_core", "memory_tool") in DOMAIN_SECTION_SCHEMAS
+
+
+# -- session bootstrap ---------------------------------------------------------
+
+def test_session_bootstrap_and_prompt_session_fields_accepted():
+    from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS
+    a = AgentSection(primary_model=_ANTHROPIC_PRIMARY, fallback_model=_ANTHROPIC_FALLBACK,
+                     prompt_session_fields=["profile_item_id"])
+    assert a.prompt_session_fields == ["profile_item_id"]
+    schema = DOMAIN_SECTION_SCHEMAS[("agent_core", "session_bootstrap")]
+    s = schema.model_validate({"steps": [{"type": "tool", "tool": "fetch_profile", "args": {"a": 1}}]})
+    assert s.timeout_ms == 1500
+    assert s.steps[0].requires_consent is False
+
+
+@pytest.mark.parametrize("payload, match", [
+    ({"steps": [{"type": "set", "tool": "t"}]}, "Input should be 'tool'"),
+    ({"steps": []}, "List should have at least 1 item"),
+    ({"timeout_ms": 0, "steps": [{"type": "tool", "tool": "t"}]}, "greater than 0"),
+    ({"steps": [{"type": "tool", "tool": ""}]}, "at least 1 character"),
+    ({"steps": [{"type": "tool", "tool": "t", "bogus": 1}]}, "Extra inputs are not permitted"),
+])
+def test_session_bootstrap_rejects_bad_shapes(payload, match):
+    from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS
+    with pytest.raises(ValidationError, match=match):
+        DOMAIN_SECTION_SCHEMAS[("agent_core", "session_bootstrap")].model_validate(payload)
+
+
+def test_nlu_section_accepts_dialogue_act_blocks():
+    s = NLUProcessorSection(slots={"age": {"type": "int", "min": 14, "max": 80}},
+                            act_intents=[{"acts": ["affirm"], "intent": "apply_now"}])
+    assert s.slots["age"].max == 80 and s.act_intents[0].intent == "apply_now"
+
+
+def test_nlu_section_rejects_unknown_act():
+    with pytest.raises(ValidationError, match="unknown act"):
+        NLUProcessorSection(act_intents=[{"acts": ["shout"], "intent": "x"}])
+
+
+def test_subagent_accepts_pending():
+    sa = SubAgent(id="job_match", name="Job match", system_prompt="p", opening_phrase="o",
+                  pending=[{"id": "select_job", "expects": "one of the jobs",
+                            "options_from": {"tool": "fetch_jobs", "fields": ["role"], "id_field": "item_id"},
+                            "resolves_to": "selected_job_item_id"}])
+    assert sa.pending[0].options_from.id_field == "item_id"
+
+
+# -- Removed legacy NLU keys (NLU single-mode, spec §16) --------------------
+
+@pytest.mark.parametrize("key, value", [
+    ("mode", "dialogue_act"), ("intents", ["greet"]), ("entities", ["name"]),
+    ("domain_instruction", "x"), ("confidence_threshold", 0.5), ("sentiment_classes", ["neutral"]),
+])
+def test_nlu_section_rejects_removed_key(key, value):
+    with pytest.raises(ValidationError, match=key):
+        NLUProcessorSection(**{key: value})
+
+
+def test_subagent_rejects_valid_intents():
+    with pytest.raises(ValidationError, match="valid_intents"):
+        _make_subagent(is_start=True, valid_intents=["help"])
+
+
+def test_workflow_rejects_global_intents():
+    with pytest.raises(ValidationError, match="global_intents"):
+        AgentWorkflowSection(**_workflow_kwargs(global_intents=["help"]))
+
+
+# -- IdentitySection / HandoffSection ----------------------------------------
+
+_IDENT = {"name": "ब्लू डॉट्स सहायक", "operator": "Blue Dots",
+          "disclosure": "जी, मैं ब्लू डॉट्स की AI सहायक हूँ।", "no_handoff_line": "अभी कोई इंसान उपलब्ध नहीं है।"}
+_LINES = {"lines": {"delivered": "d", "failed": "f", "already": "a"}}
+
+
+def test_identity_section_accepts_valid_and_defaults():
+    from dev_kit.schemas.domain.agent_core import IdentitySection
+    s = IdentitySection(**_IDENT)
+    assert s.human_handoff == "none" and s.kind == "ai_assistant"
+
+
+def test_identity_section_rejects_empty_disclosure():
+    from dev_kit.schemas.domain.agent_core import IdentitySection
+    with pytest.raises(ValidationError):
+        IdentitySection(**{**_IDENT, "disclosure": ""})
+
+
+def test_handoff_section_accepts_valid_and_bounds():
+    from dev_kit.schemas.domain.agent_core import HandoffSection
+    assert HandoffSection(**_LINES).summary_turns == 6
+    with pytest.raises(ValidationError):
+        HandoffSection(**{**_LINES, "summary_turns": 21})
+
+
+# -- Spec D: output_contract / result_shaping / history_turns ------------------
+
+_CONTRACT = {"default_language": "hindi",
+             "languages": {"hindi": {"script": "devanagari", "numbers": "words", "rules": ["x"]}},
+             "guard": {"rewrite_digits": True}}
+
+
+def test_channel_output_contract_accepted_and_tts_rules_rejected():
+    from dev_kit.schemas.domain.agent_core import ChannelEntry
+    ChannelEntry(output_contract=_CONTRACT)
+    with pytest.raises(ValidationError):
+        ChannelEntry(tts_rules={"numbers": "words"})
+    with pytest.raises(ValidationError, match="default_language"):
+        ChannelEntry(output_contract={**_CONTRACT, "default_language": "english"})
+
+
+def test_connector_result_shaping_mirrors_runtime():
+    ConnectorDef(name="fetch_jobs", result_shaping={
+        "drop_when": [{"field": "role", "operator": "contains", "value": "|"}],
+        "sort": [{"field": "match_score", "order": "desc"}],
+        "spoken": {"salary_spoken": {"format": "range_thousands", "from": ["salary_min", "salary_max"]}},
+        "strip_numbers_in": ["location"]})
+    with pytest.raises(ValidationError):
+        ConnectorDef(name="x", result_shaping={"sort": [{"field": "a", "order": "sideways"}]})
+
+
+def test_agent_history_turns_and_state_fields():
+    kw = dict(primary_model=_ANTHROPIC_PRIMARY, fallback_model=_ANTHROPIC_FALLBACK)
+    AgentSection(history_turns=2, state_fields=["applications_submitted"], **kw)
+    with pytest.raises(ValidationError):
+        AgentSection(history_turns=-1, **kw)
+
+
+# -- Spec E: tool pre-dispatch -------------------------------------------------
+
+_PD_RULE = {"tool": "search_jobs", "unless_fresh": True,
+            "args": {"query": {"template": "{trade|stored_trade} jobs in {city}",
+                               "normalise": {"city": "city_canonical"}},
+                     "name": {"from": "session", "key": "name", "reject": "placeholders"},
+                     "limit": {"from": "literal", "value": 5}}}
+
+
+def test_predispatch_rule_accepted():
+    from dev_kit.schemas.domain.agent_core import PredispatchRule
+    r = PredispatchRule.model_validate(_PD_RULE)
+    assert r.args["name"].from_ == "session"
+
+
+@pytest.mark.parametrize("arg", [
+    {"from": "session", "key": "k", "template": "x"},
+    {"from": "session"},
+    {"from": "literal"},
+    {"from": "literal", "value": 1, "key": "k"},
+    {"from": "session", "key": "k", "value": 1},
+    {"template": "x", "key": "k"},
+    {"template": "x", "value": 1},
+    {"template": "  "},
+    {},
+    {"from": "session", "key": "k", "bogus": 1},
+])
+def test_predispatch_arg_rejects_bad_shapes(arg):
+    from dev_kit.schemas.domain.agent_core import PredispatchRule
+    with pytest.raises(ValidationError):
+        PredispatchRule.model_validate({"tool": "t", "args": {"a": arg}})
+
+
+def test_predispatch_rule_rejects_unknown_field_and_empty_tool():
+    from dev_kit.schemas.domain.agent_core import PredispatchRule
+    with pytest.raises(ValidationError):
+        PredispatchRule.model_validate({"tool": "t", "bogus": 1})
+    with pytest.raises(ValidationError):
+        PredispatchRule.model_validate({"tool": ""})
+
+
+def test_predispatch_on_subagent_timeout_and_tables():
+    from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS
+    a = AgentSection(primary_model=_ANTHROPIC_PRIMARY, fallback_model=_ANTHROPIC_FALLBACK,
+                     predispatch_timeout_ms=1200)
+    assert a.predispatch_timeout_ms == 1200
+    with pytest.raises(ValidationError):
+        AgentSection(primary_model=_ANTHROPIC_PRIMARY, fallback_model=_ANTHROPIC_FALLBACK,
+                     predispatch_timeout_ms=0)
+    tables = DOMAIN_SECTION_SCHEMAS[("agent_core", "predispatch_tables")]
+    tables.model_validate({"city_canonical": {"Bangalore": "Bengaluru"}, "placeholders": ["unknown"]})
+    with pytest.raises(ValidationError):
+        tables.model_validate({"t": "not a table"})

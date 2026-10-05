@@ -5,8 +5,8 @@ Each class corresponds to a top-level section the LLM writes via update_config.
 Phase prompts inject the relevant subset (see phase→section mapping in design doc).
 """
 from __future__ import annotations
-from typing import Optional, Any
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from typing import Any, Dict, List, Literal, Optional, Union
+from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, model_validator
 
 from dev_kit.schemas.enums import (
     ANTHROPIC_MODELS, OPENAI_MODELS, OLLAMA_MODELS, GOOGLE_MODELS,
@@ -81,8 +81,12 @@ class AgentSection(BaseModel):
     max_tool_rounds: int = Field(default=3, ge=1, le=20)
     ask_for_consent: bool = False
     consent_prompt: str = ""
+    prompt_session_fields: list[str] = Field(default_factory=list)
+    history_turns: int = Field(default=2, ge=0)
+    state_fields: list[str] = Field(default_factory=list)
+    predispatch_timeout_ms: int = Field(default=1500, gt=0)
 
-    # Optional sub-blocks mirrored from runtime AgentConfig. KKB declares
+    # Optional sub-blocks mirrored from runtime AgentConfig. Blue Dots declares
     # termination_short_circuit; current_question and recent_tool_exchanges
     # are framework-defaulted but accepted here for round-trip parity.
     termination_short_circuit: Optional[TerminationShortCircuitConfig] = None
@@ -192,20 +196,112 @@ class LanguageNormalisationSection(BaseModel):
         return self
 
 
+_DIALOGUE_ACTS: tuple[str, ...] = (
+    "affirm", "deny", "acknowledge", "provide_info", "correct", "select",
+    "ask", "request_change", "repeat", "hold", "close", "other",
+)
+
+
+class NLUSlotConfig(BaseModel):
+    """One caller-stated value the dialogue-act NLU extracts (NLU dialogue-acts spec §7.1)."""
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["string", "int", "enum"] = "string"
+    values: list[str] = Field(default_factory=list)
+    min: Optional[int] = None
+    max: Optional[int] = None
+    normalise: Optional[Literal["title", "lower"]] = None
+    accept_when_pending: list[str] = Field(default_factory=list)
+    description: str = ""
+    examples: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check(self) -> "NLUSlotConfig":
+        """Enum slots need values; int bounds must be ordered."""
+        if self.type == "enum" and not self.values:
+            raise ValueError("enum slot needs values")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError("slot min must be <= max")
+        return self
+
+
+class NLUExampleConfig(BaseModel):
+    """A few-shot example rendered into the static NLU prompt."""
+    model_config = ConfigDict(extra="forbid")
+    pending: str = ""
+    caller: str
+    out: dict[str, Any]
+
+
+class ActIntentRuleConfig(BaseModel):
+    """(acts, pending, relation, topic) → routing intent (spec §6.4)."""
+    model_config = ConfigDict(extra="forbid")
+    acts: list[str] = Field(default_factory=list)
+    pending: Optional[str] = None
+    relation: Optional[Literal["answers_pending", "answers_other", "new_topic", "unrelated", "unclear"]] = None
+    topic: Optional[str] = None
+    intent: str
+    gated: bool = False
+
+    @field_validator("acts")
+    @classmethod
+    def _known_acts(cls, value: list[str]) -> list[str]:
+        """Reject acts outside the framework list."""
+        bad = [a for a in value if a not in _DIALOGUE_ACTS]
+        if bad:
+            raise ValueError(f"unknown act(s) {bad}; allowed: {list(_DIALOGUE_ACTS)}")
+        return value
+
+
+class TerminationGateItem(BaseModel):
+    """Either a pending id or a routing condition (spec §6.7)."""
+    model_config = ConfigDict(extra="forbid")
+    pending: Optional[str] = None
+    field: Optional[str] = None
+    operator: Optional[RoutingOperator] = None
+    value: Any = None
+
+    @model_validator(mode="after")
+    def _one_form(self) -> "TerminationGateItem":
+        """Exactly one of ``pending`` or ``field``+``operator``."""
+        has_pending = self.pending is not None
+        has_cond = self.field is not None and self.operator is not None
+        if has_pending == has_cond:
+            raise ValueError("termination_gate item needs exactly one of 'pending' or 'field'+'operator'")
+        return self
+
+
+class TerminationGateConfig(BaseModel):
+    """Conditions under which a gated act-intent row may fire."""
+    model_config = ConfigDict(extra="forbid")
+    any_of: list[TerminationGateItem] = Field(default_factory=list)
+
+
+class OffTrackConfig(BaseModel):
+    """Consecutive off-track turns before routing to recovery (spec §6.6)."""
+    model_config = ConfigDict(extra="forbid")
+    threshold: int = Field(default=3, ge=1)
+    intent: str = "off_track"
+
+
 class NLUProcessorSection(BaseModel):
-    """NLU classifier helper config. provider=None inherits agent.provider; intents must be non-empty."""
+    """Dialogue-act NLU helper config. provider=None inherits agent.provider."""
     model_config = ConfigDict(extra="forbid")
     provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
     model: str = ""   # empty allowed — helper inherits agent.primary_model at runtime
-    confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     user_state_confidence_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
-    domain_instruction: str = ""
-    intents: list[str] = Field(..., min_length=1)   # workflow_loader rejects empty list
-    entities: list[str] = Field(default_factory=list)
-    sentiment_classes: list[str] = Field(
-        default_factory=lambda: ["neutral", "positive", "distressed", "frustrated"]
-    )
     signal_intents: dict[str, str] = Field(default_factory=dict)
+    log_raw_response: bool = False   # opt-in raw NLU response log; off by default (PII)
+    timeout_ms: int = Field(default=2500, gt=0)
+    retry_attempts: int = Field(default=2, ge=1)
+    history_turns: int = Field(default=2, ge=0)
+    topics: list[str] = Field(default_factory=list)
+    signals: list[str] = Field(default_factory=list)
+    slots: dict[str, NLUSlotConfig] = Field(default_factory=dict)
+    known_fields: list[str] = Field(default_factory=list)
+    examples: list[NLUExampleConfig] = Field(default_factory=list)
+    act_intents: list[ActIntentRuleConfig] = Field(default_factory=list)
+    termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig)
+    off_track: OffTrackConfig = Field(default_factory=OffTrackConfig)
 
     @model_validator(mode="after")
     def model_must_match_helper_provider(self) -> "NLUProcessorSection":
@@ -286,6 +382,7 @@ class SessionEndEvalConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
     prompt: str = ""
+    subagents: List[str] = Field(default_factory=list)
     fail_action: str = "none"
 
 
@@ -308,33 +405,68 @@ class ConversationSection(BaseModel):
 
 # -- agent_core.channels (language, reach phases) ----------------------------
 
-class TtsRulesConfig(BaseModel):
-    """Voice-channel TTS-rendering rules per data type (numbers, dates, etc.)."""
+class OutputLanguageContract(BaseModel):
+    """Mirrors runtime OutputLanguageContract 1:1 (Spec D §3)."""
     model_config = ConfigDict(extra="forbid")
-    numbers: str = ""
-    money: str = ""
-    dates: str = ""
-    time: str = ""
-    phone: str = ""
-    abbreviations: str = ""
-    output_script: str = ""
-    english_loanwords: str = ""
-    email: str = ""               # KKB has this; LLM doesn't generate
-    named_entities: str = ""      # KKB has this; LLM doesn't generate
+    script: Literal["devanagari", "latin", "any"] = "any"
+    numbers: Literal["words", "digits"] = "digits"
+    rules: List[str] = Field(default_factory=list)
 
 
-class SemanticGateConfig(BaseModel):
-    """Mirrors runtime SemanticGateConfig 1:1.
-
-    Earlier the parent ``TurnAssemblerConfig`` typed this as a bare
-    ``dict``, which let typo keys like ``threshhold`` through the
-    mirror; the runtime's strict ``SemanticGateConfig(extra="forbid")``
-    then crashed at boot. Same fix pattern as ConnectorDef.input_schema
-    above.
-    """
+class OutputGuardConfig(BaseModel):
+    """Mirrors runtime OutputGuardConfig 1:1 (Spec D §5)."""
     model_config = ConfigDict(extra="forbid")
-    enabled: bool = False
-    confidence_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    rewrite_digits: bool = False
+    strip_markdown: bool = False
+    count_foreign_script: bool = False
+
+
+class OutputContractConfig(BaseModel):
+    """Mirrors runtime OutputContractConfig 1:1 (Spec D §3)."""
+    model_config = ConfigDict(extra="forbid")
+    default_language: str = Field(min_length=1)
+    languages: Dict[str, OutputLanguageContract] = Field(min_length=1)
+    guard: OutputGuardConfig = Field(default_factory=OutputGuardConfig)
+
+    @model_validator(mode="after")
+    def _default_declared(self) -> "OutputContractConfig":
+        if self.default_language not in self.languages:
+            raise ValueError(f"output_contract.default_language '{self.default_language}' "
+                             f"is not in languages {sorted(self.languages)}")
+        return self
+
+
+class ShapingCondition(BaseModel):
+    """Mirrors runtime ShapingCondition 1:1 (Spec D §4.1)."""
+    model_config = ConfigDict(extra="forbid")
+    field: str = Field(min_length=1)
+    operator: Literal["eq", "not_eq", "in", "lt", "gt", "contains"]
+    value: Any = None
+
+
+class ShapingSort(BaseModel):
+    """Mirrors runtime ShapingSort 1:1."""
+    model_config = ConfigDict(extra="forbid")
+    field: str = Field(min_length=1)
+    order: Literal["asc", "desc"] = "asc"
+
+
+class SpokenFieldConfig(BaseModel):
+    """Mirrors runtime SpokenFieldConfig 1:1."""
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    format: Literal["range_thousands", "amount"]
+    from_: List[str] = Field(alias="from", min_length=1, max_length=2)
+    unit: Literal["none", "per_month", "per_task", "per_day"] = "none"
+
+
+class ResultShapingConfig(BaseModel):
+    """Mirrors runtime ResultShapingConfig 1:1 (Spec D §4)."""
+    model_config = ConfigDict(extra="forbid")
+    list_key: str = ""
+    drop_when: List[ShapingCondition] = Field(default_factory=list)
+    sort: List[ShapingSort] = Field(default_factory=list)
+    spoken: Dict[str, SpokenFieldConfig] = Field(default_factory=dict)
+    strip_numbers_in: List[str] = Field(default_factory=list)
 
 
 class SilenceTriggerConfig(BaseModel):
@@ -349,24 +481,48 @@ class MaxWaitCeilingConfig(BaseModel):
     max_wait_ms: int = Field(default=0, ge=0)
 
 
+class InterruptionConfig(BaseModel):
+    """Mirrors runtime InterruptionConfig 1:1."""
+    model_config = ConfigDict(extra="forbid")
+    on_new_input: Literal["abort_and_fold", "replace"] = "abort_and_fold"
+    on_disconnect: Literal["abort", "continue"] = "abort"
+    drain_max_ms: int = Field(default=3000, ge=0)
+
+
+class FoldConfig(BaseModel):
+    """Mirrors runtime FoldConfig 1:1."""
+    model_config = ConfigDict(extra="forbid")
+    max_segments: int = Field(default=3, ge=0)
+
+
+class CarryoverConfig(BaseModel):
+    """Mirrors runtime CarryoverConfig 1:1."""
+    model_config = ConfigDict(extra="forbid")
+    max_age_ms: int = Field(default=60000, ge=0)
+    undelivered_note: str = ""
+
+
 class TurnAssemblerConfig(BaseModel):
-    """TurnAssembler policy stack — semantic gate + silence trigger + max-wait ceiling.
+    """TurnAssembler policy stack — silence trigger + max-wait ceiling.
 
     Sub-fields now use strict Pydantic classes that mirror the runtime
     exactly. Previously each was typed ``dict``, which silently
     accepted wrong keys and only failed at boot.
     """
     model_config = ConfigDict(extra="forbid")
-    semantic_gate: SemanticGateConfig = Field(default_factory=SemanticGateConfig)
     silence_trigger: SilenceTriggerConfig = Field(default_factory=SilenceTriggerConfig)
     max_wait_ceiling: MaxWaitCeilingConfig = Field(default_factory=MaxWaitCeilingConfig)
+    interruption: InterruptionConfig = Field(default_factory=InterruptionConfig)
+    fold: FoldConfig = Field(default_factory=FoldConfig)
+    carryover: CarryoverConfig = Field(default_factory=CarryoverConfig)
+    session_idle_ttl_ms: int = Field(default=1_800_000, ge=0)
 
 
 class ChannelEntry(BaseModel):
     """One channel-specific entry under agent_core.channels (web/voice/cli)."""
     model_config = ConfigDict(extra="forbid")
     system_prompt_suffix: str = ""
-    tts_rules: Optional[TtsRulesConfig] = None
+    output_contract: Optional[OutputContractConfig] = None
     turn_assembler: Optional[TurnAssemblerConfig] = None
     terminal_word: Optional[str] = None
     max_tokens: Optional[int] = Field(default=None, gt=0)
@@ -400,13 +556,15 @@ class InvocationRules(BaseModel):
     GH-176 presentation-contract fields (exception_no_call, ranking_order,
     presentation_limit, refinement_loop_max, safety) are hand-authored by
     the operator in the YAML — the LLM phase prompt does not ask for them.
-    Spec accepts them so existing KKB-style configs round-trip cleanly.
+    Spec accepts them so existing Blue Dots-style configs round-trip cleanly.
     Runtime accepts empty defaults on all fields.
     """
     model_config = ConfigDict(extra="forbid")
     call_when: str = ""
     required_before_calling: list[str] = Field(default_factory=list)
     must_not_substitute: str = ""
+    max_calls_per_turn: Optional[int] = None
+    grounded_params: Union[List[str], Dict[str, List[str]]] = Field(default_factory=list)
     on_empty: str = ""
     on_failure: str = ""
     bridge_line: str = ""
@@ -441,6 +599,15 @@ class InputSchema(BaseModel):
     additionalProperties: bool = False
 
 
+class ToolCacheConfig(BaseModel):
+    """Per-connector tool-result cache rule. Mirrors the runtime ``ToolCacheConfig``."""
+    model_config = ConfigDict(extra="forbid")
+    scope: Literal["session", "user"]
+    ttl_seconds: int = Field(..., gt=0)
+    keep: list[str] = Field(default_factory=list)
+    vary_on: list[str] = Field(default_factory=list)
+
+
 class ConnectorDef(BaseModel):
     """External tool/connector exposed to the LLM (REST API, identity, write actions).
 
@@ -453,6 +620,9 @@ class ConnectorDef(BaseModel):
     description: str = ""
     input_schema: InputSchema = Field(default_factory=InputSchema)
     invocation_rules: InvocationRules = Field(default_factory=InvocationRules)
+    cache: Optional[ToolCacheConfig] = None
+    result_shaping: Optional[ResultShapingConfig] = None
+    invalidates: list[str] = Field(default_factory=list)
 
 
 class InternalConnectorDef(ConnectorDef):
@@ -467,6 +637,73 @@ class ConnectorsSection(BaseModel):
     read: list[ConnectorDef] = Field(default_factory=list)
     write: list[ConnectorDef] = Field(default_factory=list)
     identity: list[ConnectorDef] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_cache_rules(self) -> "ConnectorsSection":
+        """Mirror the runtime ``ConnectorsConfig._check_cache_rules``.
+
+        Internal connectors inherit ``cache``/``invalidates`` from
+        ``ConnectorDef`` here, but the runtime ``InternalConnectorDef`` has no
+        such fields (extra="forbid"), so they are rejected as misplaced.
+
+        Returns:
+            The validated section.
+
+        Raises:
+            ValueError: If cache/invalidates is misplaced or an invalidates
+                target is not a read connector.
+        """
+        read_names = {c.name for c in self.read}
+        for group_name in ("write", "identity", "internal"):
+            for c in getattr(self, group_name):
+                if c.cache is not None:
+                    raise ValueError(f"connector '{c.name}': cache is only allowed on read connectors")
+        for group_name in ("read", "identity", "internal"):
+            for c in getattr(self, group_name):
+                if c.invalidates:
+                    raise ValueError(f"connector '{c.name}': invalidates is only allowed on write connectors")
+        for c in self.write:
+            for target in c.invalidates:
+                if target not in read_names:
+                    raise ValueError(f"connector '{c.name}': invalidates unknown read connector '{target}'")
+        return self
+
+
+class ToolResultsSection(BaseModel):
+    """agent_core.tool_results — global limits for tool-result persistence."""
+    model_config = ConfigDict(extra="forbid")
+    max_user_ttl_seconds: int = Field(default=86400, gt=0)
+
+
+class SessionBootstrapStepModel(BaseModel):
+    """One deterministic first-turn step (mirrors runtime ``SessionBootstrapStep``)."""
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["tool"]
+    tool: str = Field(min_length=1)
+    args: dict[str, Any] = Field(default_factory=dict)
+    requires_consent: bool = False
+
+
+class SessionBootstrapSection(BaseModel):
+    """agent_core.session_bootstrap — steps run inline on the first turn."""
+    model_config = ConfigDict(extra="forbid")
+    timeout_ms: int = Field(default=1500, gt=0)
+    steps: list[SessionBootstrapStepModel] = Field(min_length=1)
+
+
+class MemoryToolField(BaseModel):
+    """One field the framework ``remember`` tool may store."""
+    model_config = ConfigDict(extra="forbid")
+    scope: Literal["session", "persistent"]
+    description: str = ""
+    grounded_in: list[str] = Field(default_factory=list)
+
+
+class MemoryToolSection(BaseModel):
+    """agent_core.memory_tool — the framework ``remember`` tool."""
+    model_config = ConfigDict(extra="forbid")
+    name: str = "remember"
+    fields: dict[str, MemoryToolField] = Field(..., min_length=1)
 
 
 # -- agent_core.agent_workflow (workflow phase) ------------------------------
@@ -504,6 +741,77 @@ class RoutingRule(BaseModel):
         return self
 
 
+class OptionsFromConfig(BaseModel):
+    """Where a pending question's offered options come from (a cached tool)."""
+    model_config = ConfigDict(extra="forbid")
+    tool: str
+    fields: list[str] = Field(min_length=1)
+    id_field: str
+
+
+class PendingQuestionConfig(BaseModel):
+    """What a subagent may be waiting for (NLU dialogue-acts spec §7.2)."""
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1)
+    expects: str = ""
+    when: list[RoutingCondition] = Field(default_factory=list)
+    options_from: Optional[OptionsFromConfig] = None
+    resolves_to: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _resolves_needs_options(self) -> "PendingQuestionConfig":
+        """``resolves_to`` is only meaningful with ``options_from``."""
+        if self.resolves_to and self.options_from is None:
+            raise ValueError("resolves_to requires options_from")
+        return self
+
+
+class PredispatchArg(BaseModel):
+    """One argument binding for a pre-dispatched tool call (Spec E §3.2). Mirrors runtime."""
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    from_: Optional[Literal["session", "literal"]] = Field(default=None, alias="from")
+    key: Optional[str] = None
+    value: Any = None
+    template: Optional[str] = None
+    normalise: Optional[Union[str, Dict[str, Any]]] = None
+    reject: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "PredispatchArg":
+        if (self.from_ is None) == (self.template is None):
+            raise ValueError("predispatch arg needs exactly one of 'from' or 'template'")
+        if self.from_ == "session" and not self.key:
+            raise ValueError("predispatch arg 'from: session' needs 'key'")
+        if self.from_ == "literal" and self.value is None:
+            raise ValueError("predispatch arg 'from: literal' needs 'value'")
+        if self.template is not None and not self.template.strip():
+            raise ValueError("predispatch arg 'template' must be non-empty")
+        if self.from_ == "literal" and self.key is not None:
+            raise ValueError("predispatch arg 'from: literal' must not set 'key'")
+        if self.from_ == "session" and self.value is not None:
+            raise ValueError("predispatch arg 'from: session' must not set 'value'")
+        if self.template is not None and (self.key is not None or self.value is not None):
+            raise ValueError("predispatch arg 'template' must not set 'key' or 'value'")
+        return self
+
+
+class PredispatchRule(BaseModel):
+    """Run a tool before the main LLM when NLU + session determine it (Spec E §3). Mirrors runtime."""
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str = Field(min_length=1)
+    enabled: Optional[bool] = None
+    on_intent: list[str] = Field(default_factory=list)
+    when: list[RoutingCondition] = Field(default_factory=list)
+    unless_fresh: bool = False
+    args: dict[str, PredispatchArg] = Field(default_factory=dict)
+
+
+class PredispatchTablesSection(RootModel[Dict[str, Union[Dict[str, str], List[str]]]]):
+    """agent_core.predispatch_tables — name -> {raw: canonical} map or list of placeholder strings."""
+
+
 class SubAgent(BaseModel):
     """One subagent in the workflow graph.
 
@@ -518,17 +826,22 @@ class SubAgent(BaseModel):
     is_start: bool = False
     is_terminal: bool = False
     special_handler: Optional[SpecialHandler] = None
-    valid_intents: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     system_prompt: str = Field(..., min_length=1)
     opening_phrase: str = Field(..., min_length=1)   # required for all subagents
     routing: list[RoutingRule] = Field(default_factory=list)
+    pending: list[PendingQuestionConfig] = Field(default_factory=list)
+    # Mirrors runtime SubAgentConfig: spoken verbatim on the first turn when
+    # every fixed_opening_requires field is in session and the turn had no entities.
+    fixed_opening: str = ""
+    fixed_opening_requires: list[str] = Field(default_factory=list)
+    predispatch: list[PredispatchRule] = Field(default_factory=list)
     # opening_phrase non-empty enforced by Field(..., min_length=1) above —
     # runtime requires it for ALL subagents (adopted-state callbacks).
 
 
 class AgentWorkflowSection(BaseModel):
-    """Top-level workflow definition: subagents, routing, fallback. 4 cross-field validators enforce graph integrity."""
+    """Top-level workflow definition: subagents, routing, fallback. 3 cross-field validators enforce graph integrity."""
     model_config = ConfigDict(extra="forbid")
     # workflow_id allows hyphens — runtime workflow_loader does not enforce a
     # pattern beyond non-empty (e.g. youth-schemes-agent uses hyphens).
@@ -537,7 +850,6 @@ class AgentWorkflowSection(BaseModel):
     # agent_system_prompt min_length=1 — runtime accepts any non-empty string.
     agent_system_prompt: str = Field(..., min_length=1)
     subagents: list[SubAgent] = Field(..., min_length=1)
-    global_intents: list[str] = Field(default_factory=list)
     global_tools: list[str] = Field(default_factory=list)
     global_routing: list[RoutingRule] = Field(default_factory=list)
     default_fallback_subagent_id: str = Field(..., min_length=1)
@@ -573,19 +885,6 @@ class AgentWorkflowSection(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def global_intents_must_not_overlap_subagent_intents(self) -> "AgentWorkflowSection":
-        """An intent cannot appear in both global_intents and any subagent's valid_intents — runtime crashes on overlap."""
-        global_set = set(self.global_intents)
-        for sa in self.subagents:
-            overlap = global_set & set(sa.valid_intents)
-            if overlap:
-                raise ValueError(
-                    f"Intents {sorted(overlap)} appear in both global_intents and "
-                    f"subagent '{sa.id}' valid_intents — runtime crashes on overlap"
-                )
-        return self
-
-    @model_validator(mode="after")
     def exactly_one_start_subagent(self) -> "AgentWorkflowSection":
         """Exactly one subagent must have is_start=True (entry point of the workflow)."""
         starts = [s for s in self.subagents if s.is_start]
@@ -609,6 +908,34 @@ class HitlSection(BaseModel):
     """HiTL handoff section — `response_message` is what the agent says when escalating."""
     model_config = ConfigDict(extra="forbid")
     response_message: str = Field(..., min_length=1)
+
+
+# -- agent_core.identity / agent_core.handoff --------------------------------
+
+class IdentitySection(BaseModel):
+    """agent_core.identity — mirrors runtime ``IdentityConfig``. YAML-authored, not wizard-authored, in v1."""
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1)
+    kind: Literal["ai_assistant"] = "ai_assistant"
+    operator: str = Field(min_length=1)
+    disclosure: str = Field(min_length=1)
+    human_handoff: Literal["none", "request"] = "none"
+    no_handoff_line: str = Field(min_length=1)
+
+
+class HandoffLinesSection(BaseModel):
+    """Spoken handoff outcome lines (mirrors runtime ``HandoffLines``)."""
+    model_config = ConfigDict(extra="forbid")
+    delivered: str = Field(min_length=1)
+    failed: str = Field(min_length=1)
+    already: str = Field(min_length=1)
+
+
+class HandoffSection(BaseModel):
+    """agent_core.handoff — mirrors runtime ``HandoffConfig``. YAML-authored, not wizard-authored, in v1."""
+    model_config = ConfigDict(extra="forbid")
+    lines: HandoffLinesSection
+    summary_turns: int = Field(default=6, ge=1, le=20)
 
 
 # -- agent_core.reach_layer (top-level default turn-assembler) ---------------
@@ -639,3 +966,10 @@ class ObservabilitySection(BaseModel):
     """
     model_config = ConfigDict(extra="forbid")
     domain: str = Field(..., min_length=1, pattern=r"^[a-z][a-z0-9_-]*$")
+
+
+class EntityPersistenceConfig(BaseModel):
+    """Mirrors runtime EntityPersistenceConfig — where NLU entities are written."""
+
+    model_config = ConfigDict(extra="forbid")
+    scope: str = "persistent"

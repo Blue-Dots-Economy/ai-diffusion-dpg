@@ -1,0 +1,405 @@
+{
+  "uid": "dpg-traces",
+  "title": "DPG - Traces",
+  "description": "Distributed traces from Jaeger: recent turns, failed and slow traces, and one trace in full next to its logs. Click any trace ID to open it below.",
+  "tags": [
+    "dpg",
+    "traces"
+  ],
+  "links": [
+    {
+      "type": "dashboards",
+      "title": "DPG dashboards",
+      "tags": [
+        "dpg"
+      ],
+      "asDropdown": true,
+      "includeVars": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "Service map (Jaeger)",
+      "icon": "external link",
+      "tooltip": "Which service calls which, from Jaeger's own UI. Grafana 10.3's Jaeger data source cannot draw this.",
+      "url": "http://localhost:16686/dependencies",
+      "targetBlank": true
+    }
+  ],
+  "timezone": "browser",
+  "editable": false,
+  "graphTooltip": 0,
+  "refresh": "",
+  "schemaVersion": 39,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "jaeger",
+        "label": "Traces",
+        "type": "datasource",
+        "query": "jaeger",
+        "hide": 2
+      },
+      {
+        "name": "loki",
+        "label": "Logs",
+        "type": "datasource",
+        "query": "loki",
+        "hide": 2
+      },
+      {
+        "name": "prom",
+        "label": "Metrics",
+        "type": "datasource",
+        "query": "prometheus",
+        "hide": 2
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "description": "Service whose failed and slow traces are listed.",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${prom}"
+        },
+        "query": {
+          "query": "label_values(dpg_target_info, exported_job)",
+          "refId": "service"
+        },
+        "definition": "label_values(dpg_target_info, exported_job)",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": {
+          "text": "agent_core",
+          "value": "agent_core"
+        },
+        "sort": 1
+      },
+      {
+        "name": "min_duration",
+        "label": "Slow if over",
+        "type": "custom",
+        "query": "250ms,500ms,1s,2s,5s,10s",
+        "current": {
+          "text": "1s",
+          "value": "1s"
+        },
+        "options": [
+          {
+            "text": "250ms",
+            "value": "250ms",
+            "selected": false
+          },
+          {
+            "text": "500ms",
+            "value": "500ms",
+            "selected": false
+          },
+          {
+            "text": "1s",
+            "value": "1s",
+            "selected": true
+          },
+          {
+            "text": "2s",
+            "value": "2s",
+            "selected": false
+          },
+          {
+            "text": "5s",
+            "value": "5s",
+            "selected": false
+          },
+          {
+            "text": "10s",
+            "value": "10s",
+            "selected": false
+          }
+        ]
+      },
+      {
+        "name": "trace_id",
+        "label": "Trace ID",
+        "description": "Click a trace ID in any table to fill this in, or paste one.",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Recent turns",
+      "description": "One row per conversation turn (agent_core POST /stream_turn), newest first. Health-check traces are left out.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": {
+        "type": "jaeger",
+        "uid": "${jaeger}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "search",
+          "service": "agent_core",
+          "operation": "POST /stream_turn",
+          "limit": 50
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Start time",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Trace ID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Show this trace below",
+                    "url": "/d/dpg-traces/dpg-traces?${__url_time_range}&var-service=${service}&var-min_duration=${min_duration}&var-trace_id=${__value.raw}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Duration"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1200
+                    },
+                    {
+                      "color": "red",
+                      "value": 3000
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Failed traces - $service",
+      "description": "Traces with at least one span marked as an error, for the selected service. A turn can return HTTP 200 and still appear here, for example when the LLM call fails.",
+      "gridPos": {
+        "x": 0,
+        "y": 11,
+        "w": 12,
+        "h": 9
+      },
+      "datasource": {
+        "type": "jaeger",
+        "uid": "${jaeger}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "search",
+          "service": "$service",
+          "tags": "error=true",
+          "limit": 50
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Start time",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Trace ID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Show this trace below",
+                    "url": "/d/dpg-traces/dpg-traces?${__url_time_range}&var-service=${service}&var-min_duration=${min_duration}&var-trace_id=${__value.raw}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Slow traces - $service over $min_duration",
+      "description": "Traces for the selected service that took longer than the threshold chosen at the top.",
+      "gridPos": {
+        "x": 12,
+        "y": 11,
+        "w": 12,
+        "h": 9
+      },
+      "datasource": {
+        "type": "jaeger",
+        "uid": "${jaeger}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "search",
+          "service": "$service",
+          "minDuration": "$min_duration",
+          "limit": 50
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Duration",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Trace ID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Show this trace below",
+                    "url": "/d/dpg-traces/dpg-traces?${__url_time_range}&var-service=${service}&var-min_duration=${min_duration}&var-trace_id=${__value.raw}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "type": "traces",
+      "title": "Trace $trace_id",
+      "description": "The selected trace as a waterfall. Click a span for its attributes; red spans are errors.",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 16
+      },
+      "datasource": {
+        "type": "jaeger",
+        "uid": "${jaeger}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "$trace_id"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "logs",
+      "title": "Logs for trace $trace_id",
+      "description": "Every log line the DPG services wrote while handling the selected trace, oldest first.",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 24,
+        "h": 12
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{exporter=\"OTLP\"} |= \"$trace_id\" | json | traceid != \"\" | traceid = \"$trace_id\" | line_format \"{{.resources_service_name}} | {{.body}}{{if .attributes_error}}  ::  {{.attributes_error}}{{end}}\""
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "sortOrder": "Ascending",
+        "dedupStrategy": "none"
+      }
+    }
+  ]
+}

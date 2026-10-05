@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from src.chat_provider.base import ChatProviderBase, ProviderAPIError
 from src.chat_provider.types import (
@@ -29,42 +29,204 @@ from src.chat_provider.types import (
     ToolUseBlock,
 )
 from src.exceptions import ConsentRequiredError
+from src.identity import render_identity
 from src.interfaces.action_gateway import ActionGatewayBase
 from src.interfaces.knowledge_engine import KnowledgeEngineBase
 from src.interfaces.trust_layer import TrustLayerBase
 from src.models import RetrievalChunk, ToolCall, ToolResult
+from src.output.contract import render_output_contract
 from src.tool_registry import ToolRegistry
+from src.tool_results import TurnToolCache
 
 logger = logging.getLogger(__name__)
 
 
-def _is_collected(value: object) -> bool:
-    """Whether a profile value counts as something the caller has told us.
+def zero_seed_fields(slots: dict | None) -> frozenset[str]:
+    """Names of int slots whose declared minimum rules out a real answer of 0.
 
-    The previous check listed the empty sentinels explicitly — ``None``,
-    ``""``, ``[]``, ``"[]"`` — which covers every string field, since those
-    default to ``""``. It does not cover ``age``, the one integer field,
-    whose unset default is ``0``.
-
-    A zero therefore rendered under "Already collected — do NOT ask for any
-    of these fields again", so the agent never asked the caller's age and
-    sent ``age=0`` to the profile API, which rejects it as under-18.
+    Such a field is seeded with 0 when unset, so a string ``"0"`` for it is the
+    seed. An int slot that accepts 0 (``min: 0``) is not included: ``"0"`` is a
+    real answer there.
 
     Args:
-        value: A profile field value.
+        slots: ``preprocessing.nlu_processor.slots`` — name to slot config.
 
     Returns:
-        True when the value should be shown to the LLM as already collected.
+        The field names for which ``"0"`` means "not told yet".
     """
-    if isinstance(value, bool):
-        return value
-    if value in (None, "", "[]"):
+    names: set[str] = set()
+    for name, slot in (slots or {}).items():
+        get = slot.get if isinstance(slot, dict) else lambda k, d=None: getattr(slot, k, d)
+        low = get("min", None)
+        if get("type", None) == "int" and isinstance(low, (int, float)) and low > 0:
+            names.add(str(name))
+    return frozenset(names)
+
+
+def over_call_cap(cap: int | None, used: int) -> bool:
+    """True when a tool has already run its allowed number of times this turn.
+
+    Split out so the sync loop and both streaming loops apply one rule. A cap
+    only exists for tools whose effect cannot be taken back.
+    """
+    # Only an int is a cap. A mocked or misconfigured registry can hand back
+    # anything here, and a guard that raises is worse than no guard.
+    if not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0:
         return False
-    if isinstance(value, (int, float)):
-        return value != 0
-    if isinstance(value, (list, tuple, dict, set)):
-        return len(value) > 0
-    return bool(value)
+    return used >= cap
+
+
+def refusal_result(tool_name: str, tool_use_id: str, reason: str):
+    """Build the ToolResult handed back when a guard refuses execution."""
+    return ToolResult(
+        tool_use_id=tool_use_id,
+        tool_name=tool_name,
+        result={},
+        success=False,
+        error="REFUSED",
+        result_text=reason,
+    )
+
+
+def ungrounded_params(
+spec: dict[str, list[str]],
+tool_call,
+messages: list,
+stored_results: dict[str, list[str]] | None = None,
+strict: bool = False,
+session_grounded: dict[str, list[str]] | None = None,
+) -> set[str]:
+    """Return the configured params whose value no tool result contains.
+
+    A model asked for a 36-character identifier many turns after it was
+    shown will sometimes emit a well-formed one it invented. The upstream
+    cannot tell that apart from a stale id and answers with a generic
+    "not found", which is then relayed to the user as if their request had
+    simply been unnecessary. Checking the value against what upstreams
+    actually returned catches it before the call is made.
+
+    Args:
+        spec: Map of param name to the tool names whose results may supply
+            it. An empty source list means any tool result.
+        tool_call: The pending call, carrying ``tool_name`` and
+            ``input_params``.
+        messages: Conversation so far; tool results are read from the
+            ``ToolResultBlock`` entries inside it.
+        stored_results: Tool name → serialised results that are no longer in
+            the message list. Counts exactly like tool_result blocks of that
+            tool.
+        strict: When True, reject if nothing has been fetched at all (used by
+            the ``remember`` tool). When False (default), allow any value on
+            the first call.
+        session_grounded: Param name → values lifted into session state by a
+            producer tool's ``session_mapping``. These came FROM an upstream
+            result by construction, so they ground the same way a tool_result
+            does — and they outlive the tool-result cache.
+
+            This matters because cache freshness and grounding evidence are
+            different questions. ``save_profile`` correctly invalidates the
+            cached ``fetch_profile``, since the profile just changed. On the
+            NEXT turn the apply then had no evidence for ``profile_item_id``
+            and was refused, so a returning caller could never apply at all.
+
+    Returns:
+        Names of params that were supplied but appear in no tool result.
+        Empty when the tool has no configured params, when a param was not
+        supplied, or when every supplied value is grounded.
+    """
+    if not spec:
+        return set()
+
+    # tool_use_id -> tool name, so each result can be attributed to the
+    # tool that produced it.
+    origin: dict[str, str] = {}
+    for msg in messages or []:
+        for block in getattr(msg, "content", None) or []:
+            if getattr(block, "type", "") == "tool_use":
+                origin[str(getattr(block, "tool_use_id", ""))] = str(
+                    getattr(block, "tool_name", "")
+                )
+
+    by_tool: dict[str, list[str]] = {}
+    seen_any: list[str] = []
+    for msg in messages or []:
+        for block in getattr(msg, "content", None) or []:
+            if getattr(block, "type", "") != "tool_result":
+                continue
+            content = getattr(block, "content", "")
+            if not isinstance(content, str) or not content:
+                continue
+            seen_any.append(content)
+            src = origin.get(str(getattr(block, "tool_use_id", "")), "")
+            by_tool.setdefault(src, []).append(content)
+
+    for src, texts in (stored_results or {}).items():
+        for text in texts or []:
+            if isinstance(text, str) and text:
+                seen_any.append(text)
+                by_tool.setdefault(str(src), []).append(text)
+
+    # Session values written by a producer's session_mapping count as that
+    # producer's output: they were copied out of its result. Recorded against
+    # every allowed source for the param, so the per-param source list still
+    # decides what may supply it.
+    session_values: dict[str, list[str]] = {}
+    for name, values in (session_grounded or {}).items():
+        for v in values or []:
+            if isinstance(v, str) and v:
+                session_values.setdefault(name, []).append(v)
+                seen_any.append(v)
+
+    if not seen_any:
+        # Nothing has been fetched yet, so nothing can be grounded. Let the
+        # call through rather than blocking a legitimate first call whose
+        # value came from session state seeded outside this conversation.
+        if not strict:
+            return set()
+        return {n for n in spec if (tool_call.input_params or {}).get(n) not in (None, "")}
+
+    missing: set[str] = set()
+    for name, sources in spec.items():
+        value = (tool_call.input_params or {}).get(name)
+        if value in (None, ""):
+            continue
+        # A session_mapping value for THIS param grounds it outright: it was
+        # copied out of a producer's result, and unlike the tool-result cache
+        # it survives that result being invalidated.
+        if str(value) in (session_values.get(name) or []):
+            continue
+        if sources:
+            pool = [c for src in sources for c in by_tool.get(src, [])]
+            if not pool:
+                # None of the naming tools has run yet — the value cannot
+                # have come from one, so it was carried or invented.
+                missing.add(name)
+                continue
+        else:
+            pool = seen_any
+        if str(value) not in "\n".join(pool):
+            missing.add(name)
+    return missing
+
+
+HOW_TO_READ_CONTEXT = """\
+- <caller_turn> is the system's reading of what the caller just did. It is
+  already applied: listed updates are saved, and "resolved: option N" is the
+  option the caller picked. Act on it; do not ask the caller to confirm what it
+  shows, and do not re-ask a value it lists.
+- "open: <question>" means that question is still waiting: answer what the
+  caller asked, then return to it in the same reply.
+- "off_track" means the caller has drifted several times: briefly restate what
+  you need and why.
+- "understanding unavailable" means rely on the caller's words and <recent>.
+- If the caller's words clearly contradict <caller_turn>, act on neither: ask
+  one short question to settle it.
+- <recent> is the last exchanges. "(caller heard only)" marks a reply they did
+  not hear in full: do not repeat what they heard; finish what they did not.
+- <state> is where the call stands. Never ask for a value under "collected".
+  "offered" is what the caller heard before this turn; a tool result returned
+  in this turn replaces it, so read the new result in its given order. Read
+  offered options in the order listed and never re-rank them."""
 
 
 class ManagerAgent:
@@ -79,6 +241,15 @@ class ManagerAgent:
         trust_layer:      Used to verify consent before write/identity tool execution.
         max_tool_rounds:  Maximum tool → LLM cycles per turn. Default 1 for PoC.
                           Configurable so extending to multi-step chains needs only a config change.
+        grounded_params:  Map of tool name to the params whose value must have
+                          come from an earlier tool result. Either
+                          ``{"apply_job": ["job_item_id"]}`` (any tool result)
+                          or ``{"apply_job": {"job_item_id": ["fetch_jobs"]}}``
+                          (only those tools' results). Blocks execution when the
+                          model supplies an identifier it invented, or one it
+                          copied out of a different tool's response.
+        identity:         Use-case identity config dict; renders the tier-1 ``<identity>``
+                          block. None omits the block.
     """
 
     def __init__(
@@ -89,6 +260,10 @@ class ManagerAgent:
         knowledge_engine: KnowledgeEngineBase,
         trust_layer: TrustLayerBase,
         max_tool_rounds: int = 1,
+        grounded_params: dict[str, list[str]] | None = None,
+        tool_call_caps: dict[str, int] | None = None,
+        zero_seed_fields: frozenset[str] = frozenset(),
+        identity: dict | None = None,
     ) -> None:
         if chat_provider is None:
             raise ValueError("chat_provider must not be None")
@@ -107,8 +282,34 @@ class ManagerAgent:
         self._ke = knowledge_engine
         self._trust = trust_layer
         self._max_tool_rounds = max(1, max_tool_rounds)
+        # Profile fields for which the string "0" is the unset seed.
+        self._zero_seed_fields = frozenset(zero_seed_fields)
+        # Use-case identity config (name/disclosure/handoff mode); None = no <identity> block.
+        self._identity = identity
+        # tool name -> params whose value must have appeared in an earlier tool
+        # result this conversation. Guards against the model inventing an
+        # identifier that is well-formed but refers to nothing.
+        # Normalise both accepted shapes to {tool: {param: [source tools]}}.
+        # A list means "any earlier tool result"; a mapping names the tools
+        # whose results may supply that param, which is what stops one
+        # identifier being copied into another's slot.
+        # tool name -> max executions per turn. Guards irreversible writes
+        # against a model that acts on every row of a list it was shown.
+        self._tool_call_caps: dict[str, int] = {
+            str(k): int(v) for k, v in (tool_call_caps or {}).items()
+        }
+        self._grounded_params: dict[str, dict[str, list[str]]] = {}
+        for _tool, _spec in (grounded_params or {}).items():
+            if isinstance(_spec, dict):
+                self._grounded_params[str(_tool)] = {
+                    str(k): [str(t) for t in (v or [])] for k, v in _spec.items()
+                }
+            else:
+                self._grounded_params[str(_tool)] = {str(p): [] for p in (_spec or [])}
         # GH-137: Per-turn flag set when the LLM invokes the end_session internal tool.
         self._session_ended_flag: bool = False
+        # Number of self._llm.call invocations the last run_turn made.
+        self.last_llm_calls: int = 0
 
     # ------------------------------------------------------------------
     # Public interface
@@ -121,8 +322,16 @@ class ManagerAgent:
         initial_response: ChatResponse,
         system: SystemPrompt | None = None,
         active_tools: list[dict] | None = None,
+        tool_choice: str = "auto",
         ke_context: dict | None = None,
         user_id: str = "",
+        session_values: dict | None = None,
+        tool_cache: TurnToolCache | None = None,
+        remember_name: str = "",
+        remember_handler: Callable[[ToolCall, list], ToolResult] | None = None,
+        result_shaper: Callable[[ToolResult], ToolResult] | None = None,
+        turn_tool_counts: dict[str, int] | None = None,
+        session_grounded: dict | None = None,
     ) -> tuple[str, list[ToolCall], list[ToolResult]]:
         """
         Drive the tool-use loop starting from the initial LLM response.
@@ -130,6 +339,14 @@ class ManagerAgent:
         Routes knowledge_retrieval tool calls directly to the Knowledge Engine
         via _execute_knowledge_retrieval. All other tool calls go through the
         Action Gateway's consent gate and execution path.
+
+        Per-turn call caps (``tool_call_caps``) are checked for every tool
+        except ``remember``, which is handled first and is never capped nor
+        counted. Only live Action Gateway calls increment a tool's count:
+        stored-result hits, grounding refusals and knowledge retrieval do
+        not, so a refused call can be retried with a valid value and a
+        cached read can be served more than once. The streaming path
+        (``AgentCore.stream_turn``) applies the same rules.
 
         Args:
             messages:         The messages list (neutral chat_provider types) that produced
@@ -147,12 +364,31 @@ class ManagerAgent:
                               dict shape). Only these are passed to follow-up LLM calls.
                               If None, falls back to self._registry.get_tool_definitions()
                               for backward compatibility.
+            tool_choice:      ``tool_choice`` for follow-up LLM calls; the
+                              orchestrator passes ``"none"`` when a
+                              pre-dispatch already ran the only offered tool.
             ke_context:       Dict with context required to call the Knowledge Engine
                               when knowledge_retrieval is invoked. Expected fields:
                               session_id, user_message, profile, session, intent,
-                              entities, sentiment, confidence, normalised_input,
+                              entities, confidence, normalised_input,
                               detected_language. If None, knowledge_retrieval calls
                               return an empty tool_result.
+            tool_cache:       Per-turn tool-result cache. When given, cacheable
+                              calls are served from stored results and live
+                              results are recorded for persistence. None
+                              disables all of it.
+            remember_name:    Name of the framework ``remember`` tool; calls to
+                              it go to ``remember_handler`` and never reach the
+                              Action Gateway. Empty disables.
+            remember_handler: Callable ``(tool_call, messages) -> ToolResult``
+                              that handles ``remember`` calls.
+            result_shaper:    Optional ``ToolResult -> ToolResult`` applied to live results.
+            turn_tool_counts: Per-turn live-call counts by tool. Pass the dict the
+                              caller created before LLM call 1 so calls made
+                              before this loop (pre-dispatch) count toward the
+                              caps; None starts from empty. Mutated in place.
+            session_grounded: Param name -> session values that ground a
+                              tool's params (see ``ungrounded_params``).
 
         Returns:
             (final_response_text, list_of_all_tool_calls_executed, list_of_all_tool_results)
@@ -165,12 +401,20 @@ class ManagerAgent:
             raise ValueError("initial_response must not be None")
 
         # GH-137: Reset per-turn flags before driving the tool loop.
-        self._reset_turn_flags()
+        self._reset_turn_flags(session_values)
 
         current_response = initial_response
         all_tool_calls: list[ToolCall] = []
         all_tool_results: list[ToolResult] = []
         rounds = 0
+        # Per-TURN, not per-round: a capped tool must not slip through by
+        # being requested again in a later tool round of the same turn.
+        # Imported here: tool_guard imports this module's guard primitives.
+        from src.tool_guard import check_tool_call
+
+        self.last_llm_calls = 0
+        counts: dict[str, int] = turn_tool_counts if turn_tool_counts is not None else {}
+        llm_calls = 0
 
         while current_response.stop_reason == "tool_use" and rounds < self._max_tool_rounds:
             response_tool_calls = [
@@ -238,10 +482,45 @@ class ManagerAgent:
                     ))
                     continue
 
-                if self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
+                # The framework ``remember`` tool is a validated state write,
+                # not an upstream effect: it is never capped nor counted.
+                _is_remember = remember_handler is not None and tool_call.tool_name == remember_name
+                _used = counts.get(tool_call.tool_name, 0)
+                if _is_remember:
+                    tool_result = remember_handler(tool_call, messages)
+                elif self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
                     tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
                 else:
-                    tool_result = self._execute_tool(tool_call, session_id, user_id)
+                    # One decision shared with the streaming loops: cap, then
+                    # grounding (a fabricated id reaches the upstream as a
+                    # well-formed value and comes back as a generic "not
+                    # found"), then the stored-result cache. Consent stays in
+                    # _execute_tool for this path.
+                    verdict = check_tool_call(
+                        tool_call,
+                        cap=self._tool_call_caps.get(tool_call.tool_name),
+                        used=_used,
+                        grounded_spec=self._grounded_params.get(tool_call.tool_name) or {},
+                        messages=messages,
+                        stored_results=tool_cache.stored_results_by_tool() if tool_cache else None,
+                        session_grounded=session_grounded,
+                        consent_ok=None,
+                        cache_lookup=tool_cache.lookup if tool_cache else (lambda _tc: None),
+                        ungrounded_error="UNGROUNDED_PARAMETER",
+                    )
+                    if verdict.kind != "go":
+                        tool_result = verdict.result
+                    else:
+                        # Only a live Action Gateway call counts toward the
+                        # per-turn cap: stored results, refusals and
+                        # knowledge retrieval have no upstream effect.
+                        counts[tool_call.tool_name] = _used + 1
+                        _call = tool_cache.prepare(tool_call) if tool_cache else tool_call
+                        tool_result = self._execute_tool(_call, session_id, user_id)
+                        if result_shaper is not None:
+                            tool_result = result_shaper(tool_result)
+                        if tool_cache:
+                            tool_cache.after_call(tool_call, tool_result)
                 all_tool_calls.append(tool_call)
                 all_tool_results.append(tool_result)
 
@@ -285,8 +564,11 @@ class ManagerAgent:
                 messages=messages,
                 system=system,
                 tools=follow_up_tools,
+                tool_choice=tool_choice,
             )
             start = time.time()
+            llm_calls += 1
+            self.last_llm_calls = llm_calls
             current_response = self._llm.call(request)
             if current_response.stop_reason == "error":
                 raise ProviderAPIError(
@@ -321,9 +603,17 @@ class ManagerAgent:
         """
         return self._session_ended_flag
 
-    def _reset_turn_flags(self) -> None:
-        """Clear per-turn flags at the top of each ``run_turn`` invocation."""
+    def _reset_turn_flags(self, session_values: dict | None = None) -> None:
+        """Clear per-turn flags at the top of each ``run_turn`` invocation.
+
+        Args:
+            session_values: Turn state handed to the Action Gateway so
+                connector params declared ``source: session`` resolve from
+                what the framework knows rather than from what the model can
+                reproduce. Replaced every turn; defaults to empty.
+        """
         self._session_ended_flag = False
+        self._session_values: dict = dict(session_values or {})
 
     # ------------------------------------------------------------------
     # Prompt assembly helpers
@@ -335,12 +625,14 @@ class ManagerAgent:
         subagent_system_prompt: str,
         detected_language: str,
         channel: str,
-        profile: dict,
         channel_config: dict | None = None,
         is_resumption: bool = False,
-        guardrail_constraints: dict | None = None,
         user_state_guidance: str | None = None,
         session_end_eval_prompt: str | None = None,
+        known_facts: str = "",
+        caller_turn: str = "",
+        state: str = "",
+        recent: str = "",
     ) -> SystemPrompt:
         """Build a neutral SystemPrompt with TextBlock entries for one LLM call.
 
@@ -349,6 +641,8 @@ class ManagerAgent:
         Tier 1 (session-stable — cache_hint="session"):
             <persona>             agent_system_prompt
             <channel_rules>       channel_config.system_prompt_suffix
+            <output_contract>     rendered channel_config.output_contract
+            <how_to_read_context> HOW_TO_READ_CONTEXT
             <session_end_policy>  session_end_eval_prompt
 
         Tier 2 (state-stable — cache_hint="session"):
@@ -358,8 +652,10 @@ class ManagerAgent:
         Tier 3 (dynamic — no cache_hint):
             <channel_context>     channel + detected_language line
             <resumption>          resumption note (first turn after adoption)
-            <known_profile>       profile grounding
-            <active_guardrails>   guardrail constraints + required disclosures
+            <state>               where the call stands
+            <recent>              the last exchanges
+            <known_facts>         stored tool results rendered for grounding
+            <caller_turn>         NLU conclusion for this turn (dialogue-act NLU)
 
         Empty inputs elide their section entirely; empty tiers are not
         appended to the output list. The Anthropic provider translates
@@ -370,17 +666,21 @@ class ManagerAgent:
             subagent_system_prompt: Active subagent's system prompt.
             detected_language:      Language detected by Language Normaliser.
             channel:                Channel type (e.g. "cli", "whatsapp", "voip").
-            profile:                User profile dict for grounding injection.
             channel_config:         Optional per-channel config. When present and
                                     ``system_prompt_suffix`` is non-empty the suffix
                                     joins Tier 1 as <channel_rules>.
             is_resumption:          Whether the user is resuming an ongoing session.
-            guardrail_constraints:  Optional dict with ``prompt_constraints`` and
-                                    ``required_disclosures`` from the Trust Layer.
             user_state_guidance:    Optional text describing the active user state.
             session_end_eval_prompt: Optional prompt that instructs the LLM to emit
                                     the ``end_session`` tool when the user signals
                                     departure.
+            known_facts:            Rendered stored tool results (from
+                                    ``TurnToolCache.render_known_facts``); empty
+                                    elides the ``<known_facts>`` section.
+            caller_turn:            Rendered NLU conclusion (``render_caller_turn``);
+                                    empty elides ``<caller_turn>``.
+            state:                  Rendered ``<state>`` body; empty elides it.
+            recent:                 Rendered ``<recent>`` body; empty elides it.
 
         Returns:
             Neutral SystemPrompt with TextBlock entries; the Anthropic provider
@@ -399,9 +699,13 @@ class ManagerAgent:
 
         # ── Tier 1: session-stable ────────────────────────────────────
         suffix = (channel_config or {}).get("system_prompt_suffix", "")
+        contract_text = render_output_contract((channel_config or {}).get("output_contract"))
         tier1 = join([
             xml("persona", agent_system_prompt),
+            xml("identity", render_identity(self._identity)),
             xml("channel_rules", suffix),
+            xml("output_contract", contract_text),
+            xml("how_to_read_context", HOW_TO_READ_CONTEXT),
             xml("session_end_policy", session_end_eval_prompt),
         ])
 
@@ -435,44 +739,13 @@ class ManagerAgent:
             "for the current stage."
         ) if is_resumption else ""
 
-        profile_body = ""
-        if profile:
-            lines: list[str] = []
-            skip_keys = {"attributes", "user_id"}
-            for k, v in profile.items():
-                if k not in skip_keys and _is_collected(v):
-                    lines.append(f"  {k}: {v}")
-            for attr in profile.get("attributes", []) or []:
-                attr_key = attr.get("key") if isinstance(attr, dict) else None
-                attr_val = attr.get("value") if isinstance(attr, dict) else None
-                if attr_key and attr_val:
-                    lines.append(f"  {attr_key}: {attr_val}")
-            if lines:
-                profile_body = (
-                    "Already collected — do NOT ask for any of these fields again:\n"
-                    + "\n".join(lines)
-                )
-
-        guardrails_body = ""
-        if guardrail_constraints:
-            constraints = guardrail_constraints.get("prompt_constraints", []) or []
-            disclosures = guardrail_constraints.get("required_disclosures", []) or []
-            parts: list[str] = []
-            if constraints:
-                parts.append(
-                    "Constraints:\n" + "\n".join(f"- {c}" for c in constraints)
-                )
-            if disclosures:
-                parts.append(
-                    "Required disclosures:\n" + "\n".join(f"- {d}" for d in disclosures)
-                )
-            guardrails_body = "\n\n".join(parts)
-
         tier3 = join([
             xml("channel_context", channel_ctx),
             xml("resumption", resumption_note),
-            xml("known_profile", profile_body),
-            xml("active_guardrails", guardrails_body),
+            xml("state", state),
+            xml("recent", recent),
+            xml("known_facts", known_facts),
+            xml("caller_turn", caller_turn),
         ])
 
         # ── Assemble blocks ───────────────────────────────────────────
@@ -490,36 +763,19 @@ class ManagerAgent:
             blocks.append(TextBlock(text=tier3))
         return SystemPrompt(blocks=blocks)
 
-    def build_messages(
-        self,
-        user_message: str,
-        current_question: str,
-    ) -> list[Message]:
-        """
-        Build the neutral messages list for one LLM call.
+    def build_messages(self, user_message: str) -> list[Message]:
+        """Build the per-turn user message: the caller's utterance only (Spec D §6.1).
 
-        No RAG chunks injected here — knowledge retrieval is now tool-driven.
-        The LLM calls knowledge_retrieval tool when it needs context; chunks
-        arrive as tool_result blocks within the same turn's tool-use loop.
+        Question context reaches the model through <recent> and <state>.
 
         Args:
-            user_message:     Raw user message text.
-            current_question: The last question the agent asked (from session). Empty string if first turn.
+            user_message: The caller's utterance (raw, possibly carryover-folded).
 
         Returns:
-            Single-turn messages list with one user Message.
+            A single user Message.
         """
-        # If user_message is empty (e.g. cold-start resumption), use a placeholder
-        # so the LLM has a "turn" to generate the resumption prompt.
         input_text = user_message.strip() if user_message else "[Resuming session...]"
-
-        content_parts: list[str] = []
-        if current_question:
-            content_parts.append(f"[Last question asked: {current_question}]")
-        content_parts.append(input_text)
-
-        full_text = "\n\n".join(content_parts)
-        return [Message(role="user", content=[TextBlock(text=full_text)])]
+        return [Message(role="user", content=[TextBlock(text=input_text)])]
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -555,7 +811,6 @@ class ManagerAgent:
                 session=ke_context.get("session", {}),
                 intent=ke_context.get("intent", ""),
                 entities=ke_context.get("entities", {}),
-                sentiment=ke_context.get("sentiment", "neutral"),
                 confidence=ke_context.get("confidence", 0.0),
                 normalised_input=ke_context.get("normalised_input", ""),
                 detected_language=ke_context.get("detected_language", ""),
@@ -645,7 +900,10 @@ class ManagerAgent:
                 )
 
         start = time.time()
-        result = self._gateway.execute(tool_call, session_id, user_id)
+        result = self._gateway.execute(
+            tool_call, session_id, user_id,
+            session_values=getattr(self, "_session_values", {}),
+        )
         logger.info(
             "manager_agent.tool_executed",
             extra={

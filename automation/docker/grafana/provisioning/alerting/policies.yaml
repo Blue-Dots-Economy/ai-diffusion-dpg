@@ -1,0 +1,30 @@
+# Notification routing: the `severity` label on each rule picks the Discord
+# channel. Adding a rule never needs a routing change, only the right label.
+#
+# Alerts are grouped per alertname + service, so one flapping service is one
+# message thread, not one message per evaluation. repeat_interval caps how
+# often a still-firing alert is re-sent; resolved messages always go out.
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: discord-warning          # fallback for anything unlabelled
+    group_by: [alertname, service]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+    routes:
+      - receiver: discord-critical
+        object_matchers: [["severity", "=", "critical"]]
+        group_wait: 10s
+        group_interval: 2m
+        repeat_interval: 1h
+
+      - receiver: discord-warning
+        object_matchers: [["severity", "=", "warning"]]
+        repeat_interval: 4h
+
+      - receiver: discord-info
+        object_matchers: [["severity", "=", "info"]]
+        group_wait: 30s
+        repeat_interval: 24h

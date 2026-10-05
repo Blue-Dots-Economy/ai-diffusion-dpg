@@ -38,6 +38,11 @@ class RedisSessionStore:
         ttl_seconds: Session TTL in seconds (from state.session.ttl_minutes * 60).
     """
 
+    @property
+    def client(self):
+        """The underlying redis-py client, shared with ToolResultStore."""
+        return self._client
+
     def __init__(self, config: dict, ttl_seconds: int) -> None:
         if config is None:
             raise ValueError("config must not be None")

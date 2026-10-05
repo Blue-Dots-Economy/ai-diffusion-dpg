@@ -207,7 +207,7 @@ def test_check_output_block_is_case_insensitive(client):
 
 FULL_CONFIG = {
     "trust": {
-        "policy_pack": "kkb_advisory_jobs",
+        "policy_pack": "blue_dots_advisory_jobs",
         "input_rules": {
             "blocked_phrases": ["bomb"],
             "escalation_topics": ["suicide"],
@@ -218,7 +218,7 @@ FULL_CONFIG = {
             "output_blocked_message": "Bad output.",
         },
         "policy_packs": {
-            "kkb_advisory_jobs": {
+            "blue_dots_advisory_jobs": {
                 "risks": ["false_certainty"],
                 "guardrails": {
                     "false_certainty": {
@@ -308,6 +308,33 @@ def test_escalate_returns_ticket():
     assert data["queued"] is True
     assert data["holding_message"] == "Advisor ko connect kar rahe hain."
     assert data["ticket_id"].startswith("TKT-")
+
+
+def test_escalate_passes_handoff_and_returns_delivery():
+    from unittest.mock import MagicMock
+    mock_trust = MagicMock()
+    mock_trust.escalate.return_value = {
+        "queued": True, "delivered": False, "reason": "log_only",
+        "ticket_id": "TKT-1", "holding_message": "h",
+    }
+    client = TestClient(create_app(mock_trust))
+    r = client.post("/escalate", json={"session_id": "s1", "escalation_reason": "human_request",
+                                       "user_message": "m", "workflow_step": "job_match",
+                                       "handoff": {"ticket_hint": 1}})
+    body = r.json()
+    assert r.status_code == 200 and body["delivered"] is False and body["reason"] == "log_only"
+    mock_trust.escalate.assert_called_once_with("s1", "human_request", "m", "job_match", {"ticket_hint": 1})
+
+
+def test_escalate_exception_reports_not_delivered_error():
+    from unittest.mock import MagicMock
+    mock_trust = MagicMock()
+    mock_trust.escalate.side_effect = RuntimeError("boom")
+    r = TestClient(create_app(mock_trust)).post("/escalate", json={
+        "session_id": "s1", "escalation_reason": "r", "user_message": "m", "workflow_step": "ready"})
+    body = r.json()
+    assert r.status_code == 200
+    assert body["queued"] is False and body["delivered"] is False and body["reason"] == "error"
 
 
 # ── New endpoint error-path (fail-closed) tests ─────────────────────────────
@@ -405,3 +432,14 @@ def test_check_output_emits_trust_span():
     output_check_span = next(s for s in spans if s.name == "trust.output_check")
     assert output_check_span.attributes.get("session_id") == "s1"
     assert output_check_span.attributes.get("trust.action") is not None
+
+
+def test_escalate_exception_log_has_no_message_text(caplog):
+    from unittest.mock import MagicMock
+    mock_trust = MagicMock()
+    mock_trust.escalate.side_effect = RuntimeError("https://secret.example/path")
+    caplog.set_level("DEBUG")
+    TestClient(create_app(mock_trust)).post("/escalate", json={
+        "session_id": "s1", "escalation_reason": "r", "user_message": "m", "workflow_step": "ready"})
+    assert caplog.records
+    assert all("secret.example" not in str(r.__dict__) for r in caplog.records)

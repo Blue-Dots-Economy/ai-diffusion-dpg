@@ -19,7 +19,7 @@ reach_layer:
   # ---------------------------------------------------------------------------
   common:
     observability:
-      domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").
+      domain: ""  # Required. Domain identifier (e.g. "blue-dots", "farmer_friendly").
 
   # ---------------------------------------------------------------------------
   # Per-channel — domain-specific values only

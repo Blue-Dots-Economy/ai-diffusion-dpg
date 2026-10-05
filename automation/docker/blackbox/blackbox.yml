@@ -1,0 +1,32 @@
+# Blackbox exporter probe modules for the service-status dashboard.
+#
+# Prometheus asks the exporter to probe each service from inside dpg_net and
+# records the result as probe_success — see prometheus/prometheus.yml.
+
+modules:
+  # Every DPG block, both channels and the observability back-ends expose an
+  # HTTP health endpoint. Anything but a 2xx counts as down.
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      preferred_ip_protocol: ip4
+
+  # Redis speaks RESP, not HTTP: send PING and require PONG, so a port that
+  # accepts connections but is not serving still shows as down.
+  redis_ping:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: ip4
+      query_response:
+        - send: "PING\r\n"
+        - expect: "^\\+PONG"
+
+  # Memgraph's Bolt port. A TCP connect is enough to show the server is up;
+  # the container's own healthcheck runs a real query.
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: ip4

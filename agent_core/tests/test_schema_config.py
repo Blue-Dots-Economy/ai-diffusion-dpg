@@ -1,6 +1,8 @@
 """Tests for Agent Core MergedConfig strict schema validation."""
 from __future__ import annotations
 
+import copy
+
 import pytest
 from pydantic import ValidationError
 
@@ -10,6 +12,7 @@ from src.schema.config import (
     RoutingOperator,
     ServerConfig,
     SpecialHandler,
+    _DIALOGUE_ACTS,
 )
 
 
@@ -68,8 +71,6 @@ def _minimal_valid_config() -> dict:
             },
             "nlu_processor": {
                 "model": "claude-sonnet-4-6-20250514",
-                "intents": ["greeting", "unknown"],
-                "entities": ["name", "location"],
                 "signal_intents": {"pay_disappointment": "objection"},
             },
         },
@@ -79,15 +80,16 @@ def _minimal_valid_config() -> dict:
         },
         "hitl": {"response_message": "connecting you"},
         "agent_workflow": {
-            "workflow_id": "kkb",
+            "workflow_id": "blue-dots",
             "version": "1.0.0",
-            "agent_system_prompt": "You are KKB.",
+            "agent_system_prompt": "You are Blue Dots.",
             "subagents": [
                 {
                     "id": "entry",
                     "is_start": True,
                     "system_prompt": "entry prompt",
                     "routing": [
+                        {"intent": "off_track", "next_subagent_id": "entry"},
                         {"intent": "*", "next_subagent_id": "end"},
                     ],
                 },
@@ -98,7 +100,10 @@ def _minimal_valid_config() -> dict:
             "voice": {
                 "system_prompt_suffix": "voice suffix",
                 "terminal_word": "Goodbye",
-                "tts_rules": {"numbers": "words"},
+                "output_contract": {
+                    "default_language": "hindi",
+                    "languages": {"hindi": {"numbers": "words"}, "english": {"numbers": "words"}},
+                },
                 "turn_assembler": {
                     "silence_trigger": {"silence_ms": 400},
                     "max_wait_ceiling": {"max_wait_ms": 8000},
@@ -107,7 +112,6 @@ def _minimal_valid_config() -> dict:
         },
         "reach_layer": {
             "turn_assembler": {
-                "semantic_gate": {"enabled": True, "confidence_threshold": 0.75},
                 "silence_trigger": {"silence_ms": 400},
                 "max_wait_ceiling": {"max_wait_ms": 8000},
             }
@@ -117,7 +121,7 @@ def _minimal_valid_config() -> dict:
         "trust_client": {"endpoint": "http://trust:8003", "timeout_ms": 2000},
         "learning_client": {"endpoint": "http://obs:8004", "timeout_ms": 2000},
         "action_gateway_client": {"endpoint": "http://ag:9999", "timeout_ms": 5000},
-        "observability": {"domain": "kkb"},
+        "observability": {"domain": "blue-dots"},
     }
 
 
@@ -125,7 +129,6 @@ def test_accepts_valid_full_config():
     cfg = MergedConfig.validate_full(_minimal_valid_config())
     assert cfg.agent.primary_model == "claude-haiku-4-5-20251001"
     assert cfg.agent.max_tool_rounds == 3
-    assert len(cfg.preprocessing.nlu_processor.intents) == 2
     assert cfg.preprocessing.nlu_processor.signal_intents["pay_disappointment"] == "objection"
     assert cfg.entity_to_profile_field["location"] == "location"
     assert cfg.hitl.response_message == "connecting you"
@@ -233,7 +236,7 @@ def test_rejects_non_positive_timeout():
 
 def test_rejects_out_of_range_confidence():
     config = _minimal_valid_config()
-    config["preprocessing"]["nlu_processor"]["confidence_threshold"] = 1.5
+    config["preprocessing"]["nlu_processor"]["user_state_confidence_threshold"] = 1.5
     with pytest.raises(ValidationError):
         MergedConfig.validate_full(config)
 
@@ -277,9 +280,10 @@ def test_signal_intents_accepts_domain_keys():
 
 
 def test_routing_condition_all_operators_accepted():
-    for op in ["eq", "not_eq", "gt", "lt", "in"]:
+    for op in ["eq", "not_eq", "gt", "lt", "in", "contains"]:
         cfg = MergedConfig.validate_full({
             "agent_workflow": {
+                "global_routing": [{"intent": "off_track", "next_subagent_id": "s"}],
                 "subagents": [
                     {
                         "id": "s",
@@ -426,7 +430,7 @@ class TestAgentProviderAndFeatures:
             (repo_root / "dev-kit" / "dpg" / "agent_core.yaml").read_text()
         ) or {}
         domain = yaml.safe_load(
-            (repo_root / "dev-kit" / "configs" / "kkb" / "agent_core.yaml").read_text()
+            (repo_root / "dev-kit" / "configs" / "blue-dots" / "agent_core.yaml").read_text()
         ) or {}
         merged: dict = {**dpg}
         for k, v in domain.items():
@@ -436,3 +440,568 @@ class TestAgentProviderAndFeatures:
                 merged[k] = v
         # Should not raise.
         MergedConfig.validate_full(merged)
+
+
+# ---------------------------------------------------------------------------
+# entity_persistence — the orchestrator has always read this key, but it was
+# absent from the strict schema, so setting it made the service fail to boot
+# with "Extra inputs are not permitted". The knob was unreachable.
+# ---------------------------------------------------------------------------
+
+
+def test_entity_persistence_defaults_to_persistent():
+    """Historical behaviour is the default: entities go to the profile store."""
+    from src.schema.config import MergedConfig
+    assert MergedConfig().entity_persistence.scope == "persistent"
+
+
+def test_entity_persistence_accepts_session_scope():
+    """A domain can keep NLU entities in session, off the profile store."""
+    from src.schema.config import MergedConfig
+    cfg = MergedConfig(entity_persistence={"scope": "session"})
+    assert cfg.entity_persistence.scope == "session"
+
+
+def test_entity_persistence_rejects_an_unknown_scope():
+    from pydantic import ValidationError
+    from src.schema.config import MergedConfig
+    with pytest.raises(ValidationError):
+        MergedConfig(entity_persistence={"scope": "memgraph"})
+
+
+def test_entity_persistence_rejects_an_unknown_key():
+    from pydantic import ValidationError
+    from src.schema.config import MergedConfig
+    with pytest.raises(ValidationError):
+        MergedConfig(entity_persistence={"scope": "session", "ttl": 60})
+
+
+# ---------------------------------------------------------------------------
+# Tool-result persistence: cache / invalidates / tool_results / memory_tool
+# ---------------------------------------------------------------------------
+
+
+def _with(conn_read=None, conn_write=None, **top):
+    cfg = _minimal_valid_config()
+    cfg.setdefault("connectors", {})
+    cfg["connectors"]["read"] = conn_read or []
+    cfg["connectors"]["write"] = conn_write or []
+    cfg.update(top)
+    return cfg
+
+
+_READ = {"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 1800, "keep": ["items"]}}
+_WRITE = {"name": "save_profile", "invalidates": ["fetch_profile"]}
+_MT = {"name": "remember", "fields": {"profile_item_id": {
+    "scope": "session", "grounded_in": ["fetch_profile", "save_profile"]}}}
+
+
+def test_valid_cache_invalidates_memory_tool():
+    MergedConfig.validate_full(_with([_READ], [_WRITE], memory_tool=_MT))
+
+
+_INVALID_CASES = [
+    pytest.param(
+        _with([], [{"name": "save_profile", "cache": {"scope": "user", "ttl_seconds": 60}}]),
+        "only allowed on read connectors", id="cache-on-write"),
+    pytest.param(
+        {**_with([]), "connectors": {"identity": [{"name": "who", "cache": {"scope": "user", "ttl_seconds": 60}}]}},
+        "only allowed on read connectors", id="cache-on-identity"),
+    pytest.param(
+        _with([{"name": "fetch_profile", "invalidates": ["x"]}], []),
+        "only allowed on write connectors", id="invalidates-on-read"),
+    pytest.param(
+        {**_with([]), "connectors": {"identity": [{"name": "who", "invalidates": ["x"]}]}},
+        "only allowed on write connectors", id="invalidates-on-identity"),
+    pytest.param(
+        _with([_READ], [{"name": "save_profile", "invalidates": ["nope"]}]),
+        "invalidates unknown read connector 'nope'", id="invalidates-unknown-target"),
+    pytest.param(
+        _with([{"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 90000}}], []),
+        "exceeds tool_results.max_user_ttl_seconds", id="user-ttl-over-cap"),
+    pytest.param(
+        _with([{"name": "fetch_profile", "cache": {"scope": "agent", "ttl_seconds": 60}}], []),
+        "Input should be 'session' or 'user'", id="bad-cache-scope"),
+    pytest.param(
+        _with([{"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 0}}], []),
+        "greater than 0", id="zero-ttl"),
+    pytest.param(
+        _with([_READ], [_WRITE], memory_tool={"fields": {"f": {"scope": "session", "grounded_in": ["ghost"]}}}),
+        "unknown connector 'ghost'", id="grounded-in-unknown"),
+    pytest.param(
+        _with([_READ], [_WRITE], memory_tool={"name": "fetch_profile", "fields": {"f": {"scope": "session"}}}),
+        "collides with a connector", id="memory-tool-name-collision"),
+    pytest.param(
+        _with([_READ], [_WRITE], memory_tool={"fields": {}}),
+        "at least 1 item", id="memory-tool-no-fields"),
+]
+
+
+@pytest.mark.parametrize("cfg,match", _INVALID_CASES)
+def test_invalid_tool_result_configs_rejected(cfg, match):
+    with pytest.raises(ValidationError, match=match):
+        MergedConfig.validate_full(cfg)
+
+
+def test_user_ttl_cap_is_configurable():
+    cfg = _with([{"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 90000}}], [],
+                tool_results={"max_user_ttl_seconds": 100000})
+    MergedConfig.validate_full(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Session bootstrap
+# ---------------------------------------------------------------------------
+
+
+def _boot(steps=None, read=None, write=None, identity=None, **agent):
+    cfg = copy.deepcopy(_minimal_valid_config())
+    cfg.setdefault("connectors", {})
+    cfg["connectors"]["read"] = read if read is not None else [{"name": "fetch_profile"}]
+    cfg["connectors"]["write"] = write or []
+    if identity is not None:
+        cfg["connectors"]["identity"] = identity
+    if steps is not None:
+        cfg["session_bootstrap"] = {"steps": steps}
+    if agent:
+        cfg.setdefault("agent", {}).update(agent)
+    return cfg
+
+
+def test_valid_bootstrap_and_prompt_session_fields():
+    cfg = _boot([{"type": "tool", "tool": "fetch_profile"}],
+                prompt_session_fields=["profile_item_id", "stored_trade"])
+    m = MergedConfig.validate_full(cfg)
+    assert m.session_bootstrap.timeout_ms == 1500
+    assert m.session_bootstrap.steps[0].args == {} and m.session_bootstrap.steps[0].requires_consent is False
+    assert m.agent.prompt_session_fields == ["profile_item_id", "stored_trade"]
+
+
+def test_no_bootstrap_is_default():
+    assert MergedConfig.validate_full(_boot()).session_bootstrap is None
+
+
+@pytest.mark.parametrize("cfg,match", [
+    pytest.param(_boot([{"type": "tool", "tool": "save_profile"}], write=[{"name": "save_profile"}]),
+                 "is not a read connector", id="write-connector"),
+    pytest.param(_boot([{"type": "tool", "tool": "ghost"}]), "is not a read connector", id="unknown-connector"),
+    pytest.param(_boot([{"type": "tool", "tool": "verify_me"}], identity=[{"name": "verify_me"}]),
+                 "is not a read connector", id="identity-connector"),
+    pytest.param(_boot([{"type": "set", "tool": "fetch_profile"}]), "Input should be 'tool'", id="bad-type"),
+    pytest.param(_boot([]), "at least 1", id="no-steps"),
+    pytest.param({**_boot([{"type": "tool", "tool": "fetch_profile"}]),
+                  "session_bootstrap": {"timeout_ms": 0, "steps": [{"type": "tool", "tool": "fetch_profile"}]}},
+                 "greater than 0", id="zero-timeout"),
+    pytest.param(_boot([{"type": "tool", "tool": "fetch_profile", "extra": 1}]), "Extra inputs are not permitted", id="extra-key"),
+])
+def test_invalid_bootstrap_rejected(cfg, match):
+    with pytest.raises(ValidationError, match=match):
+        MergedConfig.validate_full(cfg)
+
+
+# ---------------------------------------------------------------------------
+# dialogue-act NLU blocks + SubAgent.pending
+# ---------------------------------------------------------------------------
+
+def _da_base() -> dict:
+    """Minimal merged config with dialogue-act NLU blocks that validates."""
+    return {
+        "connectors": {"read": [{"name": "fetch_jobs", "description": "jobs",
+                                 "cache": {"scope": "session", "ttl_seconds": 600}}]},
+        "preprocessing": {"nlu_processor": {
+            "topics": ["salary", "search"],
+            "slots": {"age": {"type": "int", "min": 14, "max": 80, "accept_when_pending": ["age"]},
+                      "consent": {"type": "enum", "values": ["granted", "declined"],
+                                  "accept_when_pending": ["consent"]}},
+            "act_intents": [
+                {"acts": ["affirm"], "pending": "submit_confirm", "relation": "answers_pending",
+                 "intent": "apply_now"},
+                {"acts": ["close"], "intent": "termination_intent", "gated": True},
+            ],
+            "termination_gate": {"any_of": [{"pending": "closing_offer"}]},
+            "off_track": {"threshold": 3, "intent": "off_track"},
+        }},
+        "agent_workflow": {
+            "global_routing": [{"intent": "termination_intent", "next_subagent_id": "ended"}],
+            "subagents": [
+                {"id": "opening", "is_start": True,
+                 "pending": [{"id": "consent", "when": [{"field": "consent_response", "operator": "in",
+                                                         "value": [None, ""]}]},
+                             {"id": "age"}],
+                 "routing": [{"intent": "off_track", "next_subagent_id": "recovery"}]},
+                {"id": "apply_confirm",
+                 "pending": [{"id": "submit_confirm"}, {"id": "closing_offer"}],
+                 "routing": [{"intent": "apply_now", "next_subagent_id": "ended"}]},
+                {"id": "job_match",
+                 "pending": [{"id": "select_job",
+                              "options_from": {"tool": "fetch_jobs", "fields": ["role"], "id_field": "item_id"},
+                              "resolves_to": "selected_job_item_id"}]},
+                {"id": "recovery"}, {"id": "ended", "is_terminal": True},
+            ],
+        },
+    }
+
+
+def test_dialogue_act_minimal_config_validates():
+    cfg = MergedConfig.validate_full(_da_base())
+    nlu = cfg.preprocessing.nlu_processor
+    assert nlu.timeout_ms == 2500 and nlu.retry_attempts == 2
+    assert cfg.agent_workflow.subagents[2].pending[0].options_from.tool == "fetch_jobs"
+
+
+def test_acts_constant_is_the_framework_list():
+    assert _DIALOGUE_ACTS == ("affirm", "deny", "acknowledge", "provide_info", "correct", "select",
+                              "ask", "request_change", "repeat", "hold", "close", "other")
+
+
+@pytest.mark.parametrize("mutate, match", [
+    (lambda c: c["preprocessing"]["nlu_processor"]["act_intents"][0].update(acts=["shout"]),
+     "unknown act"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["slots"]["age"].update(accept_when_pending=["nope"]),
+     "undeclared pending id 'nope'"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["act_intents"][0].update(pending="nope"),
+     "undeclared pending id 'nope'"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["termination_gate"]["any_of"].append({"pending": "nope"}),
+     "undeclared pending id 'nope'"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["act_intents"][0].update(intent="unrouted"),
+     "intent 'unrouted' is not used by any routing rule"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["off_track"].update(intent="nowhere"),
+     "off_track.intent 'nowhere' is not used by any routing rule"),
+    (lambda c: c["connectors"]["read"][0].pop("cache"),
+     "options_from.tool 'fetch_jobs' has no cache policy"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["act_intents"].append(
+        {"acts": ["ask"], "topic": "weather", "intent": "apply_now"}),
+     "topic 'weather' is not in topics"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["slots"].update(bad={"type": "enum"}),
+     "enum slot needs values"),
+    (lambda c: c["agent_workflow"]["subagents"][2]["pending"][0].pop("options_from"),
+     "resolves_to requires options_from"),
+])
+def test_dialogue_act_rejections(mutate, match):
+    cfg = copy.deepcopy(_da_base())
+    mutate(cfg)
+    with pytest.raises((ValidationError, ValueError), match=match):
+        MergedConfig.validate_full(cfg)
+
+
+def test_memory_tool_field_collision_rejected():
+    cfg = copy.deepcopy(_da_base())
+    cfg["connectors"]["internal"] = []
+    cfg["memory_tool"] = {"name": "remember", "fields": {
+        "selected_job_item_id": {"scope": "session", "description": "x"}}}
+    with pytest.raises(ValueError, match="collides with memory_tool field"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_framework_handled_intent_needs_no_routing_rule():
+    cfg = copy.deepcopy(_da_base())
+    nlu = cfg["preprocessing"]["nlu_processor"]
+    nlu["topics"].append("language")
+    nlu["act_intents"].append(
+        {"acts": ["request_change"], "topic": "language", "intent": "language_switch_request"})
+    MergedConfig.validate_full(cfg)
+
+
+def test_rejects_semantic_gate_in_turn_assembler():
+    cfg = _minimal_valid_config()
+    cfg["channels"]["voice"]["turn_assembler"]["semantic_gate"] = {"enabled": False}
+    with pytest.raises(ValidationError, match="semantic_gate"):
+        MergedConfig.validate_full(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Removed legacy NLU keys (spec §16): a config still carrying one fails startup
+# ---------------------------------------------------------------------------
+
+def _set_nlu(key, value):
+    def _m(c):
+        c["preprocessing"]["nlu_processor"][key] = value
+    return _m
+
+
+@pytest.mark.parametrize("mutate, key", [
+    pytest.param(_set_nlu("mode", "dialogue_act"), "mode", id="nlu.mode"),
+    pytest.param(_set_nlu("intents", ["greeting"]), "intents", id="nlu.intents"),
+    pytest.param(_set_nlu("entities", ["name"]), "entities", id="nlu.entities"),
+    pytest.param(_set_nlu("domain_instruction", "x"), "domain_instruction", id="nlu.domain_instruction"),
+    pytest.param(_set_nlu("confidence_threshold", 0.5), "confidence_threshold", id="nlu.confidence_threshold"),
+    pytest.param(_set_nlu("sentiment_classes", ["neutral"]), "sentiment_classes", id="nlu.sentiment_classes"),
+    pytest.param(_set_nlu("log_raw_response_max_chars", 500), "log_raw_response_max_chars",
+                 id="nlu.log_raw_response_max_chars"),
+    pytest.param(lambda c: c["agent_workflow"]["subagents"][0].update(valid_intents=["apply_now"]),
+                 "valid_intents", id="subagent.valid_intents"),
+    pytest.param(lambda c: c["agent_workflow"].update(global_intents=["termination_intent"]),
+                 "global_intents", id="workflow.global_intents"),
+])
+def test_removed_intent_mode_key_rejected(mutate, key):
+    cfg = copy.deepcopy(_da_base())
+    mutate(cfg)
+    with pytest.raises(ValidationError, match=key):
+        MergedConfig.validate_full(cfg)
+
+
+def test_dialogue_act_rules_enforced_without_mode_key():
+    cfg = copy.deepcopy(_da_base())
+    cfg["preprocessing"]["nlu_processor"]["act_intents"][0]["intent"] = "unrouted"
+    with pytest.raises((ValidationError, ValueError), match="intent 'unrouted' is not used"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_off_track_intent_must_be_routed_when_a_workflow_exists():
+    """The off-track rule now runs on every config; an empty workflow has nothing to route."""
+    MergedConfig.validate_full({})
+    cfg = _minimal_valid_config()
+    cfg["agent_workflow"]["subagents"][0]["routing"].pop(0)
+    with pytest.raises(ValidationError, match="off_track.intent 'off_track' is not used"):
+        MergedConfig.validate_full(cfg)
+
+
+# ---------------------------------------------------------------------------
+# identity + handoff blocks
+# ---------------------------------------------------------------------------
+
+_IDENT = {"name": "ब्लू डॉट्स सहायक", "operator": "Blue Dots",
+          "disclosure": "जी, मैं ब्लू डॉट्स की AI सहायक हूँ।", "no_handoff_line": "अभी कोई इंसान उपलब्ध नहीं है।"}
+_HANDOFF = {"lines": {"delivered": "d", "failed": "f", "already": "a"}}
+
+
+def test_identity_optional_and_defaults():
+    cfg = MergedConfig.validate_full({**_minimal_valid_config(), "identity": _IDENT})
+    assert cfg.identity.human_handoff == "none" and cfg.identity.kind == "ai_assistant"
+    assert MergedConfig.validate_full(_minimal_valid_config()).identity is None
+    assert MergedConfig.validate_full(_minimal_valid_config()).handoff is None
+
+
+def test_identity_rejects_empty_disclosure():
+    with pytest.raises(ValidationError):
+        MergedConfig.validate_full({**_minimal_valid_config(), "identity": {**_IDENT, "disclosure": ""}})
+
+
+def test_request_requires_handoff_block_and_subagent():
+    with pytest.raises(ValidationError, match="human_handoff=request"):
+        MergedConfig.validate_full({**_minimal_valid_config(), "identity": {**_IDENT, "human_handoff": "request"}})
+
+
+def test_request_needs_handoff_subagent_even_with_block():
+    with pytest.raises(ValidationError, match="human_handoff=request"):
+        MergedConfig.validate_full({**_minimal_valid_config(),
+                                    "identity": {**_IDENT, "human_handoff": "request"}, "handoff": _HANDOFF})
+
+
+def test_request_accepted_with_block_and_subagent():
+    base = copy.deepcopy(_minimal_valid_config())
+    wf = base.setdefault("agent_workflow", {})
+    wf["subagents"] = [*wf.get("subagents", []), {"id": "handoff", "name": "Handoff"}]
+    cfg = MergedConfig.validate_full({**base, "identity": {**_IDENT, "human_handoff": "request"},
+                                      "handoff": _HANDOFF})
+    assert cfg.handoff.summary_turns == 6
+
+
+def test_handoff_summary_turns_bounds():
+    for bad in (0, 21):
+        with pytest.raises(ValidationError):
+            MergedConfig.validate_full({**_minimal_valid_config(), "handoff": {**_HANDOFF, "summary_turns": bad}})
+
+
+# ---------------------------------------------------------------------------
+# Spec D: output_contract, result_shaping, history_turns, state_fields
+# ---------------------------------------------------------------------------
+
+_CONTRACT = {
+    "default_language": "hindi",
+    "languages": {"hindi": {"script": "devanagari", "numbers": "words", "rules": ["Devanagari only."]},
+                  "english": {"script": "latin", "numbers": "words"}},
+    "guard": {"rewrite_digits": True, "strip_markdown": True, "count_foreign_script": True},
+}
+_SHAPING = {
+    "drop_when": [{"field": "role", "operator": "contains", "value": "|"}],
+    "sort": [{"field": "match_score", "order": "desc"}],
+    "spoken": {"salary_spoken": {"format": "range_thousands", "from": ["salary_min", "salary_max"], "unit": "per_month"}},
+    "strip_numbers_in": ["location"],
+}
+
+
+def _with_language(cfg, default="hindi", supported=("english", "hindi")):
+    cfg.setdefault("preprocessing", {})["language_normalisation"] = {
+        "enabled": False, "default_language": default, "supported_languages": list(supported)}
+    return cfg
+
+
+def test_output_contract_and_shaping_accepted():
+    cfg = _with_language(copy.deepcopy(_minimal_valid_config()))
+    cfg.setdefault("channels", {})["bridge"] = {"output_contract": _CONTRACT}
+    cfg["connectors"]["read"][0]["result_shaping"] = _SHAPING
+    cfg.setdefault("agent", {}).update({"history_turns": 3, "state_fields": ["applications_submitted"]})
+    MergedConfig.validate_full(cfg)
+
+
+def test_tts_rules_rejected():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    cfg.setdefault("channels", {})["voice"] = {"tts_rules": {"numbers": "words"}}
+    with pytest.raises(ValidationError, match="tts_rules"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_contract_default_language_must_be_declared():
+    cfg = _with_language(copy.deepcopy(_minimal_valid_config()))
+    cfg.setdefault("channels", {})["bridge"] = {"output_contract": {**_CONTRACT, "default_language": "tamil"}}
+    with pytest.raises(ValidationError, match="default_language"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_contract_must_cover_supported_languages():
+    cfg = _with_language(copy.deepcopy(_minimal_valid_config()), supported=("english", "hindi", "kannada"))
+    cfg.setdefault("channels", {})["bridge"] = {"output_contract": _CONTRACT}
+    with pytest.raises(ValidationError, match="kannada"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_numbers_words_needs_a_converter():
+    cfg = _with_language(copy.deepcopy(_minimal_valid_config()), default="kannada", supported=("kannada",))
+    cfg["channels"]["voice"].pop("output_contract")  # keep the fixture's contract out of the way
+    c = {"default_language": "kannada", "languages": {"kannada": {"script": "any", "numbers": "words"}}}
+    cfg.setdefault("channels", {})["bridge"] = {"output_contract": c}
+    with pytest.raises(ValidationError, match="spoken-number converter"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_spoken_fields_need_a_supported_default_language():
+    cfg = _with_language(copy.deepcopy(_minimal_valid_config()), default="kannada", supported=("kannada",))
+    cfg["channels"]["voice"].pop("output_contract")  # keep the fixture's contract out of the way
+    cfg["connectors"]["read"][0]["result_shaping"] = _SHAPING
+    with pytest.raises(ValidationError, match="spoken"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_history_turns_non_negative():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    cfg.setdefault("agent", {})["history_turns"] = -1
+    with pytest.raises(ValidationError):
+        MergedConfig.validate_full(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Tool pre-dispatch rules (Spec E §3-4)
+# ---------------------------------------------------------------------------
+
+
+def _with_rule(cfg, rule, subagent_index=0):
+    cfg["agent_workflow"]["subagents"][subagent_index]["predispatch"] = [rule]
+    return cfg
+
+
+def _read_tool(cfg):
+    return cfg["connectors"]["read"][0]["name"]
+
+
+def test_predispatch_rule_accepted():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    tool = _read_tool(cfg)
+    cfg["predispatch_tables"] = {"city_canonical": {"Bangalore": "Bengaluru"}, "name_placeholders": ["unknown"]}
+    cfg.setdefault("agent", {})["predispatch_timeout_ms"] = 1200
+    _with_rule(cfg, {"tool": tool, "unless_fresh": True,
+                     "args": {"query_text": {"template": "{trade|stored_trade} jobs in {location}",
+                                             "normalise": {"location": "city_canonical"}}}})
+    MergedConfig.validate_full(cfg)
+
+
+def test_write_rule_needs_explicit_enabled():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    write = cfg["connectors"].setdefault("write", [])
+    if not write:
+        write.append({**copy.deepcopy(cfg["connectors"]["read"][0]), "name": "save_thing"})
+    _with_rule(cfg, {"tool": write[0]["name"], "args": {"x": {"from": "session", "key": "x"}}})
+    with pytest.raises(ValidationError, match="enabled"):
+        MergedConfig.validate_full(cfg)
+    cfg["agent_workflow"]["subagents"][0]["predispatch"][0]["enabled"] = False
+    MergedConfig.validate_full(cfg)
+
+
+def test_unknown_tool_rejected():
+    cfg = _with_rule(copy.deepcopy(_minimal_valid_config()), {"tool": "no_such_tool", "args": {}})
+    with pytest.raises(ValidationError, match="no_such_tool"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_arg_binding_shapes():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    tool = _read_tool(cfg)
+    cases = (({"from": "session"}, "needs 'key'"), ({"from": "literal"}, "needs 'value'"),
+             ({"template": "x", "from": "session", "key": "k"}, "exactly one"), ({}, "exactly one"))
+    for bad, msg in cases:
+        c = _with_rule(copy.deepcopy(cfg), {"tool": tool, "args": {"a": bad}})
+        with pytest.raises(ValidationError, match=msg):
+            MergedConfig.validate_full(c)
+
+
+def test_unknown_normalise_table_rejected():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    _with_rule(cfg, {"tool": _read_tool(cfg), "args": {"a": {"from": "session", "key": "k", "normalise": "nope"}}})
+    with pytest.raises(ValidationError, match="nope"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_on_intent_must_be_producible():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    _with_rule(cfg, {"tool": _read_tool(cfg), "on_intent": ["never_made"], "args": {}})
+    with pytest.raises(ValidationError, match="never_made"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_inline_normalise_map_on_session_arg_accepted():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    _with_rule(cfg, {"tool": _read_tool(cfg), "args": {
+        "g": {"from": "session", "key": "gender", "normalise": {"male": "Male"}}}})
+    MergedConfig.validate_full(cfg)
+
+
+def test_template_normalise_unknown_table_rejected():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    _with_rule(cfg, {"tool": _read_tool(cfg), "args": {
+        "q": {"template": "{location}", "normalise": {"location": "nope_table"}}}})
+    with pytest.raises(ValidationError, match="nope_table"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_template_inline_normalise_map_accepted():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    _with_rule(cfg, {"tool": _read_tool(cfg), "args": {
+        "q": {"template": "{location}", "normalise": {"location": {"Bangalore": "Bengaluru"}}}}})
+    MergedConfig.validate_full(cfg)
+
+
+def test_template_str_normalise_rejected():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    _with_rule(cfg, {"tool": _read_tool(cfg), "args": {"q": {"template": "{x}", "normalise": "lower"}}})
+    with pytest.raises(ValidationError, match="must be a dict"):
+        MergedConfig.validate_full(cfg)
+
+
+@pytest.mark.parametrize("arg", [
+    {"from": "literal", "value": "v", "key": "k"},
+    {"from": "session", "key": "k", "value": "v"},
+    {"template": "x", "key": "k"},
+    {"template": "x", "value": "v"},
+])
+def test_dead_arg_fields_rejected(arg):
+    cfg = copy.deepcopy(_minimal_valid_config())
+    _with_rule(cfg, {"tool": _read_tool(cfg), "args": {"a": arg}})
+    with pytest.raises(ValidationError, match="must not set"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_unknown_reject_table_rejected():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    _with_rule(cfg, {"tool": _read_tool(cfg), "args": {
+        "a": {"from": "session", "key": "k", "reject": "no_reject_table"}}})
+    with pytest.raises(ValidationError, match="no_reject_table"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_rule_tool_must_be_in_subagent_tools():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    cfg["connectors"]["read"].append({**copy.deepcopy(cfg["connectors"]["read"][0]), "name": "other_tool"})
+    cfg["agent_workflow"]["subagents"][0]["tools"] = ["other_tool"]
+    _with_rule(cfg, {"tool": _read_tool(cfg), "args": {}})
+    with pytest.raises(ValidationError, match="not in the subagent's tools"):
+        MergedConfig.validate_full(cfg)

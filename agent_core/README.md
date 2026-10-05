@@ -27,7 +27,7 @@ agent_core/
 ├── pyproject.toml
 ├── config/
 │   ├── dpg.yaml          # Framework defaults (server, timeouts, endpoints)
-│   └── domain.yaml       # Domain config template (models, intents, connectors, workflow)
+│   └── domain.yaml       # Domain config template (models, NLU slots/act_intents, connectors, workflow)
 ├── src/
 │   ├── base.py                          # AgentCoreBase ABC — process_turn() + stream_turn()
 │   ├── models.py                        # TurnInput, TurnResult, ContextBundle, NLUResult,
@@ -66,8 +66,7 @@ agent_core/
 │   │   ├── metrics.py                   # provider-agnostic OTel instruments
 │   │   └── __init__.py                  # public exports + build_chat_provider() factory
 │   ├── preprocessing/
-│   │   ├── language_normalisation.py
-│   │   └── nlu_processor.py
+│   │   └── language_normalisation.py
 │   ├── http_clients/                    # Sync HTTP adapters
 │   │   ├── memory_layer.py
 │   │   ├── trust_layer.py               # fail-closed on any error
@@ -100,7 +99,6 @@ agent_core/
     ├── test_chat_provider_types.py
     ├── test_workflow_loader.py
     ├── test_tool_registry.py
-    ├── test_nlu_processor.py
     ├── test_language_normalisation.py
     ├── test_http_clients.py
     ├── test_memory_http_client.py
@@ -117,6 +115,12 @@ agent_core/
 
 ---
 
+## Output contract and guard
+
+Every channel can declare an `output_contract` (`channels.<name>.output_contract`): per language, the script, whether numbers are written in words, and a short list of spoken-style rules. The runtime renders it into the cached first tier of the system prompt (`<output_contract>`, right after `<channel_rules>`), default language first and the other supported languages under "If the conversation is in <language>:". The turn's language is the session's `language_preference`, else `default_language`. Connectors can add `spoken` fields through `result_shaping` (for example `salary_spoken`), so the model reads pay exactly as given and never converts a number itself.
+
+The output guard is the safety net behind that contract. It runs on model-generated sentences only, before the Trust output check on both paths: it strips markdown, rewrites digits to words (phones digit by digit, ranges as "A से B", everything else as a number in words) and counts Latin-script words in a Devanagari reply without rewriting them. It never raises; on an internal error the sentence passes through unchanged. Prompt blocks, in cache order: Tier 1 `<persona>`, `<channel_rules>`, `<output_contract>`, `<how_to_read_context>`, `<session_end_policy>`; Tier 2 `<subagent>`, `<user_state_guidance>`; Tier 3 (dynamic) `<channel_context>`, `<resumption>`, `<state>`, `<recent>`, `<known_facts>`, `<caller_turn>`. See `docs/superpowers/specs/2026-10-01-main-llm-context-design.md` §3, §5 and §6.5.
+
 ## Turn execution sequence
 
 Both `process_turn()` and `stream_turn()` run the same 13-step sequence:
@@ -126,17 +130,26 @@ Both `process_turn()` and `stream_turn()` run the same 13-step sequence:
 2.  Trust check input           Trust Layer — block, escalate, or allow
 3.  Language Normalisation      Internal LLM call (haiku model) — dialect, code-switching,
                                 transliteration
-4.  NLU Processor               Internal LLM call (haiku model) — intent, entities,
-                                sentiment, confidence score
+4.  Dialogue-act NLU            TurnUnderstander — pending question + known fields form the
+                                frame; one strict-schema LLM call returns dialogue acts and
+                                typed slots; post-processing derives the routing intent and
+                                the session writes. A structured summary of the
+                                understanding is rendered into the main LLM prompt as
+                                <caller_turn>
 5.  Routing                     Deterministic — NLU result + session conditions select subagent
-6.  Assemble constraints        Trust Layer.assemble_constraints if active_risks present
-7.  Build system prompt         Subagent prompt + guardrail constraints + required disclosures
+5b. Tool pre-dispatch           Optional — a per-subagent `predispatch` rule runs a tool before the
+                                main LLM (see "Tool pre-dispatch"); the result is handed to LLM call #1
+6.  Assemble constraints        Trust Layer.assemble_constraints
+7.  Build system prompt         Tiered blocks: persona, channel rules, output contract (cached);
+                                subagent (cached); <state>, <recent>, <known_facts>,
+                                <caller_turn> (dynamic) — see "Output contract and guard"
 8.  LLM call #1                 ChatProviderBase — call() (sync) or stream() (streaming),
                                 via the configured provider (anthropic, openai, or google)
 9.  Tool-use loop               ManagerAgent — if LLM returns tool_use: route via ToolRegistry;
                                 knowledge_retrieval → KE; all other tools → Action Gateway;
                                 append result, LLM call #2; bounded by max_tool_rounds
-10. Trust check output          Trust Layer — mandatory; blocked sentences → fallback text
+10. Output guard + Trust check  Guard rewrites digits and strips markdown per sentence, then
+                                Trust Layer — mandatory; blocked sentences → fallback text
 11. Return                      process_turn: TurnResult returned; stream_turn: DoneEvent yielded
 
 ── async (after response returned / DoneEvent yielded) ─────────────────────────────
@@ -163,6 +176,23 @@ Both `process_turn()` and `stream_turn()` run the same 13-step sequence:
 
 ---
 
+## Tool pre-dispatch
+
+About half of all turns call a tool, so the main LLM is called twice: once to ask for the tool and once to speak the result. A subagent can declare `predispatch` rules that call the tool itself, after routing and before the main LLM, when the NLU result and the session already determine the call. The result reaches the main LLM's first call as a normal tool exchange, the tool is removed from that call's tool list, and the main LLM still writes every reply. When it is the only tool offered (every Blue Dots phase offers one), its definition stays and every main-LLM call this turn sends `tool_choice="none"` instead, on providers whose `supports_force_tool_choice` is true; elsewhere (e.g. ollama) the tool stays offered and the per-turn cap and cache stop a repeat. There are no template replies and no added model calls.
+
+- A rule has `tool`, `enabled`, optional `on_intent` / `when` / `unless_fresh`, and `args` bindings (`from: session`, `from: literal` or `template`, with optional `normalise` and `reject`).
+- It runs once per turn on both the sync and stream paths, and the first rule whose conditions hold and whose arguments resolve wins.
+- It uses the same guards as a model-initiated call: the per-turn cap, grounding, the tool cache, result shaping, session-value mapping and cache persistence.
+- It never changes the turn's routing and never raises into the turn. On any failure, timeout or missing argument the turn falls back to the normal model-driven path.
+- The stream path enforces `agent.predispatch_timeout_ms` for reads. Writes get no asyncio budget on either path (a local cancel cannot undo an applied upstream write), so they run to the gateway's own per-tool timeout, as every sync call does.
+- Outcomes (metric `agent_core.predispatch.outcomes_total` and the `predispatch_outcome` log extra): `fired`, `cache_hit`, `skipped_missing_arg`, `skipped_invalid_arg`, `skipped_fresh`, `disabled`, `refused_guard`, `failed`, `timeout`, `error`. There is no `skipped_only_tool`.
+- Read tools ship enabled. Every write rule ships `enabled: false`, and a write or identity rule without an explicit `enabled` is rejected at startup.
+- The `stream_turn_complete` log carries `llm_calls`, `predispatch_tool`, `predispatch_outcome` and `predispatch_ms`. They hold tool names, outcomes and timings only, never caller text or argument values.
+
+**Consent.** Model-initiated calls keep today's behaviour. Only pre-dispatch checks Trust consent (`trust.check_consent`) for tools that require it. Blue Dots records consent in the session rather than in the Trust Layer, so a Blue Dots write rule would be refused (`refused_guard`) until the consent source is unified. With no trust client, a consent-gated pre-dispatch is refused on both paths. That is why the Blue Dots write rules ship disabled. Enabling any of them also needs the upstream's idempotency confirmed: a timed-out write may have been applied, and a retry must not duplicate it (spec §8).
+
+See `docs/superpowers/specs/2026-10-02-tool-predispatch-design.md`.
+
 ## TurnAssembler (multi-segment input)
 
 For channels that deliver input as multiple partial segments (voice VAD, rapid corrections, barge-in), `TurnAssembler` sits between the HTTP server and `AgentCore.stream_turn()`.
@@ -173,11 +203,11 @@ POST /sessions/{id}/input  ─►  TurnAssembler.add_segment()
                                     ▼
                             Session.current_turn: Turn (segments, timers, queue, abort)
                                     │
-                     ┌──────────────┼──────────────┐
-                     │              │              │
-              semantic_gate    silence_trigger   max_wait_ceiling
-              (NLU confidence)  (resets on every  (absolute ceiling,
-                                 new segment)     never resets)
+                         ┌──────────┴──────────┐
+                         │                     │
+                 silence_trigger        max_wait_ceiling
+                 (resets on every       (absolute ceiling,
+                  new segment)           never resets)
                                     │
                                     ▼
                            agent_core.stream_turn()  ──►  Turn.event_queue
@@ -190,9 +220,8 @@ POST /sessions/{id}/input  ─►  TurnAssembler.add_segment()
 
 **Policy stack** — first to fire wins:
 
-1. **Semantic completeness gate** — runs NLU on assembled text; if `confidence ≥ threshold` and intent is not `unknown`, invoke immediately.
-2. **Silence trigger** — `asyncio.Task` started on first segment, reset (cancel + restart) on every subsequent `add_segment()`. Fires after `silence_ms`.
-3. **Max-wait ceiling** — `asyncio.Task` started once on buffer creation, never reset. Fires after `max_wait_ms`.
+1. **Silence trigger** — `asyncio.Task` started on first segment, reset (cancel + restart) on every subsequent `add_segment()`. Fires after `silence_ms`.
+2. **Max-wait ceiling** — `asyncio.Task` started once on buffer creation, never reset. Fires after `max_wait_ms`.
 
 If both the silence timer and the ceiling fire simultaneously, only the first to acquire the session-buffer lock wins the state transition.
 
@@ -289,7 +318,7 @@ LLM proxy endpoint (implemented, not yet wired).
 Implements both `process_turn()` (sync) and `stream_turn()` (async generator). Runs the 13-step sequence. Holds no session state. All dependencies are injected at construction, including the async HTTP clients used by `stream_turn()`. `_split_sentences()` is a small utility that splits LLM tokens into sentence boundaries (supports Devanagari and fullwidth punctuation).
 
 **`turn_assembler.py` — TurnAssembler**
-Buffers multi-segment input and decides when to invoke `stream_turn()`. Holds `_sessions: dict[str, Session]` in memory; each Session owns the current Turn. Constructor takes optional `nlu_processor`, `workflow`, `async_memory` — if absent, the semantic gate is effectively disabled.
+Buffers multi-segment input and decides when to invoke `stream_turn()`. Holds `_sessions: dict[str, Session]` in memory; each Session owns the current Turn. Constructor takes optional `workflow` and `async_memory`; when `async_memory` is present, the session context bundle is cached on the Turn at the first segment.
 
 **`manager_agent.py` — ManagerAgent**
 LLM → tool → LLM loop. Both sync and async variants. Used by `process_turn()` for synchronous tool rounds; `stream_turn()` handles tool use via the `ToolUseRequested` exception raised from `provider.stream()`.
@@ -300,8 +329,8 @@ LLM → tool → LLM loop. Both sync and async variants. Used by `process_turn()
 **`preprocessing/language_normalisation.py` — LanguageNormaliser**
 Runs before NLU. Detects dialect, normalises code-switching (Hindi/Kannada/English), and transliterates Romanised Indic text. Currently only the `internal` provider (LLM-based normalisation via a haiku model) is implemented.
 
-**`preprocessing/nlu_processor.py` — NLUProcessor**
-Classifies intent, extracts entities, produces confidence score. Low-confidence → clarification response without a second LLM call. Also used by TurnAssembler's semantic gate.
+**`understanding/` — TurnUnderstander (the single, dialogue-act NLU)**
+Understands each turn in the context of the question the agent just asked. It resolves the session's pending question, builds a frame (`pending`, `known_fields`, `recent_turns`, `served_tool_results`), makes one strict-schema LLM call that returns dialogue acts and typed slots, and post-processes the result: the routing intent is derived from the `act_intents` table (`NLUResult.confidence` is 1.0 for a derived intent, 0.0 for a fallback) and `SlotWriter` plans the session writes. When `conversation.user_state_model` is enabled the same call also returns `user_state`. A structured summary of the understanding (acts, relation, resolved option, slot updates, signals) is rendered into the main LLM's prompt as `<caller_turn>`. Uses a dedicated NLU provider instance. There is no other NLU mode; see `docs/superpowers/specs/2026-10-01-nlu-dialogue-acts-design.md` §16.
 
 **`tool_registry.py` — ToolRegistry**
 Loads tool definitions from config at startup and routes tool calls by name. Tracks which tools require consent (`write` and `identity` connector types).
@@ -334,15 +363,23 @@ Config is loaded at startup from two YAML files: `config/dpg.yaml` (framework de
 | `conversation.blocked_message` | Returned when input is blocked by Trust Layer |
 | `conversation.escalation_message` | Returned when input triggers escalation |
 | `conversation.output_blocked_message` | Returned when LLM output is blocked |
-| `conversation.unknown_intent_message` | Returned on low-confidence NLU result |
+| `conversation.unknown_intent_message` | Fallback reply when a subagent declares an unknown `special_handler` |
 | `connectors.read[]` / `write[]` / `identity[]` / `internal[]` | Tool definitions |
+| `connectors.*.result_shaping` | Per-tool shaping of the result rows before the model sees them: `drop_when`, `sort`, `spoken` fields (e.g. `salary_spoken`) and `strip_numbers_in` |
+| `channels.*.output_contract` | Per-channel spoken-output contract: `default_language`, per-language `script` / `numbers` / `rules`, and the `guard` switches. Replaces the removed per-channel TTS-rules key |
+| `agent.history_turns` | Past exchanges the main LLM sees in `<recent>` (default 2; 0 omits the block) |
+| `agent.state_fields` | Session keys shown as-is on the `<state>` status line |
+| `agent.predispatch_timeout_ms` | Budget for one pre-dispatched read on the stream path (default 1500). On timeout the turn falls back to the model-driven call. Writes are not budgeted here; they run to the gateway timeout |
+| `predispatch` (per subagent) | Rules that call a tool before the main LLM: `tool`, `enabled`, `on_intent`, `when`, `unless_fresh`, `args`. Write rules need an explicit `enabled` |
+| `predispatch_tables` | Named lookup tables for `normalise` and `reject` (for example `city_canonical`) |
 
 ### Preprocessing
 
 | Key | Description |
 |---|---|
 | `preprocessing.language_normalisation.model` / `provider` / `supported_languages` | Dialect/transliteration config |
-| `preprocessing.nlu_processor.model` / `confidence_threshold` / `intents` / `entities` | NLU config |
+| `preprocessing.nlu_processor.model` / `slots` / `act_intents` / `topics` / `signals` / `signal_intents` / `termination_gate` / `examples` / `off_track` | Dialogue-act NLU config |
+| `preprocessing.nlu_processor.user_state_confidence_threshold` | Sticky fallback for the user-state classifier |
 
 ### Agent workflow (subagents)
 
@@ -350,8 +387,7 @@ Config is loaded at startup from two YAML files: `config/dpg.yaml` (framework de
 |---|---|
 | `agent_workflow.workflow_id` | Workflow identifier |
 | `agent_workflow.agent_system_prompt` | Base system prompt |
-| `agent_workflow.global_intents` | Intents handled at the global level |
-| `agent_workflow.subagents[]` | Subagent definitions with intent scopes and tool lists |
+| `agent_workflow.subagents[]` | Subagent definitions with `pending` questions, routing rules and tool lists |
 
 ### Reach Layer / TurnAssembler (new)
 
@@ -359,8 +395,6 @@ TurnAssembler is an Agent Core component but is tuned per channel. Config lives 
 
 | Key | Description |
 |---|---|
-| `reach_layer.turn_assembler.semantic_gate.enabled` | Enable NLU-based early trigger |
-| `reach_layer.turn_assembler.semantic_gate.confidence_threshold` | Invoke immediately if NLU ≥ this value |
 | `reach_layer.turn_assembler.silence_trigger.silence_ms` | Silence timer (resets on every segment) |
 | `reach_layer.turn_assembler.max_wait_ceiling.max_wait_ms` | Absolute wait ceiling (never resets) |
 | `reach_layer.channels.<name>.turn_assembler.*` | Per-channel override of any of the above |
@@ -438,4 +472,3 @@ See `CLAUDE.md` and `ARCHITECTURE.md` in the repository root for full engineerin
 
 **Channel-aware prompt assembly not yet implemented.** All channels (voice, web, CLI) receive the same system prompt regardless of channel. A future optimisation should shorten prompts for voice channels, which have tighter latency budgets and no Markdown rendering (#97).
 
-**NLU mode switching not yet implemented.** The `workflow_step`-based NLU mode switching described in issue #4 (conditional NLU execution) is not yet built. NLU runs on every turn regardless of workflow step.

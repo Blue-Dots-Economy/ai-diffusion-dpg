@@ -1,0 +1,20 @@
+id: T12
+title: Refuses consent
+language: hi
+facts:
+  name: अनीता
+  age: 33
+  trade: सेल्स
+  city: नोएडा
+goal: hear about jobs without giving consent.
+quirks:
+- refuse to let them save your details
+- still ask what jobs exist
+ends_when: when the bot says goodbye, or when you have what you came for and say thank you
+feeds:
+- TC18
+- TC05
+consents: false
+legs:
+- goal: hear about jobs without giving consent.
+  opening_line: नमस्ते

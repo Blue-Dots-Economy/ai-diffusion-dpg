@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, Field
 
 
 class ToolDefinition(BaseModel):
@@ -74,6 +74,12 @@ class ToolResult(BaseModel):
         success: True if the tool executed without error.
         result_text: Human-readable summary of the result; defaults to empty string.
         error: Error message if success is False; None otherwise.
+        session_values: Values lifted from the response by the connector's
+            ``session_mapping``, for Agent Core to write to session state.
+            Empty unless the connector declares one. Routing reads session
+            state, so this is the only path by which a workflow can branch on
+            something a tool returned.
+        projected: True when a response.projection shaped result_text. Agent Core only stores projected results.
     """
 
     tool_use_id: str
@@ -82,6 +88,8 @@ class ToolResult(BaseModel):
     success: bool
     result_text: str = ""
     error: Optional[str] = None
+    session_values: dict = Field(default_factory=dict)
+    projected: bool = False
 
 
 class ExecuteRequest(BaseModel):
@@ -94,6 +102,11 @@ class ExecuteRequest(BaseModel):
         session_id: Session identifier for contextual or consent checks; defaults to empty string.
         user_id: Stable user identifier (e.g. E.164 caller ID) used for path
             templating on tools like ``get_profile``; defaults to empty string.
+        session_values: Turn state forwarded by Agent Core, used to fill
+            connector params declared ``source: session``. Only the names a
+            connector actually declares are read, so this is a lookup table
+            rather than a payload — nothing here is sent upstream unless a
+            param asks for it by name. Defaults to empty.
     """
 
     tool_name: str
@@ -101,6 +114,7 @@ class ExecuteRequest(BaseModel):
     input_params: dict
     session_id: str = ""
     user_id: str = ""
+    session_values: dict = Field(default_factory=dict)
 
 
 class ExecuteResponse(BaseModel):
@@ -113,6 +127,9 @@ class ExecuteResponse(BaseModel):
         result: Structured result payload.
         result_text: Human-readable summary; defaults to empty string.
         error: Error message on failure; None on success.
+        session_values: Values the connector's ``session_mapping`` lifted out
+            of the response, for Agent Core to write to session state.
+        projected: True when a response.projection shaped result_text. Agent Core only stores projected results.
     """
 
     tool_use_id: str
@@ -121,6 +138,8 @@ class ExecuteResponse(BaseModel):
     result: dict
     result_text: str = ""
     error: Optional[str] = None
+    session_values: dict = Field(default_factory=dict)
+    projected: bool = False
 
 
 class ToolsResponse(BaseModel):

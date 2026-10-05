@@ -1,0 +1,17 @@
+id: T07
+title: Goes silent
+language: hi
+facts:
+  name: सोनू
+  age: 26
+  trade: प्लंबर
+  city: लखनऊ
+goal: answer the first question, then stay silent.
+quirks:
+- after your first answer, reply only '...' to everything
+ends_when: after 5 silent turns
+feeds:
+- TC06
+legs:
+- goal: answer the first question, then stay silent.
+  opening_line: नमस्ते

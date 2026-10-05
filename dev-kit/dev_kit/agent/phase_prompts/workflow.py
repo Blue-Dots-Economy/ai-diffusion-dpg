@@ -39,8 +39,8 @@ def build(
         pydantic_schemas: Pre-rendered Pydantic class source code for schemas
             backing the pending fields. Injected verbatim.
         cross_phase_refs: Pre-rendered string of already-set values from prior
-            phases for the LLM to reference. Crucially includes the signed-off
-            NLU intents from the language phase.
+            phases for the LLM to reference (connectors, and any
+            hand-authored ``act_intents`` rows).
         intake_state: Current IntakeState. Used for context in the intro.
 
     Returns:
@@ -126,7 +126,7 @@ validation.
     return f"""{_phase_focus_header("workflow", pending_fields)}# Phase: Workflow
 
 You are designing the subagent state machine — individual conversational
-sub-flows and how they route between each other based on NLU intent.
+sub-flows and how they route between each other based on the routing intent.
 
 {_common_rules()}
 
@@ -155,11 +155,17 @@ value="...full persona prompt...")`
 Also set `default_fallback_subagent_id` once you have declared your
 subagents. It MUST exactly match a declared subagent `id`.
 
-**Read existing NLU intents BEFORE designing any subagent.** The intent list
-is in `agent_core.preprocessing.nlu_processor.intents` (visible in
-cross-phase refs below). Use those exact strings. Do NOT ask the user to
-re-confirm them — they were signed off in the language phase. Do NOT invent
-new intent names without explicit user approval.
+**Routing.** NLU slots, act→intent rows and pending questions are
+authored by hand in agent_core.yaml for now (see spec §16). Do NOT ask the
+user for them and do NOT write `preprocessing.nlu_processor.act_intents`.
+Wire routing with these intent names:
+
+- `off_track` — the caller drifted off the subagent's job. Agent Core
+  rejects a workflow that has subagents but no routing rule on `off_track`,
+  so add one (usually a self-loop, or to the fallback subagent).
+- `any_input` / `*` — the catch-all for everything else.
+- Any intent already listed under `act_intents` in the cross-phase refs
+  below. Use those exact strings, and route every one of them.
 {kb_note}{memory_state_note}
 **Hard rules:**
 
@@ -182,8 +188,8 @@ new intent names without explicit user approval.
 {empty_connectors_note}
 - Every `next_subagent_id` in every routing rule MUST match a declared
   subagent `id`.
-- No intent may appear in both `global_intents` and any subagent's
-  `valid_intents` — Agent Core crashes on any overlap.
+- `off_track` is used by at least one routing rule (subagent `routing`
+  or `global_routing`) — Agent Core crashes at startup otherwise.
 - `opening_phrase` MUST be non-empty for every non-terminal subagent.
 - Exactly ONE subagent has `is_start: true`.
 
@@ -192,8 +198,8 @@ new intent names without explicit user approval.
 2. Every non-terminal subagent has a non-empty `opening_phrase`.
 3. `default_fallback_subagent_id` matches a declared subagent id.
 4. Every `next_subagent_id` in every routing rule matches a declared id.
-5. No intent appears in both `global_intents` and any subagent's
-   `valid_intents`.
+5. `off_track`, and every `act_intents` intent in the refs, is used by
+   some routing rule.
 6. Every tool name in `global_tools` and per-subagent `tools` exists in
    connectors.
 7. `knowledge_retrieval` (if agent has KB) is in `global_tools` only — NOT

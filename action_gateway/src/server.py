@@ -142,6 +142,7 @@ def create_app(registry: AdapterRegistry) -> FastAPI:
                 request.input_params,
                 request.session_id,
                 request.user_id,
+                request.session_values,
             )
 
             if not result.success:
@@ -169,6 +170,8 @@ def create_app(registry: AdapterRegistry) -> FastAPI:
             success=result.success,
             result=result.result,
             result_text=result.result_text,
+            session_values=result.session_values,
+            projected=result.projected,
             error=result.error,
         )
 
@@ -213,7 +216,7 @@ def create_app(registry: AdapterRegistry) -> FastAPI:
     # Mock upstream endpoints (GH-151 follow-up)
     # ------------------------------------------------------------------
     # Deterministic canned responses backing the ``get_profile``,
-    # ``update_profile``, and ``apply_job`` tools in the KKB config. They
+    # ``update_profile``, and ``apply_job`` tools in the Blue Dots config. They
     # live on the Action Gateway itself so the existing RestApiAdapter
     # can call them via http://action_gateway:9999/mock/... without any
     # extra service, while still exercising the full tool → HTTP →

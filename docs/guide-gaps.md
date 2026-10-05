@@ -9,7 +9,7 @@ revision.
 
 ### agent_core block
 
-- `preprocessing.nlu_processor.signal_intents` — map of intent → signal type
+- `preprocessing.nlu_processor.signal_intents` — map of signal name → signal type
   for longitudinal writes to the Memory Layer context graph. DPG-specific
   observability feature.
 - `preprocessing.nlu_processor.user_state_confidence_threshold` — sticky
@@ -51,7 +51,7 @@ revision.
 ### reach_layer block
 
 - Outbound campaigns and scheduled triggers.
-- TurnAssembler adapter policy (semantic_gate, silence_trigger,
+- TurnAssembler adapter policy (silence_trigger,
   max_wait_ceiling) for turn completion detection.
 
 ## Mechanisms not in the guide

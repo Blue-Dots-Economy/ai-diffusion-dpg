@@ -1,0 +1,644 @@
+# ai-diffusion-dpg — shared VM deployment.
+#
+# A standalone compose file with what is specific to the VM: the secrets init
+# container (SSM, instance role), loopback-only ports, persistent volumes and
+# the shared-host limits. The observability config itself is shared with the
+# local compose files and mounted from automation/docker/: the collector,
+# Prometheus and blackbox configs, and Grafana's provisioning and dashboards.
+#
+# The 6 DPG blocks, the bridge channel, redis, memgraph, otelcol, two one-shot
+# init containers, and the monitoring stack: jaeger, loki, prometheus, grafana
+# and the blackbox, cAdvisor and Redis exporters.
+# Deliberately absent: the voice channel and ngrok — the telephony platform
+# owns the call path — plus web/cli/mcp and dev-kit.
+#
+# Run from a clone of the repo on the VM — config is mounted straight out of
+# the tree, so the only file you create is .env next to this one:
+#
+#   git clone https://github.com/Blue-Dots-Economy/ai-diffusion-dpg.git
+#   cd ai-diffusion-dpg/automation/deploy/shared-vm
+#   cp env.example .env && chmod 600 .env
+#   docker compose up -d
+#
+# Only the images carry code — the clone is here for config, so keep it on a
+# release tag or a known commit rather than a moving branch.
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # One-shot: fetch secrets from AWS SSM Parameter Store into a tmpfs volume.
+  #
+  # Runs to completion before agent_core and action_gateway start. Uses the
+  # EC2 instance role — no AWS credentials on the box.
+  #
+  # Secrets are handed over through a BIND MOUNT of a host directory under
+  # /dev/shm, which is tmpfs on Linux — in memory, never on persistent disk.
+  #
+  # NOT a tmpfs-backed named volume: those are not shared between containers.
+  # Docker mounts a fresh tmpfs per container, so a file written by this
+  # container is simply absent in the next one. Verified directly:
+  #   docker volume create --opt type=tmpfs ... t
+  #   docker run --rm -v t:/s alpine sh -c 'echo x > /s/f; ls /s'   -> f
+  #   docker run --rm -v t:/s alpine ls /s                          -> empty
+  #
+  # NOTE: reaching instance metadata from inside a container needs the
+  # instance's IMDSv2 hop limit set to 2 (the AWS default of 1 blocks
+  # containers). Confirm with the infra team before first run.
+  # ---------------------------------------------------------------------------
+  init_secrets:
+    # AWS's official CLI image, pulled from ECR Public rather than Docker Hub:
+    # no anonymous pull-rate limit, and it is in-region for an EC2 host.
+    # Only this container needs AWS tooling — the DPG images stay clean.
+    image: public.ecr.aws/aws-cli/aws-cli:2.37.0
+    container_name: dpg_init_secrets
+    entrypoint: ["/bin/sh", "-c"]
+    environment:
+      # Both sources are optional here; the script below decides. Set the KEY
+      # vars for a direct hand-over, or leave them blank and set AWS_REGION +
+      # SSM_PREFIX to fetch from Parameter Store.
+      - AWS_REGION=${AWS_REGION:-}
+      - SSM_PREFIX=${SSM_PREFIX:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - BLUE_DOTS_API_KEY=${BLUE_DOTS_API_KEY:-}
+      # Discord alert webhooks for Grafana, one per severity. Optional.
+      - DISCORD_WEBHOOK_CRITICAL=${DISCORD_WEBHOOK_CRITICAL:-}
+      - DISCORD_WEBHOOK_WARNING=${DISCORD_WEBHOOK_WARNING:-}
+      - DISCORD_WEBHOOK_INFO=${DISCORD_WEBHOOK_INFO:-}
+    command:
+      - |
+        set -eu
+        umask 077
+        # Two supported sources, env first:
+        #   1. OPENAI_API_KEY / BLUE_DOTS_API_KEY passed straight in — for a
+        #      laptop, a CI run, or any host with no instance role.
+        #   2. AWS SSM Parameter Store via the EC2 instance role, used on the
+        #      shared VM so nothing is written to disk or kept in git.
+        # Env wins when both keys are set, so a deployment can override the
+        # store without editing this file.
+        if [ -n "$${OPENAI_API_KEY:-}" ] && [ -n "$${BLUE_DOTS_API_KEY:-}" ]; then
+          SOURCE=env
+          OPENAI="$$OPENAI_API_KEY"
+          SIGNALS="$$BLUE_DOTS_API_KEY"
+        else
+          if [ -z "$${SSM_PREFIX:-}" ]; then
+            echo "init_secrets: set OPENAI_API_KEY and BLUE_DOTS_API_KEY, or SSM_PREFIX" >&2
+            exit 1
+          fi
+          SOURCE=ssm
+          OPENAI=$$(aws ssm get-parameter --name "$$SSM_PREFIX/openai_api_key" \
+                      --with-decryption --query Parameter.Value --output text)
+          SIGNALS=$$(aws ssm get-parameter --name "$$SSM_PREFIX/blue_dots_api_key" \
+                      --with-decryption --query Parameter.Value --output text)
+        fi
+        # The search connector reads a distinct variable NAME but currently
+        # carries the SAME VALUE, so only two parameters are stored.
+        {
+          echo "export OPENAI_API_KEY='$$OPENAI'"
+          echo "export BLUE_DOTS_API_KEY='$$SIGNALS'"
+          echo "export BLUE_DOTS_SEARCH_API_KEY='$$SIGNALS'"
+        } > /secrets/env
+        # The images run as non-root (actiongateway, agentcore), so a
+        # root-owned 0400 file is unreadable to the very processes that
+        # need it. 0711 on the directory lets them traverse in without
+        # being able to list it, so the filename is not discoverable by
+        # other local users; the file itself is 0444 and is bind-mounted
+        # read-only into exactly the two containers that consume it.
+        chmod 711 /secrets
+        chmod 444 /secrets/env
+        # Never print the values.
+        echo "init_secrets: wrote /secrets/env from $$SOURCE (openai=$${#OPENAI} signals=$${#SIGNALS})"
+        # Discord alert webhooks, one file per severity, loaded into Grafana's
+        # environment by its entrypoint below. Optional, unlike the keys
+        # above: env first, then SSM (<prefix>/discord_webhook_<severity>).
+        # When neither is set, write an unroutable placeholder instead of
+        # failing: Grafana refuses to start on an empty Discord URL, and a
+        # missing webhook must not take the dashboards down with it. Alerts
+        # still show in Grafana; only delivery fails, visibly, in its log.
+        PLACEHOLDER="http://127.0.0.1:9/discord-webhook-not-configured"
+        write_hook() {
+          HOOK="$$2"; FROM=env
+          if [ -z "$$HOOK" ] && [ -n "$${SSM_PREFIX:-}" ]; then
+            HOOK=$$(aws ssm get-parameter --name "$$SSM_PREFIX/discord_webhook_$$1" \
+                      --with-decryption --query Parameter.Value --output text 2>/dev/null || true)
+            FROM=ssm
+          fi
+          if [ -z "$$HOOK" ] || [ "$$HOOK" = "None" ]; then
+            HOOK="$$PLACEHOLDER"; FROM="placeholder - NOT CONFIGURED, $$1 alerts will not reach Discord"
+          fi
+          printf '%s' "$$HOOK" > "/secrets/discord_webhook_$$1"
+          chmod 444 "/secrets/discord_webhook_$$1"
+          echo "init_secrets: wrote discord_webhook_$$1 from $$FROM (len=$${#HOOK})"
+        }
+        write_hook critical "$${DISCORD_WEBHOOK_CRITICAL:-}"
+        write_hook warning  "$${DISCORD_WEBHOOK_WARNING:-}"
+        write_hook info     "$${DISCORD_WEBHOOK_INFO:-}"
+    volumes:
+      - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets
+    networks: [dpg_net]
+    logging: *logging
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # One-shot: give knowledge_engine ownership of its kb_data volume.
+  #
+  # KB_DATA_DIR is /data/kb, but the knowledge-engine image never creates that
+  # path — its Dockerfile only declares VOLUME /app/chroma_db. A named volume
+  # with no matching directory in the image is created root-owned, and the
+  # image runs as the non-root `knowledgeengine`, so it cannot create its
+  # SQLite ledger there. The fallback in main.py does not catch this: the
+  # directory exists, so mkdir succeeds and only the later open() fails.
+  #
+  # Runs the knowledge-engine image itself as root so the username resolves
+  # without hardcoding a UID that could change when the image is rebuilt.
+  # ---------------------------------------------------------------------------
+  init_kb_perms:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/knowledge-engine:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_init_kb_perms
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["chown -R knowledgeengine:knowledgeengine /data/kb"]
+    volumes:
+      - kb_data:/data/kb
+    networks: [dpg_net]
+    logging: *logging
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: dpg_redis
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes: [redis_data:/data]
+    networks: [dpg_net]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  memgraph:
+    image: memgraph/memgraph:2.17.0
+    container_name: dpg_memgraph
+    # The image declares VOLUME on /var/log/memgraph and /etc/memgraph as well.
+    # Left unnamed, Docker creates a fresh anonymous volume for each on every
+    # recreate and orphans the previous pair — they accumulate silently and are
+    # only reclaimed by a manual `docker volume prune`. Naming them also keeps
+    # Memgraph's own logs and config across a redeploy.
+    volumes:
+      - memgraph_data:/var/lib/memgraph
+      - memgraph_log:/var/log/memgraph
+      - memgraph_etc:/etc/memgraph
+    networks: [dpg_net]
+    logging: *logging
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'RETURN 1;' | mgconsole --output-format=csv || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    container_name: dpg_otelcol
+    # Ports intentionally not published — all exporters are inside dpg_net.
+    command: ["--config=/etc/otelcol/otelcol-config.yaml"]
+    volumes:
+      - ../../docker/otelcol/otelcol-config.yaml:/etc/otelcol/otelcol-config.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Observability back-ends.
+  #
+  # otelcol above has always been configured to export to these three, but on
+  # this deployment they did not exist — so every trace and every log it
+  # received was dropped on export, and the metrics it published on :8889 had
+  # nothing scraping them. The collector was running and doing nothing.
+  #
+  # All four are loopback-only, like the bridge and the web UI: none of them
+  # has authentication worth relying on, and this is a shared box. Reach them
+  # over an SSH tunnel, e.g.
+  #     ssh -L 3001:127.0.0.1:3001 -L 16686:127.0.0.1:16686 <user>@<vm>
+  #
+  # Grafana is on host port 3001, not the usual 3000 — 3000 is the port the
+  # telephony platform's own frontend uses, and a 0.0.0.0 bind on their side
+  # would collide with a 127.0.0.1 bind on ours.
+  # ───────────────────────────────────────────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    container_name: dpg_jaeger
+    environment:
+      # otelcol exports traces over OTLP to jaeger:4317, not the legacy
+      # jaeger-grpc port, so the OTLP receiver has to be on. It defaults to
+      # enabled in 1.55; set explicitly so a base-image bump cannot silently
+      # break the traces pipeline.
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "127.0.0.1:16686:16686"     # UI
+    networks: [dpg_net]
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 512M
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: dpg_loki
+    # No published port: Grafana queries it inside dpg_net and nothing else
+    # needs it from the host.
+    volumes:
+      - loki_data:/loki
+    networks: [dpg_net]
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 512M
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.50.1
+    container_name: dpg_prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      # Bounded retention: this is a shared host and nobody is watching disk.
+      - "--storage.tsdb.retention.time=15d"
+    volumes:
+      # The scrape config shared with the local compose files; probes for
+      # services this VM does not run (web, voice, MCP, dev-kit) just show as
+      # down and never alert.
+      - ../../docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks: [dpg_net]
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 512M
+    restart: unless-stopped
+
+  # Probes every long-running service's health endpoint (or TCP port, for
+  # redis and memgraph) on Prometheus's behalf. Most DPG blocks only PUSH
+  # metrics through otelcol, so without this Prometheus has one target and no
+  # way to tell whether a given container is up. Results feed the
+  # "DPG - Service Status" Grafana dashboard. No published port.
+  blackbox_exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: dpg_blackbox_exporter
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ../../docker/blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    networks: [dpg_net]
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 64M
+    restart: unless-stopped
+
+  # Per-container CPU / memory / network / disk for the "Docker monitoring"
+  # dashboard. Needs the host's cgroup and Docker state read-only; privileged
+  # is cAdvisor's documented requirement for reading every container's
+  # cgroup. Prometheus drops everything that is not a dpg_* container.
+  # Published on ghcr.io since v0.53 — gcr.io/cadvisor stops at older tags.
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.6
+    container_name: dpg_cadvisor
+    privileged: true
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=30s
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks: [dpg_net]
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 256M
+    restart: unless-stopped
+
+  # Redis INFO as Prometheus metrics, for the Redis dashboard.
+  redis_exporter:
+    image: oliver006/redis_exporter:v1.92.1
+    container_name: dpg_redis_exporter
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    depends_on:
+      redis: { condition: service_healthy }
+    networks: [dpg_net]
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 64M
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.3.3
+    container_name: dpg_grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:-admin}
+      # No sign-up, and no anonymous access — loopback-only is the perimeter,
+      # but a default-open Grafana behind a tunnel is still a bad habit.
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      # Land on the service-status overview after login instead of an empty
+      # home page; every DPG dashboard links to the rest from its header.
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/service-status.json
+      # "Logs / App" (grafana.com 13639) still uses the legacy Angular graph
+      # panel. Migrate such panels to their React equivalents on load, so the
+      # dashboard keeps working once Angular support is removed.
+      - GF_FEATURE_TOGGLES_ENABLE=autoMigrateOldPanels
+      # Base for every link Grafana generates, including the dashboard links
+      # in Discord alerts. Grafana is published on host port 3001 (reached over
+      # the SSH tunnel on the VM), not the 3000 it listens on in the container.
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3001}
+    # The shared contact points read each Discord webhook from an environment
+    # variable (automation/docker/grafana/provisioning/alerting). Here the
+    # webhooks come from SSM via init_secrets, as files in /secrets, so load
+    # them into the environment and then start Grafana as its image would.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        export DISCORD_WEBHOOK_CRITICAL="$$(cat /secrets/discord_webhook_critical)"
+        export DISCORD_WEBHOOK_WARNING="$$(cat /secrets/discord_webhook_warning)"
+        export DISCORD_WEBHOOK_INFO="$$(cat /secrets/discord_webhook_info)"
+        exec /run.sh
+    volumes:
+      # Shared with every Compose deployment: datasources (fixed UIDs, which
+      # the alert rules reference), the dashboards (provider and JSON), and
+      # alerting.
+      - ../../docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      # Discord webhook files written by init_secrets.
+      - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      init_secrets: { condition: service_completed_successfully }
+      prometheus: { condition: service_started }
+      blackbox_exporter: { condition: service_started }
+      cadvisor: { condition: service_started }
+      redis_exporter: { condition: service_started }
+      loki: { condition: service_started }
+      jaeger: { condition: service_started }
+    networks: [dpg_net]
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 512M
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # DPG blocks
+  # ---------------------------------------------------------------------------
+  observability_layer:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/observability-layer:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_observability_layer
+    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
+    volumes:
+      - ../../../dev-kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  memory_layer:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/memory-layer:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_memory_layer
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - MEMGRAPH_URI=bolt://memgraph:7687
+      - MEMGRAPH_USER=memgraph
+      - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-}
+      # Pseudonymises ids in stored tool results. Unset disables storage.
+      - TOOL_RESULT_KEY_SECRET=${TOOL_RESULT_KEY_SECRET:-}
+    volumes:
+      - ../../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      redis: { condition: service_healthy }
+      memgraph: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  knowledge_engine:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/knowledge-engine:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_knowledge_engine
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - KB_DATA_DIR=/data/kb
+      - CHROMA_PERSIST_DIR=/app/chroma_db
+    volumes:
+      - ../../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
+      - chroma_data:/app/chroma_db
+      - kb_data:/data/kb
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      init_kb_perms:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  trust_layer:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/trust-layer:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_trust_layer
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Human handoff webhook (queue_backend: webhook). Empty = not delivered.
+      - HITL_WEBHOOK_URL=${HITL_WEBHOOK_URL:-}
+      - HITL_WEBHOOK_SECRET=${HITL_WEBHOOK_SECRET:-}
+      - HITL_WEBHOOK_ALLOW_HTTP=${HITL_WEBHOOK_ALLOW_HTTP:-}
+    volumes:
+      - ../../../dev-kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # Reads BLUE_DOTS_API_KEY / BLUE_DOTS_SEARCH_API_KEY from /secrets/env via the
+  # shared entrypoint. BLUE_DOTS_ORG_ID is an organisation UUID, not a
+  # credential, so it stays in .env.
+  action_gateway:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/action-gateway:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_action_gateway
+    # Loads the secrets file written by init_secrets, then execs the image's
+    # own command. The image is a Docker Hardened Image with no shell, so the
+    # file cannot be `source`-d: bin/exec_with_secrets.py does it with the
+    # image's Python instead (#413). Done here rather than baked into the
+    # image so no rebuild is needed and no other deployment is affected. Keep
+    # `command` in step with the image CMD (currently `python main.py`).
+    entrypoint: ["python", "/opt/dpg/exec_with_secrets.py"]
+    command: ["python", "main.py"]
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - BLUE_DOTS_ORG_ID=${BLUE_DOTS_ORG_ID:?set BLUE_DOTS_ORG_ID in .env}
+      # Signals cluster the Blue Dots domain config points at (UAT by default).
+      - SIGNALS_BASE_URL=${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}
+      - SIGNALS_SEARCH_URL=${SIGNALS_SEARCH_URL:-https://signals.bluedotseconomy.org/signals-search}
+      - SIGNALS_INSTANCE_URL=${SIGNALS_INSTANCE_URL:-https://signals.bluedotseconomy.org}
+    volumes:
+      - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets:ro
+      - ./bin/exec_with_secrets.py:/opt/dpg/exec_with_secrets.py:ro
+      - ../../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      init_secrets:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9999/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # Reads OPENAI_API_KEY from /secrets/env via the shared entrypoint.
+  agent_core:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/agent-core:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_agent_core
+    # See the note on action_gateway: secrets are loaded at runtime, no image
+    # change required. Keep in step with the image CMD.
+    entrypoint: ["python", "/opt/dpg/exec_with_secrets.py"]
+    command: ["python", "main.py"]
+    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
+    volumes:
+      - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets:ro
+      - ./bin/exec_with_secrets.py:/opt/dpg/exec_with_secrets.py:ro
+      - ../../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/agent_core.yaml:/app/config/agent_core.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      init_secrets: { condition: service_completed_successfully }
+      action_gateway: { condition: service_healthy }
+      trust_layer: { condition: service_healthy }
+      memory_layer: { condition: service_healthy }
+      knowledge_engine: { condition: service_healthy }
+      observability_layer: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Reach Layer — Bridge channel. The endpoint the telephony platform's LLM
+  # provider calls.
+  #
+  # Bound to 127.0.0.1, never 0.0.0.0: the bridge has NO AUTHENTICATION (shim
+  # design spec section 6), and that decision is conditional on it not being
+  # externally routable.
+  #
+  # If the platform's compose joins dpg_net as an external network instead, it can
+  # reach http://reach_layer_bridge:8008 by DNS — then delete the ports: block.
+  # ---------------------------------------------------------------------------
+  reach_layer_bridge:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-bridge:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_reach_layer_bridge
+    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
+    volumes:
+      # CONFIG_FOLDER steers domain.yaml only. main.py resolves the framework
+      # defaults separately — _dpg_config_path() ignores the variable and falls
+      # back to "config/dpg.yaml" relative to the workdir — so dpg.yaml is
+      # mounted at BOTH paths. Without the second the container crash-loops on
+      # FileNotFoundError: /app/reach_layer/bridge/config/dpg.yaml.
+      - ../../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/dpg/reach_layer.yaml:/app/reach_layer/bridge/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
+    ports:
+      - "127.0.0.1:8008:8008"
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      agent_core: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
+    restart: unless-stopped
+networks:
+  dpg_net:
+    name: dpg_net
+    driver: bridge
+    attachable: true      # so the platform's compose project can join it
+
+volumes:
+  redis_data:
+  memgraph_data:
+  chroma_data:
+  kb_data:
+  # Observability state. Without these, every `compose down` loses the metric
+  # history and any dashboard saved in the Grafana UI.
+  grafana_data:
+  prometheus_data:
+  loki_data:
+  memgraph_log:
+  memgraph_etc:

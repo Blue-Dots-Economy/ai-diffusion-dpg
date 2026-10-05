@@ -85,3 +85,9 @@ def test_review_directs_to_deploy_or_validate_config():
     """The review prompt must reference the terminal handoff step (Deploy or validate_config)."""
     result = build([], "", "", _intake())
     assert any(token in result for token in ("Deploy", "validate_config", "complete"))
+
+
+def test_review_prompt_has_no_intent_list_checks() -> None:
+    result = build([], "", "", _intake())
+    for word in ("global_intents", "valid_intents", "nlu_processor.intents"):
+        assert word not in result

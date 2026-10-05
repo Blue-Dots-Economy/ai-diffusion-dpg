@@ -46,5 +46,6 @@ class AsyncTrustLayerBase(ABC):
         escalation_reason: str,
         user_message: str,
         workflow_step: str,
+        handoff: dict | None = None,
     ) -> dict:
         """Async version of TrustLayerBase.escalate(). See sync interface for full docs."""
