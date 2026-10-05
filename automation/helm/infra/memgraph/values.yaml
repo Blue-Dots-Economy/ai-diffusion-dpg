@@ -1,6 +1,7 @@
 image:
   repository: memgraph/memgraph
-  tag: "latest"
+  # Pinned to match automation/docker; `latest` changes under you.
+  tag: "3.13.1"
   pullPolicy: IfNotPresent
 service:
   boltPort: 7687

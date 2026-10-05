@@ -1,115 +1,67 @@
-# Kubernetes Deployment Guide
+# Helm Charts
 
-Deploy all 7 DPG services on any Kubernetes cluster.
+Kubernetes charts for the DPG stack. Full guide, including verification, Reach channels, upgrade/uninstall behaviour, key values and the differences from docker-compose: [docs/helm-deployment.md](../../docs/helm-deployment.md).
 
----
-
-## Prerequisites
-
-- `kubectl` configured and pointing at your cluster (`kubectl cluster-info`)
-- `helm` v3+ installed
-- Docker Hub images available (`sanketikahub/dpg-*:latest`)
-- Anthropic API key exported: `export ANTHROPIC_API_KEY=sk-ant-...`
-
----
-
-## 1. Deploy all services
-
-Run from `automation/helm/`:
-
-```bash
-# Memory Layer
-helm install memory-layer ./dpg/memory-layer -n memory-layer --create-namespace
-
-# Trust Layer
-helm install trust-layer ./dpg/trust-layer -n trust-layer --create-namespace
-
-# Observability Layer
-helm install observability-layer ./dpg/observability-layer -n observability-layer --create-namespace
-
-# Action Gateway
-helm install action-gateway ./dpg/action-gateway -n action-gateway --create-namespace
-
-# Knowledge Engine (runs ingest init container on every deploy — may take 2-3 min)
-helm install knowledge-engine ./dpg/knowledge-engine -n knowledge-engine --create-namespace
-
-# Agent Core (requires API key — never stored in files)
-helm install agent-core ./dpg/agent-core -n agent-core --create-namespace \
-  --set anthropicApiKey=$ANTHROPIC_API_KEY
-
-# Reach Layer
-helm install reach-layer ./dpg/reach-layer -n reach-layer --create-namespace
+```
+dpg-common/     library chart: templates shared by every DPG chart
+dpg-services/   trust-layer  memory-layer  knowledge-engine  action-gateway
+                agent-core  observability-layer  dev-kit
+                reach-layer (parent) -> charts/web  charts/mcp  charts/voice  charts/bridge
+infra/          redis  memgraph  otel-collector  jaeger  prometheus  loki  grafana
 ```
 
----
+## Conventions
 
-## 2. Verify all pods are running
+- All releases go in **one namespace** (the dev-kit defaults to `dpg`), and each **release name is the chart directory name**. Services reach each other by release name (`memory-layer`, `otel-collector`, ...). The Reach web channel keeps the name `reach-layer`; other channels are `reach-layer-<channel>`.
+- Each service chart's templates are one-line includes of `dpg-common` templates; all settings live in the chart's `values.yaml`. The supported keys are documented in `dpg-common/templates/_deployment.tpl`.
+- `charts/dpg-common` in each chart is a symlink to the library, so no `helm dependency build` step is needed (Helm prints a "found symbolic link" notice; that is expected).
+- DPG charts receive their config at install time: `--set-file dpgConfig=dev-kit/dpg/<block>.yaml` and `--set-file domainConfig=dev-kit/configs/<domain>/<block>.yaml`; the `reach-layer` parent takes them as `global.dpgConfig` / `global.domainConfig`. Compose hostnames inside that YAML (`memory_layer`, `otelcol`) are rewritten to release names when the ConfigMaps render.
+- Images: `ghcr.io/blue-dots-economy/ai-diffusion-dpg/<service>`, default tag `sha-28f0517` (main at #385). Earlier images reject the current dev-kit configs at startup.
+- Secrets are passed with `--set` at install time and never committed: `agent-core` `openaiApiKey` / `anthropicApiKey` / `googleApiKey`, `action-gateway` `extraSecrets.<ENV_VAR>` for each connector `secret_env`, `dev-kit` at least one LLM key, `reach-layer` `voice.*` when voice is enabled.
 
-```bash
-kubectl get pods -A
-```
+The dev-kit deploy wizard (`dev-kit/dev_kit/agent/app.py`, `_run_k8s_deploy` / `_dpg_helm_values`) follows these same conventions.
 
-All pods should show `Running`. Knowledge Engine may take a few minutes — the `ingest` init container downloads the embedding model and builds the ChromaDB index on first deploy.
+## Quick install
 
-To watch Knowledge Engine:
-```bash
-kubectl get pods -n knowledge-engine -w
-```
-
-To check init container logs:
-```bash
-kubectl logs -n knowledge-engine -l app=knowledge-engine -c ingest
-```
-
----
-
-## 3. Access the Reach Layer CLI
-
-Exec into the Reach Layer pod:
+From the repo root, against a local cluster:
 
 ```bash
-# Get the pod name
-kubectl get pods -n reach-layer
+NS=dpg DOMAIN=blue-dots
+infra() { helm upgrade --install "$1" "automation/helm/infra/$1" -n $NS --create-namespace; }
+dpg() {
+  local chart=$1 block=${1//-/_}; shift
+  helm upgrade --install "$chart" "automation/helm/dpg-services/$chart" -n $NS --create-namespace \
+    --set-file dpgConfig=dev-kit/dpg/$block.yaml \
+    --set-file domainConfig=dev-kit/configs/$DOMAIN/$block.yaml "$@"
+}
 
-# Exec into the pod
-kubectl exec -it -n reach-layer <pod-name> -- /bin/sh
+for c in redis memgraph otel-collector jaeger prometheus loki grafana; do infra $c; done
+dpg trust-layer
+dpg memory-layer
+dpg knowledge-engine
+dpg action-gateway --set-string extraSecrets.<KEY>=...     # one per connector secret_env
+dpg agent-core     --set-string openaiApiKey=$OPENAI_API_KEY
+dpg observability-layer
+kubectl -n $NS create secret generic reach-layer-auth --from-literal=session-secret=$(openssl rand -hex 32)
+helm upgrade --install reach-layer automation/helm/dpg-services/reach-layer -n $NS \
+  --set-file global.dpgConfig=dev-kit/dpg/reach_layer.yaml \
+  --set-file global.domainConfig=dev-kit/configs/$DOMAIN/reach_layer.yaml \
+  --set web.auth.enabled=true --set-string web.auth.googleClientId=<client-id> \
+  --set web.auth.sessionSecretName=reach-layer-auth \
+  --set bridge.enabled=true                                # channels the domain declares
+
+kubectl -n $NS wait --for=condition=Ready pod --all --timeout=420s
+kubectl -n $NS port-forward svc/reach-layer 8005:8005     # web UI at http://localhost:8005 (Google sign-in)
 ```
 
-Once inside, start the CLI:
-```bash
-python -m reach_layer.cli
-```
-
-Or send a turn directly via curl from inside the pod:
-```bash
-curl -s -X POST http://localhost:8005/turn \
-  -H "Content-Type: application/json" \
-  -d '{"session_id": "test-1", "user_input": "kaam chahiye"}'
-```
-
----
-
-## 4. Upgrading a service
-
-```bash
-# Any service (example: trust-layer)
-helm upgrade trust-layer ./dpg/trust-layer -n trust-layer
-
-# Agent Core — always re-pass the API key
-helm upgrade agent-core ./dpg/agent-core -n agent-core \
-  --set anthropicApiKey=$ANTHROPIC_API_KEY
-```
-
----
-
-## 5. Teardown
+## Teardown
 
 ```bash
-helm uninstall knowledge-engine -n knowledge-engine
-helm uninstall agent-core       -n agent-core
-helm uninstall reach-layer      -n reach-layer
-helm uninstall action-gateway   -n action-gateway
-helm uninstall trust-layer      -n trust-layer
-helm uninstall observability-layer   -n observability-layer
-helm uninstall memory-layer     -n memory-layer
+for r in $(helm list -n dpg --short); do helm uninstall $r -n dpg --wait; done
 ```
+
+`helm uninstall` deletes the Memgraph and Knowledge Engine PVCs and the data in them.
+
+## Not covered by these charts
+
+ngrok and Ingress (the voice channel needs a public HTTPS endpoint in production). See the differences table in [docs/helm-deployment.md](../../docs/helm-deployment.md#differences-from-docker-compose).

@@ -1,0 +1,89 @@
+# DPG Knowledge Engine. dpgConfig and domainConfig are injected at deploy time:
+#   --set-file dpgConfig=dev-kit/dpg/knowledge_engine.yaml
+#   --set-file domainConfig=dev-kit/configs/<domain>/knowledge_engine.yaml
+# Template behaviour and every supported key: automation/helm/dpg-common/templates/_deployment.tpl
+replicaCount: 1
+
+image:
+  # Published by .github/workflows/build-images.yaml. sha-28f0517 is main at
+  # #385, the build these charts were verified with; earlier images reject
+  # the current dev-kit configs.
+  repository: ghcr.io/blue-dots-economy/ai-diffusion-dpg/knowledge-engine
+  tag: "sha-28f0517"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8001
+
+# The service reads /app/config/dpg.yaml and /app/config/<configFile>.
+configFile: knowledge_engine.yaml
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+
+healthCheck:
+  readiness:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  liveness:
+    initialDelaySeconds: 60
+    periodSeconds: 20
+
+# Recreate: ChromaDB/SQLite on ReadWriteOnce PVCs; a rolling update would start
+# a second pod against the same volume.
+strategy:
+  type: Recreate
+
+# The image runs as a non-root system user (uid 100 / gid 101 in the current
+# GHCR builds). fsGroup makes the PVCs writable on provisioners that create
+# root-owned volumes (e.g. EBS). docker-compose uses `user: root` instead.
+podSecurityContext:
+  fsGroup: 101
+
+# PVCs, named knowledge-engine-<key>. Keep kb-data's mountPath in step with
+# KB_DATA_DIR below.
+persistence:
+  chroma-data:
+    mountPath: /app/chroma_db
+    size: 5Gi
+    storageClass: ""
+  kb-data:
+    mountPath: /data/kb
+    size: 10Gi
+    storageClass: ""
+
+# Upload chain auth — set at deploy time; never commit real values here.
+uploadAuth:
+  reachToKeApiKey: ""
+  keToDevkitApiKey: ""
+  devkitCallbackUrl: ""
+
+# Azure Blob Storage — required only when the domain uses Azure for KB ingestion.
+azure:
+  storageAccount: ""
+  storageKey: ""
+  containerName: ""
+
+env:
+  - {name: HOME, value: /tmp}
+  - {name: HF_HOME, value: /tmp/huggingface}
+  - {name: TRANSFORMERS_CACHE, value: /tmp/huggingface/transformers}
+  - {name: REACH_TO_KE_API_KEY, key: uploadAuth.reachToKeApiKey}
+  - {name: KE_TO_DEVKIT_API_KEY, key: uploadAuth.keToDevkitApiKey}
+  - {name: KE_DEVKIT_CALLBACK_URL, key: uploadAuth.devkitCallbackUrl}
+  - {name: KB_DATA_DIR, value: /data/kb}
+  # ChromaDB lives on the chroma-data PVC; without this the engine falls back
+  # to ./data/chroma_db inside the container.
+  - {name: CHROMA_PERSIST_DIR, value: /app/chroma_db}
+  - {name: AZURE_STORAGE_ACCOUNT, key: azure.storageAccount}
+  - {name: AZURE_STORAGE_KEY, key: azure.storageKey}
+  - {name: AZURE_CONTAINER_NAME, key: azure.containerName}
+
+# Injected at deploy time — do not set here
+dpgConfig: ""
+domainConfig: ""

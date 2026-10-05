@@ -1,0 +1,73 @@
+# Reach Layer voice channel: Vobiz telephony over WebSocket (pipecat pipeline).
+# Config comes from the parent's global.dpgConfig / global.domainConfig, and
+# channels.voice.enabled must be true in it.
+# Template behaviour and every supported key: automation/helm/dpg-common/templates/_deployment.tpl
+nameSuffix: voice               # resources are named reach-layer-voice
+replicaCount: 1
+
+image:
+  repository: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-voice
+  tag: "sha-28f0517"
+  pullPolicy: IfNotPresent
+
+# Vobiz must reach /answer and /ws/{call_sid} through publicUrl, so production
+# needs an Ingress (or LoadBalancer) in front of this Service; none is created here.
+service:
+  port: 8006
+  type: ClusterIP
+
+# voice locates its config through DPG_CONFIG_PATH / DOMAIN_CONFIG_PATH (set in
+# env below), not CONFIG_FOLDER.
+configFile: domain.yaml
+config:
+  setConfigFolderEnv: false
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+healthCheck:
+  readiness:
+    initialDelaySeconds: 15
+    periodSeconds: 10
+  liveness:
+    initialDelaySeconds: 90
+    periodSeconds: 20
+
+logLevel: INFO
+
+# Public https URL that reaches this service (Vobiz webhooks).
+publicUrl: ""
+
+# Vobiz telephony and Raya TTS. The channel exits at startup without
+# vobiz.authId and vobiz.fromNumber. Set the secrets at deploy time, never here:
+#   --set-string voice.vobiz.authId=... --set-string voice.vobiz.authToken=...
+#   --set-string voice.rayaApiKey=...
+vobiz:
+  authId: ""
+  authToken: ""
+  fromNumber: ""
+rayaApiKey: ""
+
+env:
+  - {name: DPG_CONFIG_PATH, value: /app/config/dpg.yaml}
+  - {name: DOMAIN_CONFIG_PATH, value: /app/config/domain.yaml}
+  - {name: NLTK_DATA, value: /tmp/nltk_data}
+  - {name: LOG_LEVEL, key: logLevel}
+  - {name: PUBLIC_URL, key: publicUrl}
+  - {name: VOBIZ_FROM_NUMBER, key: vobiz.fromNumber}
+
+secretEnvFromValues:
+  - {name: VOBIZ_AUTH_ID, key: vobiz.authId}
+  - {name: VOBIZ_AUTH_TOKEN, key: vobiz.authToken}
+  - {name: RAYA_API_KEY, key: rayaApiKey}
+
+# Call recordings are disabled by default in reach_layer.yaml. When enabling a
+# local recording store, give it a volume, e.g.:
+# persistence:
+#   recordings: {mountPath: /var/recordings, size: 5Gi}
+persistence: {}

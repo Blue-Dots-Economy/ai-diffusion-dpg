@@ -1,0 +1,67 @@
+# Reach Layer web channel: React SPA + FastAPI (POST /chat -> Agent Core).
+# Config comes from the parent's global.dpgConfig / global.domainConfig.
+# Template behaviour and every supported key: automation/helm/dpg-common/templates/_deployment.tpl
+replicaCount: 1
+
+image:
+  # Published by .github/workflows/build-images.yaml. sha-28f0517 is main at
+  # #385, the build these charts were verified with; earlier images reject
+  # the current dev-kit configs.
+  repository: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-web
+  tag: "sha-28f0517"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8005
+  # The dev-kit sets NodePort / 30805 so its upload proxy can reach the channel.
+  type: ClusterIP
+  nodePort: ""
+
+# web reads /app/config/dpg.yaml and $CONFIG_FOLDER/reach_layer.yaml.
+configFile: reach_layer.yaml
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+healthCheck:
+  readiness:
+    initialDelaySeconds: 15
+    periodSeconds: 10
+  liveness:
+    initialDelaySeconds: 30
+    periodSeconds: 20
+
+# REACH_LAYER_WEB_MODE: full (SPA + chat) or routing_only (health + ingest proxy).
+webMode: full
+
+# Upload chain auth — set at deploy time; never commit real values here.
+uploadAuth:
+  devkitToReachApiKey: ""
+  reachToKeApiKey: ""
+  keInternalUrl: "http://knowledge-engine:8001"
+
+# Google Sign-On. When auth.enabled is true in reach_layer.yaml, set enabled
+# here too and provide googleClientId plus a Secret holding the session HMAC:
+#   kubectl create secret generic reach-layer-auth \
+#     --from-literal=session-secret=$(openssl rand -hex 32)
+auth:
+  enabled: false
+  googleClientId: ""
+  sessionSecretName: ""
+  sessionSecretKey: "session-secret"
+
+env:
+  # full = SPA + chat; routing_only = health + ingest proxy only.
+  - {name: REACH_LAYER_WEB_MODE, key: webMode}
+  - {name: GOOGLE_CLIENT_ID, key: auth.googleClientId, when: auth.enabled, required: true}
+  - name: REACH_SESSION_SECRET
+    when: auth.enabled
+    secretKeyRef: {name: auth.sessionSecretName, key: auth.sessionSecretKey}
+  - {name: DEVKIT_TO_REACH_API_KEY, key: uploadAuth.devkitToReachApiKey}
+  - {name: REACH_TO_KE_API_KEY, key: uploadAuth.reachToKeApiKey}
+  - {name: KE_INTERNAL_URL, key: uploadAuth.keInternalUrl}

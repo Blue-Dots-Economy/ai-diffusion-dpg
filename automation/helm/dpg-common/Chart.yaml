@@ -1,0 +1,5 @@
+apiVersion: v2
+name: dpg-common
+description: Library chart with the templates shared by every DPG service chart under automation/helm/dpg-services/
+type: library
+version: 0.1.0
