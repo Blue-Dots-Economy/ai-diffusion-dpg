@@ -22,14 +22,65 @@ models:
   caller: { provider: openai, model: gpt-4.1, temperature: 0.3 }
   judge:  { provider: openai, model: gpt-4.1, temperature: 0 }
 backend:
+  # Two modes. The agent half (agent_core, its Redis, the bridge, the tap) is
+  # identical in both; only where Signals lives changes.
+  #
+  #   local  — drive the Signals-DPG compose stack here: seeds it, mints a
+  #            service key, and cleans the DB back to the seed before every
+  #            call. Full isolation. Costs 7 containers including a 2.3 GB TEI
+  #            embedding model, which is a lot for a small machine.
+  #
+  #   remote — point at a Signals cluster that is already running. No compose,
+  #            no TEI, no key minting (credentials come from the environment).
+  #            NOTHING IS CLEANED UP: the cluster is shared, so the bench never
+  #            deletes from it. Isolation instead comes from a per-run salt in
+  #            the caller numbers, so a re-run never meets the profiles the
+  #            previous run created. The salt is recorded in the run metadata.
+  #
+  # Env overrides, so one run can be pointed elsewhere without editing this file:
+  #   VOICE_BENCH_BACKEND_MODE / VOICE_BENCH_CLUSTER / VOICE_BENCH_SIGNALS_URL /
+  #   VOICE_BENCH_SEARCH_URL / VOICE_BENCH_SIGNALS_INSTANCE_URL /
+  #   VOICE_BENCH_CREDENTIALS_PREFIX
+  mode: local
   # Relative paths here (signals_dir, network_json, env_file, results_dir) resolve against the CWD: run from agent_core/.
-  signals_dir: ../../Signals-DPG
+  signals_dir: ../../Signals-DPG                                     # local mode only
   network_json: ../../bluedots-schemas/blue_dot/up-gzb/network.json   # UP-Ghaziabad schema the local backend runs
   signals_url: http://localhost:2742
   search_url: http://localhost:3100
   tap_port: 18742
-  postgres_container: signals-postgres
+  postgres_container: signals-postgres                               # local mode only
   env_file: null
+  # ---- remote mode ----------------------------------------------------------
+  # Pick a cluster by name. The name carries BOTH the URLs and the credential
+  # variable names, because each cluster has its own key set:
+  #
+  #   cluster: uat    (default)  https://signals.bluedotseconomy.org
+  #                              reads UAT_BLUE_DOTS_API_KEY / _SEARCH_API_KEY / _ORG_ID
+  #                              real curated provider data near Delhi and Bengaluru
+  #
+  #   cluster: test              https://signals-services.freedynamicdns.net
+  #                              reads BLUE_DOTS_API_KEY / _SEARCH_API_KEY / _ORG_ID
+  #                              saturated with LOADTEST rows (role == company,
+  #                              jobProviderLocation null), so content-grading
+  #                              scenarios score badly there for the wrong reason
+  #
+  # mode: remote
+  # cluster: uat
+  # Override individually only if you must; the preset keeps URLs and key names
+  # consistent, and mixing them is the 401/403 trap:
+  # signals_url:  https://signals.bluedotseconomy.org
+  # search_url:   https://signals.bluedotseconomy.org/signals-search
+  # instance_url: https://signals.bluedotseconomy.org   # what apply posts to; defaults to signals_url
+  # credentials_env_prefix: "UAT_"
+  #
+  # Credentials come from the environment, never from this file:
+  #   eval "$(~/.config/kkb/bin/kkb-secrets.sh export)"
+  #
+  # The cluster needs the 60-job seed ONCE, kept permanently:
+  #   python -m eval.voice_bench backend up && python -m eval.voice_bench backend seed
+  # Re-running seed is a no-op while state.json holds the current SEED_VERSION.
+  # Deleting state.json and re-seeding DUPLICATES the jobs — there is no
+  # "already seeded" guard on a shared cluster, because it always has data.
 runs: 1                                     # default runs per scenario
 runs_per_scenario: { T01: 3, T12: 3, T14: 3 }   # extra runs where a wrong verdict costs most (apply, consent, returning-caller apply)
 max_turns: 14
