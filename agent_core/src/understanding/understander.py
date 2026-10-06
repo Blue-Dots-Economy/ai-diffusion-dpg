@@ -37,6 +37,9 @@ _counters: dict[str, Any] = {}
 # produces the same answer.
 _TRANSIENT_FALLBACKS = ("provider_error", "exception")
 
+# Structured-log `operation` for this unit, shared by every entry it emits.
+_OP_UNDERSTAND = "turn_understander.understand"
+
 
 def _is_transient(reason: str) -> bool:
     """True when a fallback reason describes a failed call rather than a verdict."""
@@ -171,7 +174,7 @@ class TurnUnderstander(TurnUnderstanderBase):
                 # definition — a fresh call gets a fresh retry budget, and the
                 # cost of being wrong is the whole call.
                 logger.warning("nlu.transient_retry", extra={
-                    "operation": "turn_understander.understand", "status": "retry",
+                    "operation": _OP_UNDERSTAND, "status": "retry",
                     "fallback_reason": reason})
                 dialogue, retry_reason, _ = self._nlu.classify(message)
                 reason = retry_reason
@@ -181,7 +184,7 @@ class TurnUnderstander(TurnUnderstanderBase):
             return self._finish(u, ctx, message, start)
         except Exception as e:  # noqa: BLE001 — never raise into the turn
             logger.error("nlu.understanding_error", extra={
-                "operation": "turn_understander.understand", "status": "failure",
+                "operation": _OP_UNDERSTAND, "status": "failure",
                 "error": type(e).__name__, "latency_ms": int((time.time() - start) * 1000)})
             return self._finish(self._fallback(DialogueActResult.fallback(), pending, "exception"),
                                 ctx, message, start)
@@ -246,7 +249,7 @@ class TurnUnderstander(TurnUnderstanderBase):
         """Log the PII-free summary, bump OTel counters and (opt-in) capture the eval case."""
         d = u.dialogue
         extra = {
-            "operation": "turn_understander.understand",
+            "operation": _OP_UNDERSTAND,
             "status": "fallback" if u.fallback_reason else "success",
             "latency_ms": u.latency_ms,
             "subagent_id": ctx.subagent_id,

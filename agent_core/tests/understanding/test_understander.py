@@ -261,7 +261,8 @@ def test_transient_failure_twice_still_falls_back_and_never_raises():
     u = und.understand(_ctx("opening"))
     assert nlu.classify.call_count == 2
     assert u.fallback_reason == "provider_error:timeout"
-    assert u.nlu_result.intent == "any_input" and u.writes == []
+    assert u.nlu_result.intent == "any_input"
+    assert u.writes == []
 
 
 def test_schema_violation_is_not_retried():
