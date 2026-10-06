@@ -328,3 +328,27 @@ def test_served_ignores_miss_and_entry_respects_expiry():
     served = cache.served()
     served["x"] = "y"                                                   # a copy, not the internal map
     assert cache.served() == {}
+
+
+# ── has_fresh_for: freshness keyed on the arguments, not the tool name ──────
+
+def test_has_fresh_for_is_true_only_for_the_same_args():
+    from src.models import ToolCall, ToolResult
+    from src.tool_results import ToolResultPolicies, TurnToolCache
+    pol = ToolResultPolicies.from_config({"connectors": {"read": [
+        {"name": "fetch_jobs", "cache": {"scope": "session", "ttl_seconds": 600}}]}})
+    cache = TurnToolCache(pol, [], {})
+    call = ToolCall(tool_name="fetch_jobs", tool_use_id="1",
+                    input_params={"query_text": "Welder jobs in Bengaluru"})
+    stored = cache.after_call(call, ToolResult(
+        tool_use_id="1", tool_name="fetch_jobs", result={}, success=True,
+        result_text="[]", projected=True))
+    assert stored is not None, "the result must actually be cached for this test to mean anything"
+    assert cache.has_fresh_for("fetch_jobs", {"query_text": "Welder jobs in Bengaluru"}) is True
+    assert cache.has_fresh_for("fetch_jobs", {"query_text": "Welder jobs in Lucknow"}) is False
+
+
+def test_has_fresh_for_is_false_for_an_uncached_tool():
+    from src.tool_results import ToolResultPolicies, TurnToolCache
+    cache = TurnToolCache(ToolResultPolicies.from_config({}), [], {})
+    assert cache.has_fresh_for("fetch_jobs", {"query_text": "anything"}) is False

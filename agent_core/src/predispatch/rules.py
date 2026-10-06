@@ -182,7 +182,7 @@ def _gates_hold(rule: dict, intent: str, state: dict) -> bool:
 
 
 def select(rules: list[dict], *, intent: str, state: dict, session: dict, tables: dict,
-           tool_schemas: dict[str, dict], write_tools: set[str], has_fresh: Callable[[str], bool]) -> Selection:
+           tool_schemas: dict[str, dict], write_tools: set[str], has_fresh: Callable[[str, dict], bool]) -> Selection:
     """First rule whose gates hold, that is enabled, not fresh, and whose args resolve. Never raises.
 
     Args:
@@ -193,7 +193,8 @@ def select(rules: list[dict], *, intent: str, state: dict, session: dict, tables
         tables: ``predispatch_tables``.
         tool_schemas: Tool name → input_schema.
         write_tools: Names of write/identity tools.
-        has_fresh: Whether the turn cache already holds a fresh entry for a tool.
+        has_fresh: Whether the turn cache already holds a fresh entry for a tool
+            CALLED WITH the resolved args, so a changed city or trade is a miss.
 
     Returns:
         Selection.
@@ -219,12 +220,18 @@ def select(rules: list[dict], *, intent: str, state: dict, session: dict, tables
                 if enabled is False:
                     first_skip = first_skip or "disabled"
                     continue
-            if rule.get("unless_fresh") and has_fresh(tool):
-                first_skip = first_skip or "skipped_fresh"
-                continue
+            # Args first, freshness second. The old order asked "has this tool
+            # run this turn?" before it knew what the call would ask for, so a
+            # caller who changed city or trade was answered from the previous
+            # search: the rule was skipped as fresh and the stale rows were
+            # handed to the model as though they answered the new question.
+            # Freshness is only meaningful once the arguments are known.
             args, why = resolve_args(rule, session, tables, tool_schemas.get(tool))
             if args is None:
                 first_skip = first_skip or why
+                continue
+            if rule.get("unless_fresh") and has_fresh(tool, args):
+                first_skip = first_skip or "skipped_fresh"
                 continue
             return Selection(tool=tool, args=args, outcome="fired", is_write=is_write)
         except Exception as e:  # noqa: BLE001 — never raise into the turn

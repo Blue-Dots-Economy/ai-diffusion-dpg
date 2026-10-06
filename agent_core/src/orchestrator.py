@@ -670,7 +670,7 @@ class AgentCore(AgentCoreBase):
                       state=self._routing_state(bundle), session=self._tool_session_values(bundle),
                       tables=self._predispatch_tables, tool_schemas=self._tool_schemas,
                       write_tools=self._write_tools,
-                      has_fresh=lambda t: tool_cache.latest_entry(t) is not None)
+                      has_fresh=lambda t, a: tool_cache.has_fresh_for(t, a))
 
     def _enforce_session_only(self, tc, bundle) -> None:
         """Replace or drop this call's ``session_only_params`` before it is guarded.
