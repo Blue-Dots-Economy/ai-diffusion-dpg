@@ -430,9 +430,9 @@ services:
   # healthchecks below and the blackbox probes hit it every few seconds, and
   # those traces were about 99% of what Jaeger held. FastAPIInstrumentor reads
   # the variable because instrument_app() is called without excluded_urls.
-  # Not yet effective in observability_layer: its image lacks
-  # opentelemetry-instrumentation-fastapi, so FastAPI's own tracing runs there
-  # instead and does not read this variable.
+  # observability_layer needs an image that includes
+  # opentelemetry-instrumentation-fastapi; without it, FastAPI's own tracing
+  # runs there instead and does not read this variable.
   # ---------------------------------------------------------------------------
   observability_layer:
     image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/observability-layer:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
