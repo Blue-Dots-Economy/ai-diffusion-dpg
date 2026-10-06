@@ -243,6 +243,10 @@ services:
       # enabled in 1.55; set explicitly so a base-image bump cannot silently
       # break the traces pipeline.
       - COLLECTOR_OTLP_ENABLED=true
+      # In-memory storage keeps every trace by default and never evicts, so
+      # it grew to the 512M limit, was OOM-killed and restarted empty, over and
+      # over. Beyond this count the oldest traces are dropped.
+      - MEMORY_MAX_TRACES=5000
     ports:
       - "127.0.0.1:16686:16686"     # UI
     networks: [dpg_net]
@@ -421,11 +425,19 @@ services:
 
   # ---------------------------------------------------------------------------
   # DPG blocks
+  #
+  # OTEL_PYTHON_FASTAPI_EXCLUDED_URLS keeps /health out of the traces. The
+  # healthchecks below and the blackbox probes hit it every few seconds, and
+  # those traces were about 99% of what Jaeger held. FastAPIInstrumentor reads
+  # the variable because instrument_app() is called without excluded_urls.
+  # Not yet effective in observability_layer: its image lacks
+  # opentelemetry-instrumentation-fastapi, so FastAPI's own tracing runs there
+  # instead and does not read this variable.
   # ---------------------------------------------------------------------------
   observability_layer:
     image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/observability-layer:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
     container_name: dpg_observability_layer
-    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
+    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}", OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health]
     volumes:
       - ../../../dev-kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
       - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
@@ -449,6 +461,7 @@ services:
       - MEMGRAPH_URI=bolt://memgraph:7687
       - MEMGRAPH_USER=memgraph
       - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-}
+      - OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health
       # Pseudonymises ids in stored tool results. Unset disables storage.
       - TOOL_RESULT_KEY_SECRET=${TOOL_RESULT_KEY_SECRET:-}
     volumes:
@@ -475,6 +488,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - KB_DATA_DIR=/data/kb
       - CHROMA_PERSIST_DIR=/app/chroma_db
+      - OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health
     volumes:
       - ../../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
       - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
@@ -499,6 +513,7 @@ services:
     environment:
       - CONFIG_FOLDER=/app/config
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health
       # Human handoff webhook (queue_backend: webhook). Empty = not delivered.
       - HITL_WEBHOOK_URL=${HITL_WEBHOOK_URL:-}
       - HITL_WEBHOOK_SECRET=${HITL_WEBHOOK_SECRET:-}
@@ -534,6 +549,7 @@ services:
       - CONFIG_FOLDER=/app/config
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - BLUE_DOTS_ORG_ID=${BLUE_DOTS_ORG_ID:?set BLUE_DOTS_ORG_ID in .env}
+      - OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health
       # Signals cluster the Blue Dots domain config points at (UAT by default).
       - SIGNALS_BASE_URL=${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}
       - SIGNALS_SEARCH_URL=${SIGNALS_SEARCH_URL:-https://signals.bluedotseconomy.org/signals-search}
@@ -564,7 +580,7 @@ services:
     # change required. Keep in step with the image CMD.
     entrypoint: ["python", "/opt/dpg/exec_with_secrets.py"]
     command: ["python", "main.py"]
-    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
+    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}", OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health]
     volumes:
       - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets:ro
       - ./bin/exec_with_secrets.py:/opt/dpg/exec_with_secrets.py:ro

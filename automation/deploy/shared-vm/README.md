@@ -219,8 +219,12 @@ unconditionally, with no profile. VM specifics:
 - **`GRAFANA_ROOT_URL`** (default `http://localhost:3001`) is the base of the
   dashboard links in each alert, which open through the SSH tunnel above.
 - **Retention:** Prometheus keeps 15 days on a volume; Loki and Grafana state
-  are on volumes too. Jaeger keeps traces in memory, so a restart loses them.
-  The bridge channel emits no traces, so every trace starts at Agent Core.
+  are on volumes too. Jaeger keeps traces in memory, so a restart loses them,
+  and only the latest 5000 (`MEMORY_MAX_TRACES`); without that cap it grew
+  until it was OOM-killed. `/health` is not traced
+  (`OTEL_PYTHON_FASTAPI_EXCLUDED_URLS`), so the healthchecks and probes do not
+  fill it. The bridge channel emits no traces, so every trace starts at Agent
+  Core.
 
 ## Pinning by digest
 
