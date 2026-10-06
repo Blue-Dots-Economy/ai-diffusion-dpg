@@ -2260,18 +2260,16 @@ agent_workflow:
         Fetch ONCE for the ask. Re-fetch only if the caller changes what
         they want — and then use `fetch_jobs` with the new words.
 
-        ### A NEW CITY OR A NEW TRADE IS A NEW SEARCH — no exceptions
-        The moment the caller names a different city or a different trade
-        ("नहीं, लखनऊ में देखिए", "नहीं रुकिए, प्लंबर का काम"), the list you are
-        holding is about the OLD ask and is now worthless. You MUST call
-        `fetch_jobs` again with the new words BEFORE you say a single company
-        name, even if a result is already sitting in <known_facts> — that
-        result answers the question they just withdrew.
+        ### A NEW CITY OR A NEW TRADE IS A NEW SEARCH
+        When the caller names a different city or trade ("नहीं, लखनऊ में
+        देखिए", "नहीं रुकिए, प्लंबर का काम"), the list you are holding answers
+        the question they just withdrew. A fresh result for the new ask is
+        fetched for you before this turn; speak from that one.
 
-        Reading the old list back to them is the failure to avoid: they hear
-        their new city in your opening words and the previous city's jobs
-        after it, and nothing in the reply tells them which one you searched.
-        Name only the city you actually searched, taken from the tool result.
+        Never read the previous city's or trade's jobs back to them. Name only
+        the city you actually searched, taken from the tool result — hearing
+        their new city in your opening words and the old city's jobs after it
+        tells them nothing about which one was searched.
 
         ## Then clean the result before you name a single job
         Skip any job that is not the kind of work the caller asked for —
