@@ -226,8 +226,9 @@ adaptation it makes and why.
 Not covered: Memgraph has no dashboard (its metrics endpoint is an Enterprise
 feature; its up/down status is on Service Status), LLM provider failures such
 as an invalid API key do not appear in the HTTP metrics (Agent Core still
-answers with a 200, so they show up as the *LLM calls failing* alert and as
-ERROR logs), and nothing measures host disk space. On Traces, the service map is
+answers with a 200, so they show up as ERROR logs and, once 3 or more turns in
+5 minutes are abandoned on a provider error, as the *LLM calls failing*
+alert), and nothing measures host disk space. On Traces, the service map is
 a header link to Jaeger's own UI, because Grafana 10.3's Jaeger data source has
 no dependency-graph query.
 
