@@ -106,8 +106,18 @@ def create_app(observability: OtelObservabilityLayer, obs_config: ObservabilityC
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
         FastAPIInstrumentor.instrument_app(app)
-    except Exception:
-        pass  # Observability must not prevent startup
+    except Exception as e:
+        # Observability must not prevent startup, but it must not fail silently
+        # either: a missing package once meant no exclusions and untraced
+        # requests here, with nothing in the logs.
+        logger.warning(
+            "observability_server.instrumentation_skipped",
+            extra={
+                "operation": "server.create_app",
+                "status": "skipped",
+                "error": f"{type(e).__name__}: {e}",
+            },
+        )
 
     @app.post("/emit/turn")
     def emit_turn(request: TurnEventRequest) -> StatusResponse:
