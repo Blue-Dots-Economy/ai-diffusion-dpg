@@ -333,6 +333,12 @@ services:
       - --housekeeping_interval=30s
       - --store_container_labels=false
       - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
+      # Only the groups the dashboards and alerts read. The default set includes
+      # `disk`, which walks /var/lib/docker for every container on the host,
+      # ours or not; the kernel inode/dentry cache that builds up is charged to
+      # this container and kept it near its limit (about 150 MiB here, over 90%
+      # on the shared VM). Without it, about 20 MiB.
+      - --enable_metrics=cpu,memory,network,diskIO,oom_event
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:ro
