@@ -65,6 +65,20 @@ def test_create_app_none_web_reach_raises(config):
         create_app(None, config)
 
 
+def test_fastapi_instrumented_on_startup(web_reach, config):
+    """FastAPIInstrumentor.instrument_app must be called during create_app."""
+    with patch.object(server_module.FastAPIInstrumentor, "instrument_app") as mock_instrument:
+        app = create_app(web_reach, config)
+    mock_instrument.assert_called_once_with(app)
+
+
+def test_routing_only_app_fastapi_instrumented_on_startup(config):
+    """FastAPIInstrumentor.instrument_app must be called during create_routing_only_app."""
+    with patch.object(server_module.FastAPIInstrumentor, "instrument_app") as mock_instrument:
+        app = server_module.create_routing_only_app(config)
+    mock_instrument.assert_called_once_with(app)
+
+
 # ---------------------------------------------------------------------------
 # GET /health
 # ---------------------------------------------------------------------------
