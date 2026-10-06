@@ -236,3 +236,43 @@ def test_understanding_log_carries_no_slot_values_or_caller_text(caplog):
         assert secret not in blob, secret
     assert "trade" in blob                                    # keys are logged
 
+
+
+# ── Transient NLU failure: retried once, because the caller DID answer ──────
+# A provider timeout/429 makes the understanding indistinguishable from "the
+# caller mentioned nothing", and the lost turn is often the consent answer —
+# after which no route leaves the opening phase and the call writes nothing.
+
+def test_transient_provider_failure_is_retried_once_and_can_succeed():
+    good = DialogueActResult(acts=("affirm",), relation="answers_pending",
+                             slots={"consent": "granted", "age": None, "trade": None})
+    nlu = MagicMock()
+    nlu.classify.side_effect = [(DialogueActResult.fallback(), "provider_error:timeout", 7),
+                                (good, None, 7)]
+    und = TurnUnderstander(DialogueActConfig.from_config(CONFIG), WF, nlu)
+    u = und.understand(_ctx("opening"))
+    assert nlu.classify.call_count == 2
+    assert u.fallback_reason is None
+    assert StateWrite("session", "consent_response", "granted") in u.writes
+
+
+def test_transient_failure_twice_still_falls_back_and_never_raises():
+    und, nlu = _u(DialogueActResult.fallback(), reason="provider_error:timeout")
+    u = und.understand(_ctx("opening"))
+    assert nlu.classify.call_count == 2
+    assert u.fallback_reason == "provider_error:timeout"
+    assert u.nlu_result.intent == "any_input" and u.writes == []
+
+
+def test_schema_violation_is_not_retried():
+    """The provider answered; asking again the same way yields the same answer."""
+    und, nlu = _u(DialogueActResult.fallback(), reason="schema_violation")
+    u = und.understand(_ctx("opening"))
+    assert nlu.classify.call_count == 1
+    assert u.fallback_reason == "schema_violation"
+
+
+def test_empty_input_is_not_retried():
+    und, nlu = _u(DialogueActResult.fallback(), reason="empty_input")
+    und.understand(_ctx("opening"))
+    assert nlu.classify.call_count == 1

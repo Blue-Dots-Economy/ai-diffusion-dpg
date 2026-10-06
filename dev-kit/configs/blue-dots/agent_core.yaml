@@ -524,9 +524,25 @@ connectors:
         #
         # Each param here is taken from the FIRST non-empty session key listed
         # and dropped when none has a value, so the model's own value is never
-        # used. `name` is deliberately absent: it is required, and dropping it
-        # would guarantee an upstream rejection.
+        # used.
+        #
+        # `name` was deliberately absent, on the grounds that it is required and
+        # dropping it guarantees an upstream rejection. That reasoning is right
+        # about the mechanism and wrong about which outcome is worse. Because
+        # `name` is `required: true` in the tool schema, the model cannot emit
+        # the call without SOME value, and when the caller has not been asked it
+        # invents one. Measured upstream across three runs, the same caller
+        # profile was written as `caller`, as `Unknown`, and as the literal
+        # `[उपयोगकर्ता का नाम]` — a permanent record under a name its owner
+        # never gave, which no later call can tell from a real one.
+        #
+        # Listed here, the caller's own spoken name (an NLU slot, carried in
+        # `known_fields`) is what gets sent, and a name nobody supplied is
+        # DROPPED. The save then fails loudly with the upstream's own
+        # "name required", `on_failure` below is spoken, and the model asks the
+        # question it should have asked. A refused write beats a fabricated one.
         session_only_params:
+          name:             [name]
           gender:           [gender]
           age:              [age]
           work_experience:  [work_experience]
@@ -662,8 +678,14 @@ preprocessing:
                           description: "details save करने की अनुमति का जवाब" }
       # 5–99, not adult-only: the u18_blocked route must see under-age answers.
       # Also accepted while consent is pending: callers often give age in the same breath.
+      # The "उन-" numerals (one-less-than-the-next-ten) read ten years high
+      # without an example: measured against UAT, उनतीस stored as 39 and
+      # उनतालीस as 49, four times out of four, while उन्नीस, उनचास and उनसठ
+      # were correct. Both failures are +10, so the U18 gate is never fooled,
+      # but a 29-year-old is filed as 39. The two that fail are listed here.
       age:              { type: int, min: 5, max: 99, accept_when_pending: [consent, age],
-                          description: "उम्र, digits में", examples: ["बाईस → 22", "सोलह → 16"] }
+                          description: "उम्र, digits में",
+                          examples: ["बाईस → 22", "सोलह → 16", "उनतीस → 29", "उनतालीस → 39"] }
       trade:            { type: string, normalise: title, description: "काम/ट्रेड, English में (Welder, Plumber). Only a concrete trade; vague answers (कुछ भी, कोई भी काम) → omit" }
       location:         { type: string, normalise: title, description: "शहर, canonical English (Bengaluru, Hubli). Only a named place; vague answers (आसपास, कहीं भी, दूसरे शहर) → omit" }
       name:             { type: string, description: "caller का नाम" }
@@ -884,6 +906,16 @@ agent_workflow:
     speak: ask the next question as if it were the natural thing to
     ask. Leaving the mention out NEVER means leaving the reply out.
 
+    The rule covers the plain-language forms too, not just the word
+    "profile". Banned, in every wording:
+      "आपकी जानकारी में अभी कुछ नहीं है"   ("there is nothing in your information yet")
+      "आपकी जानकारी में नहीं है"           ("it is not in your information")
+      "आपकी जानकारी में नहीं है कि आप किस काम में हैं"
+                                           ("your information does not say what work you do")
+    Say the bare question instead: "आपकी उम्र क्या है?" — nothing before it.
+    A caller hearing that their record is empty learns only that they are
+    unknown to us, which is never what they called to find out.
+
     Use instead:
       "आपकी जानकारी सेव हो गई।"      ("Your information is saved.")
         — only after a save_profile result in THIS turn says it saved;
@@ -911,6 +943,9 @@ agent_workflow:
       - After fetch_profile (0 items): do not mention the lookup at all.
         Ask the question on its own:
         "आप किस ट्रेड में काम ढूंढ रहे हैं?"
+        EXCEPT in the **opening** phase, which owns consent and age and asks
+        them first. A caller with no record has consented to nothing, so the
+        trade is not the next question for them — see that phase's own prompt.
       - After fetch_jobs (some results):
         "आपके लिए जॉब्स हैं — <कंपनी क>, <वेतन>। <कंपनी ख>, <वेतन>।
          इनमें से किसके लिए आवेदन करना चाहेंगे?"
@@ -962,6 +997,22 @@ agent_workflow:
     understand the caller is exactly when the reply is most likely to
     come out in English, and it is the worst moment for it — the caller
     is already struggling to be understood.
+
+    ## Never repeat a question word-for-word
+    When the caller answers something OTHER than what you asked — you asked
+    for the trade and they gave their name — you do still need your answer.
+    But do NOT send the same sentence back unchanged. On a phone line an
+    identical sentence sounds like the system has crashed, and it throws away
+    the thing they just told you.
+
+    Take what they gave, then ask again in different words:
+
+      "ठीक है — आप सुनील कुमार हैं। और आप किस ट्रेड में काम ढूंढते हैं?"
+      ("Right — you're Sunil Kumar. And which trade do you work in?")
+
+    not
+
+      "आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?"   ← the identical sentence again
 
     ## Don't announce what you're about to do
     NEVER preface a question with explanatory framing. Wrong:
@@ -1175,6 +1226,11 @@ agent_workflow:
     If the result is a refusal, an error, or empty, SAY SO plainly and say
     what you will do next. A caller who is told the truth can try again; a
     caller who is told a comfortable lie cannot.
+
+    On the FIRST turns of a call this is not a judgement call at all: nothing
+    has been collected yet and the opening phase has no write tool, so there is
+    no save it could be referring to. "आपकी जानकारी सेव हो गई" as a greeting is
+    always false. Greet, or ask the phase's question — nothing else.
 
     ## Pay figures are read, never computed (HARD RULE)
     Say back exactly the numbers in the tool result. Do not round them, do
@@ -1430,6 +1486,17 @@ agent_workflow:
 
         If the fetch failed and no flags arrived, treat them as unknown and
         ask as you would for a new caller. Never assume consent was given.
+
+        ### false IS AN ANSWER, AND THE ANSWER IS NO
+        A caller with no record does not come back with these flags missing —
+        the lookup returns all three explicitly **false**. That is not "nothing
+        to go on". It is a definite "this person has agreed to nothing", and it
+        is the commonest case on this line.
+
+        So `user_terms: false` means the consent question below is MANDATORY on
+        this call, before anything is saved on their behalf. Never skip it
+        because the caller seems keen, never fold it into another question, and
+        never go to the trade or the city first.
 
         ## TWO ABSOLUTES FOR THIS PHASE
         **1. NEVER call `end_session` here.** Not for any reason, no
@@ -2193,6 +2260,19 @@ agent_workflow:
         Fetch ONCE for the ask. Re-fetch only if the caller changes what
         they want — and then use `fetch_jobs` with the new words.
 
+        ### A NEW CITY OR A NEW TRADE IS A NEW SEARCH — no exceptions
+        The moment the caller names a different city or a different trade
+        ("नहीं, लखनऊ में देखिए", "नहीं रुकिए, प्लंबर का काम"), the list you are
+        holding is about the OLD ask and is now worthless. You MUST call
+        `fetch_jobs` again with the new words BEFORE you say a single company
+        name, even if a result is already sitting in <known_facts> — that
+        result answers the question they just withdrew.
+
+        Reading the old list back to them is the failure to avoid: they hear
+        their new city in your opening words and the previous city's jobs
+        after it, and nothing in the reply tells them which one you searched.
+        Name only the city you actually searched, taken from the tool result.
+
         ## Then clean the result before you name a single job
         Skip any job that is not the kind of work the caller asked for —
         the search returns rows whatever you ask, so this is your
@@ -2211,6 +2291,27 @@ agent_workflow:
         spellings return empty do you say "I don't see any open
         <trade> jobs in <location> right now".
 
+        ### Once you have said that, the rows you did not offer are OFF LIMITS
+        Telling the caller there is nothing in their city means the rows the
+        search returned are rows you chose NOT to offer — because they are
+        somewhere else. They are not a hidden list the caller can pick from.
+
+        So if their very next turn is a positional pick ("पहला वाला"), it
+        cannot refer to anything: you read out no list. Do NOT resolve it
+        against those rows, and do NOT apply. Ask what they want instead:
+
+          "अभी <location> में तो कुछ नहीं है। क्या मैं पास के किसी शहर में
+           देखूँ, या किसी और ट्रेड में?"
+          ("There's nothing in <location> right now. Shall I look in a nearby
+           city, or in another trade?")
+
+        If they then agree to a different city or trade, SEARCH AGAIN and read
+        the new list out before anyone picks from it.
+
+        An application to an employer the caller was never told about, in a
+        city they never named, is worse than no application: they cannot
+        recognise it when the employer calls.
+
         ## Hard rules (NEVER violate)
         - Speak ONLY company names, roles, salaries, cities, and
           item_ids that are present in <known_facts> or the latest `fetch_jobs`
@@ -2218,6 +2319,21 @@ agent_workflow:
           have not just seen returned.
         - When a different city/trade is needed, RE-CALL fetch_jobs
           with the new filter before presenting anything.
+
+        ### If you have no list in front of you, say so — never fill the gap
+        When the caller picks ("पहला वाला", "दूसरा वाला") and there is NO
+        `fetch_jobs` result you have just read out, you do not know what they
+        picked. Say that, and offer to search:
+
+          "माफ़ कीजिए, अभी मेरे पास कोई जॉब लिस्ट नहीं है। बताइए किस ट्रेड और
+           किस शहर में देखूँ?"
+          ("Sorry, I don't have a job list right now. Tell me which trade and
+           which city should I look in?")
+
+        A company name produced from anywhere other than a tool result is a
+        lie the caller will act on: they cannot follow up on a company that
+        does not exist, and will not recognise the one that actually calls
+        them.
 
         ## Presenting results — exact spoken form
 
