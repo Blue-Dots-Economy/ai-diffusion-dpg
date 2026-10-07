@@ -5797,6 +5797,26 @@ class AgentCore(AgentCoreBase):
                             )
                             break
 
+                        # GH-488, nested rounds: same as the first tool call —
+                        # another round is definitely coming, so prose this one
+                        # produced alongside its tool call would be said twice.
+                        # Placed AFTER the max-rounds break, where no further
+                        # round runs and this text is the only reply there is.
+                        _dropped_n = _trust_batcher.discard_pending()
+                        if _dropped_n or token_buffer.strip():
+                            logger.info(
+                                "orchestrator.stream_tool_preamble_discarded",
+                                extra={
+                                    "operation": "orchestrator.stream_turn",
+                                    "status": "success",
+                                    "session_id": session_id,
+                                    "tool_round": _tool_round,
+                                    "sentences_discarded": _dropped_n,
+                                    "partial_chars": len(token_buffer.strip()),
+                                },
+                            )
+                        token_buffer = ""
+
                         _nested_tool_calls = [
                             ToolCall(
                                 tool_name=tu.tool_name,

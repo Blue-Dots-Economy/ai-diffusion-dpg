@@ -411,6 +411,44 @@ class TestStreamTurnToolUse:
         assert "सेव नहीं की जाएगी" not in spoken
 
     @pytest.mark.asyncio
+    async def test_prose_from_a_nested_tool_round_is_not_spoken_twice(self):
+        """GH-488: the same discard applies to rounds 2..N of a tool chain."""
+        agent = _make_agent_core()
+        calls = {"n": 0}
+
+        async def mock_stream(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                yield "first draft. "
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="search", tool_use_id="tu_1", input={})
+                ])
+            if calls["n"] == 2:
+                yield "second draft. "
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="search", tool_use_id="tu_2", input={})
+                ])
+            yield "the real answer. "
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute.return_value = ToolResult(
+            tool_use_id="tu_1", tool_name="search",
+            result={"answer": "42"}, success=True, result_text="42"
+        )
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "english")
+        agent._understander = fake_understander(NLUResult(
+            intent="search", entities={}, confidence=0.9
+        ))
+
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+
+        assert "the real answer" in spoken
+        assert "first draft" not in spoken
+        assert "second draft" not in spoken
+
+    @pytest.mark.asyncio
     async def test_tool_start_names_the_tools_being_run(self):
         """Channels turn tool_start into caller-facing status ("looking up
         jobs"), so the signal must say which tool — not just that one runs."""
