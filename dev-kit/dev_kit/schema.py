@@ -601,6 +601,15 @@ class SubAgentSchema(BaseModel):
         default_factory=list,
         description="Session field names fixed_opening substitutes.",
     )
+    fixed_opening_prefix: str = Field(
+        default="",
+        description="Optional fragment prepended to fixed_opening, spoken only when "
+                    "every fixed_opening_prefix_requires field has a value.",
+    )
+    fixed_opening_prefix_requires: list[str] = Field(
+        default_factory=list,
+        description="Session field names fixed_opening_prefix substitutes.",
+    )
     special_handler: Literal["hitl", "whatsapp_handoff"] | None = Field(
         default=None,
         description="Optional framework-level handler. "

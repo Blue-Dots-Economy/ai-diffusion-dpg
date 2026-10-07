@@ -839,6 +839,8 @@ class SubAgent(BaseModel):
     # every fixed_opening_requires field is in session and the turn had no entities.
     fixed_opening: str = ""
     fixed_opening_requires: list[str] = Field(default_factory=list)
+    fixed_opening_prefix: str = ""
+    fixed_opening_prefix_requires: list[str] = Field(default_factory=list)
     predispatch: list[PredispatchRule] = Field(default_factory=list)
     # opening_phrase non-empty enforced by Field(..., min_length=1) above —
     # runtime requires it for ALL subagents (adopted-state callbacks).

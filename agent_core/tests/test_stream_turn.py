@@ -668,6 +668,42 @@ class TestFixedOpening:
         )
 
     @pytest.mark.asyncio
+    async def test_the_optional_prefix_is_spoken_when_its_field_is_present(self):
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad",
+                             "stored_name": "Ravi"})
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening_prefix = "Hello {stored_name}. "
+            sa.fixed_opening_prefix_requires = ["stored_name"]
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert spoken.startswith("Hello Ravi.")
+        assert "Welder in Ghaziabad" in spoken
+
+    @pytest.mark.asyncio
+    async def test_the_prefix_leaves_no_trace_when_its_field_is_missing(self):
+        """The rest of the line must be unchanged, not left with a gap."""
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad"})
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening_prefix = "Hello {stored_name}. "
+            sa.fixed_opening_prefix_requires = ["stored_name"]
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert spoken.startswith("I found your details")
+        assert "Hello" not in spoken
+
+    @pytest.mark.asyncio
     async def test_the_callers_own_words_win(self):
         """If they named a trade themselves, the model handles the turn."""
         agent = self._agent(

@@ -2216,6 +2216,12 @@ agent_workflow:
       # The gate reads this list, not the template's placeholders, so the two
       # are allowed to differ on purpose.
       fixed_opening_requires: [stored_trade, stored_location]
+      # Greet a caller we have met before by name. Separate from the line
+      # above because it must disappear cleanly when there is no name on
+      # file — a caller we cannot name should hear the sentence unchanged,
+      # not a gap where their name would be.
+      fixed_opening_prefix: "नमस्ते {stored_name} जी। "
+      fixed_opening_prefix_requires: [stored_name]
       opening_phrase: >
         आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?
 
@@ -2259,20 +2265,16 @@ agent_workflow:
           ("I found your details — <trade> in <city>. Shall I search
            with these?")
 
-        ## Use their name when we already have it
+        ## Their name is for greeting, never for asking about
         `stored_name` in <state> is what this caller told us their name was
-        on an earlier call. When it is there, greet them with it — once, at
-        the start, and never again in the same breath as a question:
+        on an earlier call. The fixed opening greets them with it; you do
+        not need to. Measured: told only to "greet them with it", the model
+        asked "आपके नाम विकास है। क्या आप इसी नाम से काम ढूंढ रहे हैं, या
+        नाम बदलना चाहेंगे?" — offering to change a name nobody had queried.
 
-          "नमस्ते <name> जी।"   ("Hello <name>.")
-
-        When it is absent, say nothing in its place and do not ask for it
-        here. A caller who has rung before should not have to introduce
-        themselves again; a caller we have no name for should not be
-        interrogated for one before they have asked for anything.
-
-        Never use `stored_name` as the name on a write. It is what to call
-        them, not a value to send — see the profile rules.
+        Never ask the caller to confirm, repeat or change their name here,
+        and never send `stored_name` as the name on a write. It is what to
+        call them, not a value to collect.
 
         <trade> and <city> are already in <state> collected as
         `stored_trade` and `stored_location`, lifted from the live item by
@@ -2995,17 +2997,22 @@ agent_workflow:
         # The services twin of the rule below, and the one that actually
         # fires for them: this phase is left the moment a profile exists,
         # and a caller who came here from service_match is owed the enquiry
-        # confirmation, not the application one. More specific, so first;
-        # `selected_service_item_id` defaults to "" in the session schema,
-        # so for a job caller it cannot match.
+        # confirmation, not the application one. More specific, so first.
+        #
+        # Keyed on having VISITED service_match, not on
+        # `selected_service_item_id != ""`. An absent key reads as None,
+        # which is also not "", so that predicate sent JOB callers here
+        # whenever the key had not been seeded — caught by the end-to-end
+        # journey test. An entry count is always a number and reads 0 for a
+        # caller who never went near the services path.
         - intent: "*"
           conditions:
             - field: profile_item_id
               operator: not_eq
               value: ""
-            - field: selected_service_item_id
-              operator: not_eq
-              value: ""
+            - field: subagent_entry_count.service_match
+              operator: gt
+              value: 0
           next_subagent_id: connect_confirm
         - intent: "*"
           conditions:
@@ -3038,9 +3045,9 @@ agent_workflow:
             - field: subagent_entry_count.profile_setup
               operator: gt
               value: 1
-            - field: selected_service_item_id
-              operator: not_eq
-              value: ""
+            - field: subagent_entry_count.service_match
+              operator: gt
+              value: 0
           next_subagent_id: connect_confirm
         - intent: "*"
           conditions:

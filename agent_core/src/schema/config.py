@@ -857,6 +857,12 @@ class SubAgent(BaseModel):
     # handles that turn as before.
     fixed_opening: str = ""
     fixed_opening_requires: list[str] = Field(default_factory=list)
+    # Optional fragment prepended to `fixed_opening`, spoken only when every
+    # `fixed_opening_prefix_requires` field has a value. A placeholder cannot
+    # simply be made optional inside the template: an empty slot leaves its
+    # punctuation behind, and a missing key drops the whole line.
+    fixed_opening_prefix: str = ""
+    fixed_opening_prefix_requires: list[str] = Field(default_factory=list)
     routing: list[RoutingRule] = Field(default_factory=list)
     pending: list[PendingQuestionConfig] = Field(default_factory=list)
     predispatch: list[PredispatchRule] = Field(default_factory=list)

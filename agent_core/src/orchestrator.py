@@ -5161,10 +5161,34 @@ class AgentCore(AgentCoreBase):
                     k: str(bundle.session.get(k) or "").strip() for k in _requires
                 }
                 _have_all = bool(_requires) and all(_vals.values())
+                # An OPTIONAL prefix, spoken only when every field it names has
+                # a value. A placeholder outside ``fixed_opening_requires``
+                # cannot go in the template itself — ``format`` raises KeyError
+                # and the whole fixed line is dropped — and adding it to the
+                # required list would withhold the line from everyone the value
+                # is missing for. A separate fragment keeps the sentence intact
+                # either way, which a template with an empty slot cannot do:
+                # it leaves the punctuation behind.
+                _pfx_tmpl = (getattr(_sa, "fixed_opening_prefix", "") or "")
+                _pfx_req = list(getattr(_sa, "fixed_opening_prefix_requires", []) or [])
+                _pfx_vals = {
+                    k: str(bundle.session.get(k) or "").strip() for k in _pfx_req
+                }
+                _prefix = ""
+                if _pfx_tmpl and _pfx_req and all(_pfx_vals.values()):
+                    try:
+                        _prefix = _pfx_tmpl.format(**_pfx_vals)
+                    except (KeyError, IndexError):
+                        logger.warning(
+                            "orchestrator.fixed_opening_prefix_placeholder_missing",
+                            extra={"operation": "orchestrator.stream_turn",
+                                   "status": "skipped",
+                                   "subagent_id": next_subagent_id},
+                        )
                 _caller_said_something = bool(nlu_result.entities or {})
                 if _first_entry and _have_all and not _caller_said_something:
                     try:
-                        _line = _tmpl.format(**_vals).strip()
+                        _line = (_prefix + _tmpl.format(**_vals)).strip()
                     except (KeyError, IndexError):
                         logger.warning(
                             "orchestrator.fixed_opening_placeholder_missing",
