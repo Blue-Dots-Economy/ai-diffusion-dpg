@@ -51,6 +51,7 @@ services:
     pull_policy: missing
     container_name: action_gateway
     environment:
+      - OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health   # healthchecks and probes would otherwise fill Jaeger
       - CONFIG_FOLDER=/app/config
       # Connector secrets and the Signals cluster. Empty values are fine for a domain that doesn't use them.
       - BLUE_DOTS_API_KEY=${BLUE_DOTS_API_KEY:-}
@@ -92,6 +93,7 @@ services:
     pull_policy: missing
     container_name: agent_core
     environment:
+      - OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health   # healthchecks and probes would otherwise fill Jaeger
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
       - OPENAI_API_KEY                     # required when agent.provider=openai or any helper provider=openai
       - OLLAMA_ENDPOINT                    # optional, for ollama provider
@@ -191,6 +193,7 @@ services:
     pull_policy: missing
     container_name: knowledge_engine
     environment:
+      - OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health   # healthchecks and probes would otherwise fill Jaeger
       - CONFIG_FOLDER=/app/config
       # Upload chain auth — reach-layer calls KE with this key; KE calls back dev-kit with KE_TO_DEVKIT_API_KEY.
       - REACH_TO_KE_API_KEY=${REACH_TO_KE_API_KEY:-}
@@ -245,6 +248,7 @@ services:
     pull_policy: missing
     container_name: memory_layer
     environment:
+      - OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health   # healthchecks and probes would otherwise fill Jaeger
       - CONFIG_FOLDER=/app/config
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - MEMGRAPH_URI=bolt://memgraph:7687
@@ -282,6 +286,7 @@ services:
     pull_policy: missing
     container_name: observability_layer
     environment:
+      - OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health   # healthchecks and probes would otherwise fill Jaeger
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
@@ -315,6 +320,7 @@ services:
     container_name: reach_layer_web
     profiles: [web]   # optional channel; start with --profile web
     environment:
+      - OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health   # healthchecks and probes would otherwise fill Jaeger
       - CONFIG_FOLDER=/app/config
       # routing_only = health + ingest proxy only (no SPA, no auth, no chat).
       # full = complete web channel. Injected automatically by the deploy wizard.
@@ -389,6 +395,7 @@ services:
     container_name: reach_layer_voice
     profiles: [voice]   # optional channel; start with --profile voice
     environment:
+      - OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health   # healthchecks and probes would otherwise fill Jaeger
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
       - DOMAIN_CONFIG_PATH=/app/config/domain.yaml
       - NLTK_DATA=/tmp/nltk_data
@@ -520,6 +527,7 @@ services:
     pull_policy: missing
     container_name: trust_layer
     environment:
+      - OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health   # healthchecks and probes would otherwise fill Jaeger
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
@@ -583,6 +591,10 @@ services:
   jaeger:
     image: jaegertracing/all-in-one:1.55
     container_name: jaeger
+    environment:
+      # In-memory storage never evicts by default, so it grows until OOM-killed.
+      # Oldest traces are dropped beyond this; sized for the 125M limit below.
+      - MEMORY_MAX_TRACES=1000
     ports:
       - "16686:16686"   # Jaeger UI
       - "14250:14250"   # gRPC from Collector
@@ -795,6 +807,10 @@ services:
       - --housekeeping_interval=30s
       - --store_container_labels=false
       - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
+      # Only the groups the dashboards and alerts read. The default `disk` group
+      # walks /var/lib/docker for every container on the host, and the kernel
+      # cache that builds up is charged to cAdvisor (~150 MiB vs ~20 MiB).
+      - --enable_metrics=cpu,memory,network,diskIO,oom_event
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:ro

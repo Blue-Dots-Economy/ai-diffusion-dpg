@@ -76,6 +76,26 @@ def test_create_app_none_obs_config_raises():
         create_app(_make_layer(), None)
 
 
+def test_fastapi_instrumented_on_startup(observability, obs_config):
+    """FastAPIInstrumentor.instrument_app must be called during create_app."""
+    with patch("opentelemetry.instrumentation.fastapi.FastAPIInstrumentor.instrument_app") as mock_instrument:
+        app = create_app(observability, obs_config)
+    mock_instrument.assert_called_once_with(app)
+
+
+def test_instrumentation_failure_logs_warning_and_still_starts(observability, obs_config, caplog):
+    """A failed instrument_app logs a warning instead of being swallowed, and the app still serves."""
+    with patch(
+        "opentelemetry.instrumentation.fastapi.FastAPIInstrumentor.instrument_app",
+        side_effect=RuntimeError("boom"),
+    ), caplog.at_level("WARNING", logger="server"):
+        app = create_app(observability, obs_config)
+    record = next(r for r in caplog.records if r.getMessage() == "observability_server.instrumentation_skipped")
+    assert record.status == "skipped"
+    assert record.error == "RuntimeError: boom"
+    assert TestClient(app).get("/health").status_code == 200
+
+
 # ---------------------------------------------------------------------------
 # GET /health
 # ---------------------------------------------------------------------------
