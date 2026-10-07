@@ -221,6 +221,18 @@ def _build_app():
     if tool_call_caps:
         logger.info("startup.tool_call_caps %s", tool_call_caps)
 
+    # connectors.<category>[].invocation_rules.requires_pending -> {tool: id}
+    requires_pending: dict[str, str] = {}
+    for _conns in (config.get("connectors") or {}).values():
+        for _conn in _conns or []:
+            if not isinstance(_conn, dict):
+                continue
+            _rp = (_conn.get("invocation_rules") or {}).get("requires_pending")
+            if isinstance(_rp, str) and _rp:
+                requires_pending[str(_conn.get("name"))] = _rp
+    if requires_pending:
+        logger.info("startup.requires_pending %s", requires_pending)
+
     manager = ManagerAgent(
         chat_provider=llm,
         tool_registry=tool_registry,
@@ -231,6 +243,7 @@ def _build_app():
         grounded_params=grounded_params,
         session_only_params=session_only_params,
         tool_call_caps=tool_call_caps,
+        requires_pending=requires_pending,
         identity=config.get("identity"),
         zero_seed_fields=zero_seed_fields(
             ((config.get("preprocessing") or {}).get("nlu_processor") or {}).get("slots")

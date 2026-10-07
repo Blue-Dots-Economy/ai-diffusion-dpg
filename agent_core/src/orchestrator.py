@@ -688,7 +688,8 @@ class AgentCore(AgentCoreBase):
                 "operation": "orchestrator.session_only", "status": "success",
                 "tool": tc.tool_name, "dropped": sorted(dropped)})
 
-    def _predispatch_guard(self, tc, bundle, tool_cache, counts: dict, consent_ok: bool | None):
+    def _predispatch_guard(self, tc, bundle, tool_cache, counts: dict, consent_ok: bool | None,
+                           pending_id: str | None = None):
         """The shared guard (consent, cap, grounding, cache) for a pre-dispatch call.
 
         Args:
@@ -697,6 +698,8 @@ class AgentCore(AgentCoreBase):
             tool_cache: This turn's TurnToolCache.
             counts: The turn's per-tool live-call counts (shared with model calls).
             consent_ok: The path's consent decision (None = not required).
+            pending_id: The question open this turn, for tools that declare
+                ``requires_pending``.
 
         Returns:
             GuardVerdict.
@@ -710,7 +713,14 @@ class AgentCore(AgentCoreBase):
             used=counts.get(tc.tool_name, 0), grounded_spec=spec, messages=[],
             stored_results=tool_cache.stored_results_by_tool(),
             session_grounded=self._session_grounded_values(bundle, spec),
-            consent_ok=consent_ok, cache_lookup=tool_cache.lookup)
+            consent_ok=consent_ok, cache_lookup=tool_cache.lookup,
+            requires_pending=self._requires_pending_for(tc.tool_name),
+            pending_id=pending_id)
+
+    def _requires_pending_for(self, tool_name: str) -> str | None:
+        """The pending question this tool declares it may only answer, if any."""
+        spec = getattr(self._manager_agent, "_requires_pending", None)
+        return (spec if isinstance(spec, dict) else {}).get(tool_name)
 
     @staticmethod
     def _predispatch_error(operation: str, session_id: str, e: Exception) -> PredispatchResult:
@@ -749,7 +759,8 @@ class AgentCore(AgentCoreBase):
         return lambda r: bump() if getattr(r, "success", False) else None
 
     async def _predispatch_async(self, bundle, subagent_id: str, intent: str, tool_cache,
-                                 session_id: str, user_id: str, counts: dict) -> PredispatchResult:
+                                 session_id: str, user_id: str, counts: dict,
+                                 pending_id: str | None = None) -> PredispatchResult:
         """Stream path: select, guard and execute the turn's pre-dispatch under its budget.
 
         The live execute mirrors the stream tool loop (gateway, shape, map
@@ -775,7 +786,8 @@ class AgentCore(AgentCoreBase):
 
             async def _guard(tc):
                 return self._predispatch_guard(tc, bundle, tool_cache, counts,
-                                               await self._stream_consent_ok(session_id, tc))
+                                               await self._stream_consent_ok(session_id, tc),
+                                               pending_id=pending_id)
 
             async def _execute(tc):
                 on_result = self._count_live_call(tc, counts)
@@ -796,7 +808,8 @@ class AgentCore(AgentCoreBase):
             return self._predispatch_error("orchestrator.stream_turn", session_id, e)
 
     def _predispatch_sync(self, bundle, subagent_id: str, intent: str, tool_cache,
-                          session_id: str, user_id: str, counts: dict) -> PredispatchResult:
+                          session_id: str, user_id: str, counts: dict,
+                          pending_id: str | None = None) -> PredispatchResult:
         """Sync path twin of :meth:`_predispatch_async`; budget is the gateway's own timeout.
 
         Consent is checked through ``trust.check_consent`` so a pre-dispatched
@@ -819,7 +832,8 @@ class AgentCore(AgentCoreBase):
                     # No trust client refuses, as _stream_consent_ok does.
                     consent = bool(self._trust is not None
                                    and self._trust.check_consent(session_id, tc.tool_name))
-                return self._predispatch_guard(tc, bundle, tool_cache, counts, consent)
+                return self._predispatch_guard(tc, bundle, tool_cache, counts, consent,
+                                               pending_id=pending_id)
 
             def _execute(tc):
                 on_result = self._count_live_call(tc, counts)
@@ -1761,7 +1775,8 @@ class AgentCore(AgentCoreBase):
         _turn_tool_counts: dict[str, int] = {}
         _offered = self._offered_tools(next_subagent_id)
         _pd = self._predispatch_sync(bundle, next_subagent_id, nlu_result.intent, tool_cache,
-                                     session_id, user_id, _turn_tool_counts)
+                                     session_id, user_id, _turn_tool_counts,
+                                     pending_id=getattr(understanding, "pending_id", None))
         self._record_predispatch(_pd, "orchestrator.process_turn", session_id)
         # Recorded now, before any early exit: what ran stays recorded.
         _pd_results, _pd_exchanges, _pd_calls = self._predispatch_ledger(_pd, turn_id)
@@ -1953,6 +1968,7 @@ class AgentCore(AgentCoreBase):
                 # the model to reproduce it.
                 session_values=self._tool_session_values(bundle),
                 turn_tool_counts=_turn_tool_counts,
+                pending_id=getattr(understanding, "pending_id", None),
                 session_grounded=self._session_grounded_values(
                     bundle,
                     {
@@ -5228,7 +5244,8 @@ class AgentCore(AgentCoreBase):
             _offered = self._offered_tools(next_subagent_id)
             _pd = await self._predispatch_async(
                 bundle, next_subagent_id, nlu_result.intent, tool_cache,
-                session_id, user_id, _turn_tool_counts)
+                session_id, user_id, _turn_tool_counts,
+                pending_id=getattr(understanding, "pending_id", None))
             self._record_predispatch(_pd, "orchestrator.stream_turn", session_id)
             # Recorded now, before any early exit. An abort or error from here
             # on persists record.captured_exchanges (interrupted-turn persist).
@@ -5537,6 +5554,8 @@ class AgentCore(AgentCoreBase):
                                 session_grounded=self._session_grounded_values(bundle, _spec),
                                 consent_ok=None,
                                 cache_lookup=tool_cache.lookup,
+                                requires_pending=self._requires_pending_for(tc.tool_name),
+                                pending_id=getattr(understanding, "pending_id", None),
                             )
                             if _verdict.kind != "go":
                                 tool_result = _verdict.result
@@ -5897,6 +5916,10 @@ class AgentCore(AgentCoreBase):
                                             bundle, _spec2),
                                         consent_ok=None,
                                         cache_lookup=tool_cache.lookup,
+                                        requires_pending=self._requires_pending_for(
+                                            tc.tool_name),
+                                        pending_id=getattr(
+                                            understanding, "pending_id", None),
                                     )
                                     if _verdict2.kind != "go":
                                         tool_result = _verdict2.result

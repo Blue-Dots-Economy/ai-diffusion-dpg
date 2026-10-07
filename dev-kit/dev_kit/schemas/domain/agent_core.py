@@ -565,6 +565,8 @@ class InvocationRules(BaseModel):
     must_not_substitute: str = ""
     max_calls_per_turn: Optional[int] = None
     grounded_params: Union[List[str], Dict[str, List[str]]] = Field(default_factory=list)
+    requires_pending: Optional[str] = None
+    """Pending question that must be open for this tool to run. Mirrors the runtime schema."""
     session_only_params: Dict[str, List[str]] = Field(default_factory=dict)
     """Params the model may not supply: param -> session keys. Mirrors the runtime schema."""
     on_empty: str = ""

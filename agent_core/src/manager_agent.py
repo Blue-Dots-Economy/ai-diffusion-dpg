@@ -280,6 +280,7 @@ class ManagerAgent:
         grounded_params: dict[str, list[str]] | None = None,
         session_only_params: dict[str, dict[str, list[str]]] | None = None,
         tool_call_caps: dict[str, int] | None = None,
+        requires_pending: dict[str, str] | None = None,
         zero_seed_fields: frozenset[str] = frozenset(),
         identity: dict | None = None,
     ) -> None:
@@ -315,6 +316,10 @@ class ManagerAgent:
         # against a model that acts on every row of a list it was shown.
         self._tool_call_caps: dict[str, int] = {
             str(k): int(v) for k, v in (tool_call_caps or {}).items()
+        }
+        # tool name -> the pending question that must be open for it to run.
+        self._requires_pending: dict[str, str] = {
+            str(k): str(v) for k, v in (requires_pending or {}).items()
         }
         self._grounded_params: dict[str, dict[str, list[str]]] = {}
         for _tool, _spec in (grounded_params or {}).items():
@@ -353,6 +358,7 @@ class ManagerAgent:
         result_shaper: Callable[[ToolResult], ToolResult] | None = None,
         turn_tool_counts: dict[str, int] | None = None,
         session_grounded: dict | None = None,
+        pending_id: str | None = None,
     ) -> tuple[str, list[ToolCall], list[ToolResult]]:
         """
         Drive the tool-use loop starting from the initial LLM response.
@@ -531,6 +537,8 @@ class ManagerAgent:
                         session_grounded=session_grounded,
                         consent_ok=None,
                         cache_lookup=tool_cache.lookup if tool_cache else (lambda _tc: None),
+                        requires_pending=self._requires_pending.get(tool_call.tool_name),
+                        pending_id=pending_id,
                         ungrounded_error="UNGROUNDED_PARAMETER",
                     )
                     if verdict.kind != "go":
