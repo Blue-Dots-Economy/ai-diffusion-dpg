@@ -372,6 +372,45 @@ class TestStreamTurnToolUse:
         assert done_events[0].was_tool_used is True
 
     @pytest.mark.asyncio
+    async def test_prose_from_a_tool_call_is_not_spoken_twice(self):
+        """GH-488: call #1's prose is dropped when it also requests a tool.
+
+        A completion may carry a finished answer AND a tool call. Call #2
+        answers again with the tool result in hand, so releasing both makes
+        the caller hear the same thing twice, run together without a space.
+        """
+        agent = _make_agent_core()
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield "आपकी जानकारी सेव नहीं की जाएगी। "
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="search", tool_use_id="tu_1", input={"q": "x"})
+                ])
+            else:
+                yield "आपकी जानकारी सेव नहीं होगी। "
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute.return_value = ToolResult(
+            tool_use_id="tu_1", tool_name="search",
+            result={"items": []}, success=True, result_text="[]"
+        )
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "hindi")
+        agent._understander = fake_understander(NLUResult(
+            intent="search", entities={}, confidence=0.9
+        ))
+
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+
+        assert "सेव नहीं होगी" in spoken
+        assert "सेव नहीं की जाएगी" not in spoken
+
+    @pytest.mark.asyncio
     async def test_tool_start_names_the_tools_being_run(self):
         """Channels turn tool_start into caller-facing status ("looking up
         jobs"), so the signal must say which tool — not just that one runs."""

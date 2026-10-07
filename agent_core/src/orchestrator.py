@@ -5667,6 +5667,41 @@ class AgentCore(AgentCoreBase):
                         "the only tool of the round"
                     )
                 else:
+                    # GH-488: a completion can carry a finished answer AND a
+                    # tool call. Call #2 answers the same question again with
+                    # the tool result in hand, so whatever call #1 said is
+                    # about to be said a second time — the caller hears the
+                    # whole reply twice, run together without even a space.
+                    # Anything still held here has NOT reached them, so drop it
+                    # and let call #2 be the only answer. (The skip branch
+                    # above is the opposite case: no second pass is coming, so
+                    # call #1's closing line is the reply and must survive.)
+                    _dropped = _trust_batcher.discard_pending()
+                    if _dropped or token_buffer.strip():
+                        logger.info(
+                            "orchestrator.stream_tool_preamble_discarded",
+                            extra={
+                                "operation": "orchestrator.stream_turn",
+                                "status": "success",
+                                "session_id": session_id,
+                                "sentences_discarded": _dropped,
+                                "partial_chars": len(token_buffer.strip()),
+                            },
+                        )
+                    token_buffer = ""
+                    if sentence_index:
+                        # Already streamed to the caller — it cannot be unsaid,
+                        # and call #2 may well say it again. Logged so the
+                        # residue is measurable rather than invisible.
+                        logger.warning(
+                            "orchestrator.stream_tool_preamble_delivered",
+                            extra={
+                                "operation": "orchestrator.stream_turn",
+                                "status": "degraded",
+                                "session_id": session_id,
+                                "sentences_delivered": sentence_index,
+                            },
+                        )
                     logger.info(
                         "  [STEP 8] LLM Stream Call #2  →  provider=%s  model=%s"
                         "  message_count=%d",
@@ -6347,6 +6382,22 @@ class _TrustOutputBatcher:
         if not self._buffer:
             return []
         return await self._flush_now()
+
+    def discard_pending(self) -> int:
+        """Drop buffered sentences without releasing or Trust-checking them.
+
+        Used when the text that produced them has been superseded before
+        reaching the caller — a completion that turned out to be a tool call,
+        whose prose the follow-up completion is about to say again.
+
+        Returns:
+            Number of sentences dropped.
+        """
+        dropped = len(self._buffer)
+        self._buffer = []
+        self._batch_start = None
+        self.sentences_added -= dropped
+        return dropped
 
     async def _flush_now(self) -> list[str]:
         """Submit the current buffer to Trust Layer and return release list."""
