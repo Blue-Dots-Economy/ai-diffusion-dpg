@@ -5311,7 +5311,7 @@ class AgentCore(AgentCoreBase):
             _llm_calls = 0
             sentence_index = 0
             token_buffer = ""
-            # GH-488: how much of ``full_response_text`` the model has been
+            # How much of ``full_response_text`` the model has already been
             # shown as its own prior words. Only the delta is replayed, so a
             # multi-round tool chain never stacks the same sentence twice.
             _spoken_sent_to_model = ""
@@ -5671,15 +5671,14 @@ class AgentCore(AgentCoreBase):
                         "the only tool of the round"
                     )
                 else:
-                    # GH-488: a completion can carry a finished answer AND a
-                    # tool call. Call #2 answers the same question again with
-                    # the tool result in hand, so whatever call #1 said is
-                    # about to be said a second time — the caller hears the
-                    # whole reply twice, run together without even a space.
-                    # Anything still held here has NOT reached them, so drop it
-                    # and let call #2 be the only answer. (The skip branch
-                    # above is the opposite case: no second pass is coming, so
-                    # call #1's closing line is the reply and must survive.)
+                    # A completion can carry a finished answer AND a tool
+                    # call. Call #2 answers the same question again with the
+                    # tool result in hand, so anything call #1 said is about to
+                    # be said a second time. What is still held here has not
+                    # reached the caller, so drop it and let call #2 be the
+                    # only answer. The skip branch above is the opposite case:
+                    # no second pass is coming, so call #1's closing line IS
+                    # the reply and must survive.
                     _dropped = _trust_batcher.discard_pending()
                     if _dropped or token_buffer.strip():
                         logger.info(
@@ -5722,13 +5721,13 @@ class AgentCore(AgentCoreBase):
                 while True:
                     if _skip_final_pass:
                         break
-                    # GH-488: the assistant turn being replayed here is rebuilt
-                    # from its tool calls alone, so anything the model SAID in
-                    # the same completion vanishes from its own history — and
-                    # it says it again. Text still buffered was discarded above
-                    # and is correctly absent; text that already reached the
-                    # caller cannot be unsaid, so hand it back as what it is:
-                    # the assistant's own words, already spoken.
+                    # Rebuilt from tool calls alone, this assistant turn would
+                    # drop anything the model SAID in the same completion — and
+                    # with no record of having spoken, it speaks again. Text
+                    # still buffered was discarded above and is correctly
+                    # absent; text that already reached the caller cannot be
+                    # unsaid, so hand it back as what it is: the assistant's
+                    # own words, already spoken.
                     _assistant_blocks: list[Any] = []
                     _spoken_delta = full_response_text[
                         len(_spoken_sent_to_model):
@@ -5816,11 +5815,11 @@ class AgentCore(AgentCoreBase):
                             )
                             break
 
-                        # GH-488, nested rounds: same as the first tool call —
-                        # another round is definitely coming, so prose this one
-                        # produced alongside its tool call would be said twice.
-                        # Placed AFTER the max-rounds break, where no further
-                        # round runs and this text is the only reply there is.
+                        # Same as the first tool call: another round is
+                        # definitely coming, so prose this one produced
+                        # alongside its tool call would be said twice. Placed
+                        # AFTER the max-rounds break, where no further round
+                        # runs and this text is the only reply there is.
                         _dropped_n = _trust_batcher.discard_pending()
                         if _dropped_n or token_buffer.strip():
                             logger.info(

@@ -373,7 +373,7 @@ class TestStreamTurnToolUse:
 
     @pytest.mark.asyncio
     async def test_prose_from_a_tool_call_is_not_spoken_twice(self):
-        """GH-488: call #1's prose is dropped when it also requests a tool.
+        """Call #1's prose is dropped when it also requests a tool.
 
         A completion may carry a finished answer AND a tool call. Call #2
         answers again with the tool result in hand, so releasing both makes
@@ -412,7 +412,7 @@ class TestStreamTurnToolUse:
 
     @pytest.mark.asyncio
     async def test_prose_from_a_nested_tool_round_is_not_spoken_twice(self):
-        """GH-488: the same discard applies to rounds 2..N of a tool chain."""
+        """The same discard applies to rounds 2..N of a tool chain."""
         agent = _make_agent_core()
         calls = {"n": 0}
 
@@ -450,7 +450,7 @@ class TestStreamTurnToolUse:
 
     @pytest.mark.asyncio
     async def test_already_spoken_text_is_replayed_to_the_model(self):
-        """GH-488: text the caller already heard goes back as assistant content.
+        """Text the caller already heard goes back as assistant content.
 
         The discard only covers text still buffered. A sentence that reached
         the caller cannot be unsaid, so the replayed assistant turn must carry
