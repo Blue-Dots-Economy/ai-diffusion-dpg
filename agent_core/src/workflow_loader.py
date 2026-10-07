@@ -140,6 +140,8 @@ class SubAgent:
                           field has a value. For content that is welcome when
                           present and must leave no trace when absent.
         fixed_opening_prefix_requires: Session field names the prefix needs.
+        fixed_opening_prefix_unless: Values that count as absent — a stored
+                          placeholder rather than a real value.
         predispatch:      Raw pre-dispatch rule dicts in config order (Spec E).
     """
 
@@ -159,6 +161,7 @@ class SubAgent:
     fixed_opening_requires: list[str] = field(default_factory=list)
     fixed_opening_prefix: str = ""
     fixed_opening_prefix_requires: list[str] = field(default_factory=list)
+    fixed_opening_prefix_unless: list[str] = field(default_factory=list)
     predispatch: list[dict] = field(default_factory=list)
 
 
@@ -559,6 +562,8 @@ class AgentWorkflowLoader:
             fixed_opening_prefix=str(raw.get("fixed_opening_prefix", "") or ""),
             fixed_opening_prefix_requires=list(
                 raw.get("fixed_opening_prefix_requires", []) or []),
+            fixed_opening_prefix_unless=list(
+                raw.get("fixed_opening_prefix_unless", []) or []),
             predispatch=[dict(r) for r in (raw.get("predispatch") or []) if isinstance(r, dict)],
         )
 

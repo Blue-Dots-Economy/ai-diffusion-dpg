@@ -704,6 +704,44 @@ class TestFixedOpening:
         assert "Hello" not in spoken
 
     @pytest.mark.asyncio
+    async def test_a_placeholder_value_is_treated_as_absent(self):
+        """A stored placeholder must never be spoken as if it were real."""
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad",
+                             "stored_name": "Unknown"})
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening_prefix = "Hello {stored_name}. "
+            sa.fixed_opening_prefix_requires = ["stored_name"]
+            sa.fixed_opening_prefix_unless = ["Unknown", "caller"]
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Unknown" not in spoken
+        assert spoken.startswith("I found your details")
+
+    @pytest.mark.asyncio
+    async def test_the_placeholder_check_ignores_case(self):
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad",
+                             "stored_name": "CALLER"})
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening_prefix = "Hello {stored_name}. "
+            sa.fixed_opening_prefix_requires = ["stored_name"]
+            sa.fixed_opening_prefix_unless = ["caller"]
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "CALLER" not in spoken
+
+    @pytest.mark.asyncio
     async def test_the_callers_own_words_win(self):
         """If they named a trade themselves, the model handles the turn."""
         agent = self._agent(

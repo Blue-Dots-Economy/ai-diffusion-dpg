@@ -610,6 +610,10 @@ class SubAgentSchema(BaseModel):
         default_factory=list,
         description="Session field names fixed_opening_prefix substitutes.",
     )
+    fixed_opening_prefix_unless: list[str] = Field(
+        default_factory=list,
+        description="Values that count as absent, so a stored placeholder is never spoken.",
+    )
     special_handler: Literal["hitl", "whatsapp_handoff"] | None = Field(
         default=None,
         description="Optional framework-level handler. "

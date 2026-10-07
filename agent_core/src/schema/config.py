@@ -863,6 +863,8 @@ class SubAgent(BaseModel):
     # punctuation behind, and a missing key drops the whole line.
     fixed_opening_prefix: str = ""
     fixed_opening_prefix_requires: list[str] = Field(default_factory=list)
+    # Values that count as absent, so a stored placeholder is never spoken.
+    fixed_opening_prefix_unless: list[str] = Field(default_factory=list)
     routing: list[RoutingRule] = Field(default_factory=list)
     pending: list[PendingQuestionConfig] = Field(default_factory=list)
     predispatch: list[PredispatchRule] = Field(default_factory=list)

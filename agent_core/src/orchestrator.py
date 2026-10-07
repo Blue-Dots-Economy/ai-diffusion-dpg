@@ -5171,9 +5171,20 @@ class AgentCore(AgentCoreBase):
                 # it leaves the punctuation behind.
                 _pfx_tmpl = (getattr(_sa, "fixed_opening_prefix", "") or "")
                 _pfx_req = list(getattr(_sa, "fixed_opening_prefix_requires", []) or [])
+                _pfx_skip = {
+                    v.strip().casefold()
+                    for v in (getattr(_sa, "fixed_opening_prefix_unless", []) or [])
+                }
                 _pfx_vals = {
                     k: str(bundle.session.get(k) or "").strip() for k in _pfx_req
                 }
+                # A stored value can be a placeholder rather than a real one.
+                # Treated as present it gets spoken: callers were greeted as
+                # "Unknown" and as "caller", from profiles written before the
+                # fabricated-name fix. The domain lists what is not a real
+                # value; nothing here knows what any of them mean.
+                if any(v.casefold() in _pfx_skip for v in _pfx_vals.values()):
+                    _pfx_vals = {k: "" for k in _pfx_vals}
                 _prefix = ""
                 if _pfx_tmpl and _pfx_req and all(_pfx_vals.values()):
                     try:

@@ -2230,6 +2230,10 @@ agent_workflow:
       # not a gap where their name would be.
       fixed_opening_prefix: "नमस्ते {stored_name} जी। "
       fixed_opening_prefix_requires: [stored_name]
+      # Names written by the agent itself before it was stopped from inventing
+      # them. Greeting someone as "Unknown जी" or "caller जी" is worse than
+      # not greeting them at all, and the rows outlive the fix.
+      fixed_opening_prefix_unless: ["Unknown", "caller", "Caller", "N/A", "NA", "[उपयोगकर्ता का नाम]"]
       opening_phrase: >
         आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?
 
@@ -2427,6 +2431,7 @@ agent_workflow:
         # catch-all: no turn reaches the services path without saying so.
         - intent: services_request
           next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
         - intent: explore_more
           next_subagent_id: job_match
         # BACKSTOP. Four turns is already one more than this phase should
@@ -2702,6 +2707,7 @@ agent_workflow:
         # catch-all: no turn reaches the services path without saying so.
         - intent: services_request
           next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
         - intent: explore_more
           next_subagent_id: job_match
         # A pick goes straight to applying. The deep-dive phase that used to
@@ -2931,21 +2937,22 @@ agent_workflow:
         whether to go ahead. Which question depends on what the caller
         chose, and <state> says which:
 
-          A JOB was chosen (`selected_job_item_id` is set):
+          A JOB was chosen (`services_in_play` is not "true"):
             "आपकी जानकारी सेव हो गई — क्या मैं आवेदन भेज दूँ?"
             ("Your details are saved — shall I send the application?")
             The yes routes to apply_confirm, which calls apply_job.
 
-          A SUPPORT ORGANISATION was chosen
-          (`selected_service_item_id` is set):
+          A SUPPORT ORGANISATION was chosen (`services_in_play` is "true"):
             "आपकी जानकारी सेव हो गई — क्या मैं आपकी बात उन तक पहुँचा दूँ?"
             ("Your details are saved — shall I pass your enquiry on to
             them?")
             The yes routes to connect_confirm, which calls connect_service.
 
-        Never offer an आवेदन to someone who asked for training: there is no
-        job in play and nothing to apply to. Do not say anything else this
-        turn.
+        Read the FLAG, not the ids. A caller who saw jobs and then asked for
+        training has BOTH `selected_job_item_id` and `selected_service_item_id`
+        set, and picking by id asked them about an आवेदन for a training centre.
+        Never offer an आवेदन to someone who asked for help: there is no job in
+        play and nothing to apply to. Do not say anything else this turn.
 
         ## After save_profile FAILURE
         First failure: apologise briefly in Hindi and say you will try
@@ -3026,20 +3033,23 @@ agent_workflow:
         # and a caller who came here from service_match is owed the enquiry
         # confirmation, not the application one. More specific, so first.
         #
-        # Keyed on having VISITED service_match, not on
-        # `selected_service_item_id != ""`. An absent key reads as None,
-        # which is also not "", so that predicate sent JOB callers here
-        # whenever the key had not been seeded — caught by the end-to-end
-        # journey test. An entry count is always a number and reads 0 for a
-        # caller who never went near the services path.
+        # Keyed on `services_in_play`, a flag raised by the rules that route
+        # INTO service_match and lowered by the rules that route back to jobs.
+        # Two predicates were tried and both were one-way:
+        # `selected_service_item_id != ""` matched job callers, because an
+        # absent key reads as None and None is also not ""; an entry count of
+        # service_match never falls again, so a caller who said "नहीं, नौकरी
+        # ही दिखाइए" and then picked a JOB had a service enquiry sent in
+        # their name. `eq "true"` is false when the key is missing, so a
+        # caller who never went near the services path cannot match.
         - intent: "*"
           conditions:
             - field: profile_item_id
               operator: not_eq
               value: ""
-            - field: subagent_entry_count.service_match
-              operator: gt
-              value: 0
+            - field: services_in_play
+              operator: eq
+              value: "true"
           next_subagent_id: connect_confirm
         - intent: "*"
           conditions:
@@ -3072,9 +3082,9 @@ agent_workflow:
             - field: subagent_entry_count.profile_setup
               operator: gt
               value: 1
-            - field: subagent_entry_count.service_match
-              operator: gt
-              value: 0
+            - field: services_in_play
+              operator: eq
+              value: "true"
           next_subagent_id: connect_confirm
         - intent: "*"
           conditions:
@@ -3541,6 +3551,7 @@ agent_workflow:
         # catch-all: no turn reaches the services path without saying so.
         - intent: services_request
           next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
         - intent: explore_more
           next_subagent_id: job_match
         # Re-pick at the confirmation: selected_job_item_id is already
@@ -3674,8 +3685,10 @@ agent_workflow:
         # a destination.
         - intent: explore_more
           next_subagent_id: job_match
+          session_writes: { services_in_play: "false", selected_service_item_id: "" }
         - intent: job_pick
           next_subagent_id: job_match
+          session_writes: { services_in_play: "false", selected_service_item_id: "" }
         # Picked an organisation and already has a profile: straight to the
         # confirmation. Without one, the same detour the job path takes.
         - intent: service_pick
@@ -3734,6 +3747,15 @@ agent_workflow:
         caller who picks the first one to hear more about it has asked for
         nothing to be sent.
 
+        That holds just as firmly AFTER you have asked. Measured: you asked
+        "पहुँचा दूँ?", the caller answered "पहला वाला", and the enquiry went
+        out. Naming one at this step changes WHICH organisation, it does not
+        answer the question — say what that one offers and what it costs,
+        ask again for that one, and send nothing this turn.
+
+        Only these count as the yes: हाँ, जी हाँ, ठीक है, भेज दीजिए,
+        पहुँचा दीजिए — an agreement, not a choice.
+
         ## Where the fields come from
         profile_item_id — the caller's profile item_id, from fetch_profile
         or from save_profile's response. service_item_id — the chosen
@@ -3775,8 +3797,10 @@ agent_workflow:
           next_subagent_id: connect_confirm
         - intent: explore_more
           next_subagent_id: job_match
+          session_writes: { services_in_play: "false", selected_service_item_id: "" }
         - intent: services_request
           next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
         # Once the enquiry is in, the call can close.
         - intent: "*"
           conditions:
