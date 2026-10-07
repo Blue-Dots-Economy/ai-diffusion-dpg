@@ -5311,6 +5311,10 @@ class AgentCore(AgentCoreBase):
             _llm_calls = 0
             sentence_index = 0
             token_buffer = ""
+            # GH-488: how much of ``full_response_text`` the model has been
+            # shown as its own prior words. Only the delta is replayed, so a
+            # multi-round tool chain never stacks the same sentence twice.
+            _spoken_sent_to_model = ""
             primary_model = self._llm.get_active_model()
             primary_provider = self._config.get("agent", {}).get("provider", "anthropic")
 
@@ -5718,16 +5722,31 @@ class AgentCore(AgentCoreBase):
                 while True:
                     if _skip_final_pass:
                         break
+                    # GH-488: the assistant turn being replayed here is rebuilt
+                    # from its tool calls alone, so anything the model SAID in
+                    # the same completion vanishes from its own history — and
+                    # it says it again. Text still buffered was discarded above
+                    # and is correctly absent; text that already reached the
+                    # caller cannot be unsaid, so hand it back as what it is:
+                    # the assistant's own words, already spoken.
+                    _assistant_blocks: list[Any] = []
+                    _spoken_delta = full_response_text[
+                        len(_spoken_sent_to_model):
+                    ].strip()
+                    if _spoken_delta:
+                        _assistant_blocks.append(TextBlock(text=_spoken_delta))
+                        _spoken_sent_to_model = full_response_text
+                    _assistant_blocks.extend(
+                        ToolUseBlock(
+                            tool_use_id=tc.tool_use_id,
+                            tool_name=tc.tool_name,
+                            input=tc.input_params or {},
+                        )
+                        for tc in _current_tool_calls
+                    )
                     messages.append(Message(
                         role="assistant",
-                        content=[
-                            ToolUseBlock(
-                                tool_use_id=tc.tool_use_id,
-                                tool_name=tc.tool_name,
-                                input=tc.input_params or {},
-                            )
-                            for tc in _current_tool_calls
-                        ],
+                        content=_assistant_blocks,
                     ))
                     messages.append(Message(
                         role="user",

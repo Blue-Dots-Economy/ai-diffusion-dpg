@@ -449,6 +449,51 @@ class TestStreamTurnToolUse:
         assert "second draft" not in spoken
 
     @pytest.mark.asyncio
+    async def test_already_spoken_text_is_replayed_to_the_model(self):
+        """GH-488: text the caller already heard goes back as assistant content.
+
+        The discard only covers text still buffered. A sentence that reached
+        the caller cannot be unsaid, so the replayed assistant turn must carry
+        it — otherwise the model has no record of having spoken and repeats it.
+        """
+        agent = _make_agent_core()
+        calls = {"n": 0}
+        seen: dict = {}
+
+        async def mock_stream(request, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Three sentences: enough to cross the batcher's size trigger,
+                # so they are released to the caller before the tool call.
+                yield "One. Two. Three. "
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="search", tool_use_id="tu_1", input={})
+                ])
+            seen["messages"] = list(request.messages)
+            yield "Final answer. "
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute.return_value = ToolResult(
+            tool_use_id="tu_1", tool_name="search",
+            result={"answer": "42"}, success=True, result_text="42"
+        )
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "english")
+        agent._understander = fake_understander(NLUResult(
+            intent="search", entities={}, confidence=0.9
+        ))
+
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = [e.text for e in events if isinstance(e, SentenceEvent)]
+        assert any("One." in t for t in spoken), "precondition: call #1 was heard"
+
+        assistant = [m for m in seen["messages"] if m.role == "assistant"]
+        replayed = " ".join(
+            b.text for m in assistant for b in m.content if b.type == "text"
+        )
+        assert "One." in replayed and "Three." in replayed
+
+    @pytest.mark.asyncio
     async def test_tool_start_names_the_tools_being_run(self):
         """Channels turn tool_start into caller-facing status ("looking up
         jobs"), so the signal must say which tool — not just that one runs."""
