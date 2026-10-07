@@ -779,7 +779,7 @@ preprocessing:
       age:              { type: int, min: 5, max: 99, accept_when_pending: [consent, age],
                           description: "उम्र, digits में",
                           examples: ["बाईस → 22", "सोलह → 16", "उनतीस → 29", "उनतालीस → 39"] }
-      trade:            { type: string, normalise: title, description: "काम/ट्रेड, English में (Welder, Plumber). Only a concrete trade; vague answers (कुछ भी, कोई भी काम) → omit" }
+      trade:            { type: string, normalise: title, description: "काम/ट्रेड, English में (Welder, Plumber). Only a concrete trade; vague answers (कुछ भी, कोई भी काम) → omit. A request for HELP is not a trade — ट्रेनिंग, कोर्स, मदद, सिखाना all → omit, they are the services topic" }
       location:         { type: string, normalise: title, description: "शहर, canonical English (Bengaluru, Hubli). Only a named place; vague answers (आसपास, कहीं भी, दूसरे शहर) → omit" }
       name:             { type: string, description: "caller का नाम" }
       gender:           { type: enum, values: [male, female, other] }
@@ -829,6 +829,10 @@ preprocessing:
       # `services` from `search`.
       - { pending: select_job, caller: "मुझे ट्रेनिंग चाहिए", out: { acts: [request_change], relation: new_topic, topic: services } }
       - { pending: trade, caller: "कोई कोर्स है क्या", out: { acts: [ask], relation: new_topic, topic: services } }
+      # Measured: this wrote trade="Training" onto the caller's profile — a
+      # service request stored as the work they do. No slots here on purpose.
+      - { pending: trade, caller: "मुझे ट्रेनिंग चाहिए", out: { acts: [request_change], relation: new_topic, topic: services } }
+      - { pending: trade, caller: "काम सिखाने वाली जगह बताइए", out: { acts: [request_change], relation: new_topic, topic: services } }
       - { pending: location, caller: "पहले काम सीखना है", out: { acts: [provide_info], relation: new_topic, topic: services } }
       - { pending: select_job, caller: "इंटरव्यू की तैयारी में मदद मिलेगी", out: { acts: [ask], relation: new_topic, topic: services } }
       # The answer to "another city or trade, or help like training?" — one
@@ -2895,9 +2899,24 @@ agent_workflow:
 
         ## After save_profile SUCCESS
         Say exactly ONE sentence in Hindi (no more, no less), asking
-        whether to submit the application — e.g. "आपकी जानकारी सेव हो गई —
-        क्या मैं आवेदन भेज दूँ?" The user's yes routes to apply_confirm,
-        which calls apply_job. Do not say anything else this turn.
+        whether to go ahead. Which question depends on what the caller
+        chose, and <state> says which:
+
+          A JOB was chosen (`selected_job_item_id` is set):
+            "आपकी जानकारी सेव हो गई — क्या मैं आवेदन भेज दूँ?"
+            ("Your details are saved — shall I send the application?")
+            The yes routes to apply_confirm, which calls apply_job.
+
+          A SUPPORT ORGANISATION was chosen
+          (`selected_service_item_id` is set):
+            "आपकी जानकारी सेव हो गई — क्या मैं आपकी बात उन तक पहुँचा दूँ?"
+            ("Your details are saved — shall I pass your enquiry on to
+            them?")
+            The yes routes to connect_confirm, which calls connect_service.
+
+        Never offer an आवेदन to someone who asked for training: there is no
+        job in play and nothing to apply to. Do not say anything else this
+        turn.
 
         ## After save_profile FAILURE
         First failure: apologise briefly in Hindi and say you will try
@@ -2948,15 +2967,6 @@ agent_workflow:
             - field: profile_setup_done
               operator: eq
               value: "true"
-            - field: selected_service_item_id
-              operator: not_eq
-              value: ""
-          next_subagent_id: connect_confirm
-        - intent: "*"
-          conditions:
-            - field: profile_setup_done
-              operator: eq
-              value: "true"
           next_subagent_id: apply_confirm
         # The profile now EXISTS. save_profile's session_mapping writes
         # profile_item_id the moment the upstream returns it, so this is the
@@ -2982,6 +2992,21 @@ agent_workflow:
         # talk. Measured on a live call — it answered "आपका आवेदन भेज दिया
         # गया है" from this phase, which its own prompt forbids, and no
         # application existed.
+        # The services twin of the rule below, and the one that actually
+        # fires for them: this phase is left the moment a profile exists,
+        # and a caller who came here from service_match is owed the enquiry
+        # confirmation, not the application one. More specific, so first;
+        # `selected_service_item_id` defaults to "" in the session schema,
+        # so for a job caller it cannot match.
+        - intent: "*"
+          conditions:
+            - field: profile_item_id
+              operator: not_eq
+              value: ""
+            - field: selected_service_item_id
+              operator: not_eq
+              value: ""
+          next_subagent_id: connect_confirm
         - intent: "*"
           conditions:
             - field: profile_item_id
@@ -3004,6 +3029,19 @@ agent_workflow:
         # before save_profile ran; two is tight enough that save_profile
         # has normally happened, and being early is recoverable (that
         # phase re-asks) where being stuck is not.
+        # A caller who came from the services path leaves to the enquiry
+        # confirmation, not the application one. Same trigger as the rule
+        # below and listed first; `selected_service_item_id` defaults to ""
+        # in the session schema, so for a job caller it cannot match.
+        - intent: "*"
+          conditions:
+            - field: subagent_entry_count.profile_setup
+              operator: gt
+              value: 1
+            - field: selected_service_item_id
+              operator: not_eq
+              value: ""
+          next_subagent_id: connect_confirm
         - intent: "*"
           conditions:
             - field: subagent_entry_count.profile_setup

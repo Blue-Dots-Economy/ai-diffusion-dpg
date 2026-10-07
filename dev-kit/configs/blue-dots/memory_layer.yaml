@@ -63,6 +63,13 @@ state:
       # Application outcome
       last_application_id:     { type: string, default: "" }
       applications_submitted:  { type: int,    default: 0 }
+      # The services twins. Declared with empty defaults for the same reason
+      # the job keys are: routing tests them with `not_eq ""`, and an ABSENT
+      # key reads as None, which is also not "" — so an undeclared key would
+      # make every job caller look like a services caller.
+      selected_service_item_id:  { type: string, default: "" }
+      last_enquiry_id:           { type: string, default: "" }
+      service_enquiries_submitted: { type: int,  default: 0 }
 
   persistent:
     backend: memgraph
