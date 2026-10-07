@@ -5311,6 +5311,8 @@ class AgentCore(AgentCoreBase):
             _llm_calls = 0
             sentence_index = 0
             token_buffer = ""
+            # Portion of ``full_response_text`` already replayed to the model.
+            _spoken_sent_to_model = ""
             primary_model = self._llm.get_active_model()
             primary_provider = self._config.get("agent", {}).get("provider", "anthropic")
 
@@ -5667,6 +5669,33 @@ class AgentCore(AgentCoreBase):
                         "the only tool of the round"
                     )
                 else:
+                    # Call #2 will answer again, so drop call #1's undelivered
+                    # text. Only on this branch: the skip branch above has no
+                    # second pass and keeps that text as the reply.
+                    _dropped = _trust_batcher.discard_pending()
+                    if _dropped or token_buffer.strip():
+                        logger.info(
+                            "orchestrator.stream_tool_preamble_discarded",
+                            extra={
+                                "operation": "orchestrator.stream_turn",
+                                "status": "success",
+                                "session_id": session_id,
+                                "sentences_discarded": _dropped,
+                                "partial_chars": len(token_buffer.strip()),
+                            },
+                        )
+                    token_buffer = ""
+                    if sentence_index:
+                        # Already streamed; cannot be withdrawn.
+                        logger.warning(
+                            "orchestrator.stream_tool_preamble_delivered",
+                            extra={
+                                "operation": "orchestrator.stream_turn",
+                                "status": "degraded",
+                                "session_id": session_id,
+                                "sentences_delivered": sentence_index,
+                            },
+                        )
                     logger.info(
                         "  [STEP 8] LLM Stream Call #2  →  provider=%s  model=%s"
                         "  message_count=%d",
@@ -5683,16 +5712,26 @@ class AgentCore(AgentCoreBase):
                 while True:
                     if _skip_final_pass:
                         break
+                    # Replay delivered text as assistant content so the model
+                    # sees what it has already said and does not repeat it.
+                    _assistant_blocks: list[Any] = []
+                    _spoken_delta = full_response_text[
+                        len(_spoken_sent_to_model):
+                    ].strip()
+                    if _spoken_delta:
+                        _assistant_blocks.append(TextBlock(text=_spoken_delta))
+                        _spoken_sent_to_model = full_response_text
+                    _assistant_blocks.extend(
+                        ToolUseBlock(
+                            tool_use_id=tc.tool_use_id,
+                            tool_name=tc.tool_name,
+                            input=tc.input_params or {},
+                        )
+                        for tc in _current_tool_calls
+                    )
                     messages.append(Message(
                         role="assistant",
-                        content=[
-                            ToolUseBlock(
-                                tool_use_id=tc.tool_use_id,
-                                tool_name=tc.tool_name,
-                                input=tc.input_params or {},
-                            )
-                            for tc in _current_tool_calls
-                        ],
+                        content=_assistant_blocks,
                     ))
                     messages.append(Message(
                         role="user",
@@ -5761,6 +5800,24 @@ class AgentCore(AgentCoreBase):
                                 extra={"session_id": session_id, "rounds": _tool_round},
                             )
                             break
+
+                        # Another round follows, so drop this one's
+                        # undelivered text. After the max-rounds break, where
+                        # that text is the only reply there is.
+                        _dropped_n = _trust_batcher.discard_pending()
+                        if _dropped_n or token_buffer.strip():
+                            logger.info(
+                                "orchestrator.stream_tool_preamble_discarded",
+                                extra={
+                                    "operation": "orchestrator.stream_turn",
+                                    "status": "success",
+                                    "session_id": session_id,
+                                    "tool_round": _tool_round,
+                                    "sentences_discarded": _dropped_n,
+                                    "partial_chars": len(token_buffer.strip()),
+                                },
+                            )
+                        token_buffer = ""
 
                         _nested_tool_calls = [
                             ToolCall(
@@ -6347,6 +6404,20 @@ class _TrustOutputBatcher:
         if not self._buffer:
             return []
         return await self._flush_now()
+
+    def discard_pending(self) -> int:
+        """Drop buffered sentences without releasing or Trust-checking them.
+
+        For text superseded before it reached the caller.
+
+        Returns:
+            Number of sentences dropped.
+        """
+        dropped = len(self._buffer)
+        self._buffer = []
+        self._batch_start = None
+        self.sentences_added -= dropped
+        return dropped
 
     async def _flush_now(self) -> list[str]:
         """Submit the current buffer to Trust Layer and return release list."""

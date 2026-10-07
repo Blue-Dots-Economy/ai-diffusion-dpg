@@ -372,6 +372,119 @@ class TestStreamTurnToolUse:
         assert done_events[0].was_tool_used is True
 
     @pytest.mark.asyncio
+    async def test_prose_from_a_tool_call_is_not_spoken_twice(self):
+        """Call #1's undelivered prose is dropped when it also requests a tool."""
+        agent = _make_agent_core()
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield "आपकी जानकारी सेव नहीं की जाएगी। "
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="search", tool_use_id="tu_1", input={"q": "x"})
+                ])
+            else:
+                yield "आपकी जानकारी सेव नहीं होगी। "
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute.return_value = ToolResult(
+            tool_use_id="tu_1", tool_name="search",
+            result={"items": []}, success=True, result_text="[]"
+        )
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "hindi")
+        agent._understander = fake_understander(NLUResult(
+            intent="search", entities={}, confidence=0.9
+        ))
+
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+
+        assert "सेव नहीं होगी" in spoken
+        assert "सेव नहीं की जाएगी" not in spoken
+
+    @pytest.mark.asyncio
+    async def test_prose_from_a_nested_tool_round_is_not_spoken_twice(self):
+        """The same discard applies to rounds 2..N of a tool chain."""
+        agent = _make_agent_core()
+        calls = {"n": 0}
+
+        async def mock_stream(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                yield "first draft. "
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="search", tool_use_id="tu_1", input={})
+                ])
+            if calls["n"] == 2:
+                yield "second draft. "
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="search", tool_use_id="tu_2", input={})
+                ])
+            yield "the real answer. "
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute.return_value = ToolResult(
+            tool_use_id="tu_1", tool_name="search",
+            result={"answer": "42"}, success=True, result_text="42"
+        )
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "english")
+        agent._understander = fake_understander(NLUResult(
+            intent="search", entities={}, confidence=0.9
+        ))
+
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+
+        assert "the real answer" in spoken
+        assert "first draft" not in spoken
+        assert "second draft" not in spoken
+
+    @pytest.mark.asyncio
+    async def test_already_spoken_text_is_replayed_to_the_model(self):
+        """Delivered text is replayed to call #2 as assistant content."""
+        agent = _make_agent_core()
+        calls = {"n": 0}
+        seen: dict = {}
+
+        async def mock_stream(request, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Three sentences: enough to cross the batcher's size trigger,
+                # so they are released to the caller before the tool call.
+                yield "One. Two. Three. "
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="search", tool_use_id="tu_1", input={})
+                ])
+            seen["messages"] = list(request.messages)
+            yield "Final answer. "
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute.return_value = ToolResult(
+            tool_use_id="tu_1", tool_name="search",
+            result={"answer": "42"}, success=True, result_text="42"
+        )
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "english")
+        agent._understander = fake_understander(NLUResult(
+            intent="search", entities={}, confidence=0.9
+        ))
+
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = [e.text for e in events if isinstance(e, SentenceEvent)]
+        assert any("One." in t for t in spoken), "precondition: call #1 was heard"
+
+        assistant = [m for m in seen["messages"] if m.role == "assistant"]
+        replayed = " ".join(
+            b.text for m in assistant for b in m.content if b.type == "text"
+        )
+        assert "One." in replayed
+        assert "Three." in replayed
+
+    @pytest.mark.asyncio
     async def test_tool_start_names_the_tools_being_run(self):
         """Channels turn tool_start into caller-facing status ("looking up
         jobs"), so the signal must say which tool — not just that one runs."""
