@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover - openai is a harness dependency
 
 from eval.voice_bench import SUITE_VERSION
 from eval.voice_bench.backend import Backend
+from eval.voice_bench.backend_remote import RemoteBackend
 from eval.voice_bench.bridge import BridgeClient
 from eval.voice_bench.caller import Caller
 from eval.voice_bench.config import BenchConfig, load_config
@@ -40,7 +41,7 @@ from eval.voice_bench.score import score_call
 from eval.voice_bench.seed import SEED_VERSION, load_seed, places
 from eval.voice_bench.stack import StackError, TargetStack
 from eval.voice_bench.store import ResultStore
-from eval.voice_bench.suite import load_personas, phone_for, runs_for
+from eval.voice_bench.suite import load_personas, phone_for, run_salt, runs_for
 from eval.voice_bench.tap import Tap
 
 _NLU_CASES = [Path(__file__).resolve().parents[1] / "nlu" / "cases" / n for n in ("scenarios.jsonl", "synthetic.jsonl")]
@@ -97,6 +98,17 @@ def _merge_meta(store: ResultStore, key: str, kv: dict, drop: tuple[str, ...] = 
     store.write_meta(key, {**meta, **kv})
 
 
+def _make_backend(cfg: BenchConfig):
+    """Return the backend the config asks for.
+
+    Both satisfy the same surface (state / up / down / seed / cleanup), so
+    everything downstream is mode-agnostic.
+    """
+    if cfg.backend.is_remote:
+        return RemoteBackend(cfg.backend, cfg.results_dir)
+    return Backend(cfg.backend, cfg.results_dir)
+
+
 def _safe_commit(stack, name: str) -> str:
     try:
         return stack.commit
@@ -123,7 +135,7 @@ def _status(rec) -> str:
 
 
 def _run_target(t, stack, cfg: BenchConfig, store: ResultStore, plan, personas, backend, tap, caller, judge_llm,
-                seed_places, seed_version: int, env_file: Path | None = None) -> None:
+                seed_places, seed_version: int, env_file: Path | None = None, phone_salt: str = "00") -> None:
     try:
         url = stack.up()
         commit = stack.commit
@@ -132,19 +144,26 @@ def _run_target(t, stack, cfg: BenchConfig, store: ResultStore, plan, personas, 
         _merge_meta(store, commit, {"name": t.name, "commit": commit, "unmeasurable": str(e)})
         _say(f"{t.name} unmeasurable: {e}")
         return
-    _merge_meta(store, commit, {"name": t.name, "commit": commit}, drop=("unmeasurable",))
+    # image_tag records what actually ran when the images were pulled rather
+    # than built: the worktree commit alone would misdescribe the code.
+    meta = {"name": t.name, "commit": commit}
+    if getattr(stack, "image_tag", None):
+        meta["image_tag"] = stack.image_tag
+    _merge_meta(store, commit, meta, drop=("unmeasurable",))
     deps = DriveDeps(bridge=BridgeClient(url, cfg.status_phrases, cfg.terminal_words), tap=tap,
                      redis_container=t.redis_container, scraper=LogScraper(t.agent_container), caller=caller,
                      judge_llm=judge_llm, cleanup=backend.cleanup)
     drive_meta = dict(target=t.name, target_commit=commit, suite_version=SUITE_VERSION, seed_version=seed_version,
-                      caller_model=cfg.caller.model, judge_model=cfg.judge.model)
+                      caller_model=cfg.caller.model, judge_model=cfg.judge.model,
+                      backend_mode=cfg.backend.mode, phone_salt=phone_salt,
+                      image_tag=getattr(stack, "image_tag", None))
     for pid, runs in plan:
         persona = personas[pid]
         for run in range(runs):
             if store.has(commit, pid, run):
                 _say(f"{t.name} {pid} r{run} cached")
                 continue
-            phone = persona.seeded_phone or phone_for(cfg.phone_prefix, pid, run)
+            phone = persona.seeded_phone or phone_for(cfg.phone_prefix, pid, run, phone_salt)
             call_deps = dataclasses.replace(deps, cleanup=_call_cleanup(backend, t, phone))
             rec = drive_call(call_deps, persona, run, phone, cfg.max_turns, drive_meta)
             score_call(rec, persona, judge_llm, seed_places, t.no_idle_handling)
@@ -169,14 +188,21 @@ def cmd_run(cfg: BenchConfig, args) -> int:
         targets, plan = targets[:1], [("T01", 1)]
     else:
         plan = [(i, runs_for(cfg, i)) for i in ids]
-    backend = Backend(cfg.backend, cfg.results_dir)
+    backend = _make_backend(cfg)
     state = backend.state
-    if not state.get("watermark"):
+    # Remote mode has no watermark (nothing is cleaned up to it), so
+    # seed_version is the "is it seeded" signal in both modes.
+    if not state.get("seed_version"):
         _say("backend not seeded: run `python -m eval.voice_bench backend up` then `backend seed`")
         return 2
     if state.get("seed_version") != SEED_VERSION:
         _say(f"backend seed v{state.get('seed_version')} != harness seed v{SEED_VERSION}: re-seed the backend")
         return 2
+    # Fresh caller numbers per run in remote mode, where nothing is cleaned up
+    # between runs; local keeps its historical fixed numbers.
+    phone_salt = run_salt() if cfg.backend.is_remote else "00"
+    if cfg.backend.is_remote:
+        _say(f"remote backend: {cfg.backend.signals_url} (no cleanup; phone_salt={phone_salt})")
     store = ResultStore(cfg.results_dir)
     caller = Caller(OpenAIJsonLLM(cfg.caller.model, cfg.caller.temperature))
     judge_llm = OpenAIJsonLLM(cfg.judge.model, cfg.judge.temperature)
@@ -199,7 +225,7 @@ def cmd_run(cfg: BenchConfig, args) -> int:
                                 Path(state["api_key_env_file"]))
             try:
                 _run_target(t, stack, cfg, store, plan, personas, backend, tap, caller, judge_llm, seed_places,
-                            state["seed_version"], Path(state["api_key_env_file"]))
+                            state["seed_version"], Path(state["api_key_env_file"]), phone_salt)
             finally:
                 failed = stack.down()
                 if failed:
@@ -285,7 +311,7 @@ def cmd_rescore(cfg: BenchConfig, args) -> int:
 
 
 def cmd_backend(cfg: BenchConfig, args) -> int:
-    b = Backend(cfg.backend, cfg.results_dir)
+    b = _make_backend(cfg)
     if args.action == "up":
         b.up()
     elif args.action == "down":
