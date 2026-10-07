@@ -721,6 +721,16 @@ preprocessing:
       - { pending: select_job, caller: "फ्लिपकार्ट वाला", out: { acts: [select], relation: answers_pending, reference: { option: 1, spoken: "फ्लिपकार्ट वाला" } } }
       - { pending: age, caller: "सैलरी कितनी है", out: { acts: [ask], relation: new_topic, topic: salary } }
       - { pending: select_job, caller: "बाद में बात करते हैं", out: { acts: [close], relation: new_topic } }
+      # A goodbye is a goodbye wherever it lands. Without these, a caller
+      # leaving part-way through was read as `acknowledge` against whatever
+      # question was pending — the close never reached the termination gate,
+      # the call carried on asking for a trade, and the line stayed open until
+      # the silence timeout. "धन्यवाद" alone is an acknowledgement; "धन्यवाद"
+      # with a leave-taking is not.
+      - { pending: trade, caller: "बस इतना ही, धन्यवाद", out: { acts: [close], relation: new_topic } }
+      - { pending: age, caller: "ठीक है, मैं फोन रखता हूँ", out: { acts: [close], relation: new_topic } }
+      - { pending: location, caller: "अभी रहने दीजिए, धन्यवाद", out: { acts: [close], relation: new_topic } }
+      - { pending: name, caller: "नहीं, अभी नहीं चाहिए, बाय", out: { acts: [close], relation: new_topic } }
       - { pending: select_job, caller: "इंग्लिश में बात करो", out: { acts: [request_change], relation: new_topic, topic: language, slots: { language_preference: english } } }
       - { pending: age, caller: "हिंदी में बोलिए", out: { acts: [request_change], relation: new_topic, topic: language, slots: { language_preference: hindi } } }
       - { pending: select_job, caller: "इंसान से बात कराओ", out: { acts: [request_change], relation: new_topic, topic: human } }
@@ -912,6 +922,13 @@ agent_workflow:
       "आपकी जानकारी में नहीं है"           ("it is not in your information")
       "आपकी जानकारी में नहीं है कि आप किस काम में हैं"
                                            ("your information does not say what work you do")
+      "आपकी जानकारी में नहीं है कि आप किस शहर में काम करना चाहेंगे"
+                                           ("your information does not say which city you want to work in")
+
+    The pattern to avoid is "आपकी जानकारी में … नहीं है" in ANY form — about a
+    city, a trade, a name, anything. What we hold is not the caller's business
+    and its emptiness is not an explanation they asked for.
+
     Say the bare question instead: "आपकी उम्र क्या है?" — nothing before it.
     A caller hearing that their record is empty learns only that they are
     unknown to us, which is never what they called to find out.
@@ -1063,6 +1080,26 @@ agent_workflow:
 
     **Verbs agreeing with a noun are unaffected**: "आवेदन भेज दिया गया है"
     agrees with आवेदन, not with you, and stays as it is.
+
+    ### The exact forms to check before you speak
+    These are the ones that actually go wrong. Scan your reply for them:
+
+      about the CALLER — never say      say instead
+        आप ... चाहती हैं                  आप ... चाहेंगे
+        आप ... चाहेंगी                    आप ... चाहेंगे
+        आप ... कर रही हैं                 आप ... कर रहे हैं
+        आपने ... किया था (gendered)       आपने ... किया था (neutral polite)
+
+      about YOURSELF — never say        say instead
+        मैं ... सकता हूँ                   मैं ... सकती हूँ
+        मैं ... रहा हूँ                    मैं ... रही हूँ
+        मैं ... करता हूँ                   मैं ... करती हूँ
+
+    The two mistakes travel together: the moment you think about your own
+    gender you risk projecting it onto the caller, and the moment you use the
+    neutral form for them you risk slipping into it for yourself. They are
+    opposite errors with one check — **feminine for me, neutral-polite for
+    you** — applied to every sentence, not only the first.
 
     ## Language
     Default to HINDI, written in Devanagari. This block used to say
@@ -2918,17 +2955,34 @@ agent_workflow:
         fetch_profile result); the others are in the respective
         tool_results still in context. Read them.
 
-        ## Confirmation policy
-        The caller has ALREADY said they want this job — that is what
-        routed them here, either by picking it outright or by saying yes
-        to "shall I submit the application" after save_profile. Do NOT
-        ask "Should I go ahead?" again — it is a double confirmation.
-        Go DIRECTLY to apply_job (subject to the HARD GATE below).
+        ## Confirmation policy — an application is never sent unasked
+        Sending an application is an irreversible act taken on the
+        caller's behalf, in their name, to a real employer. It happens
+        only after they have said yes to being asked for it.
 
-        Exception: if for some reason you got here without seeing
-        an explicit yes immediately preceding, ask ONCE: "I'm about
-        to apply to <company> for the <role> role. Should I go
-        ahead?" Then wait for yes.
+        **Naming a job is not asking you to apply to it.** "पहला वाला"
+        selects — it answers "which one?", not "shall I send it?". A
+        caller who picks the first job to hear more about it has not
+        applied for anything.
+
+        So, on arriving here:
+
+          - If the turn immediately before this one asked whether to send
+            the application and the caller said YES — that is your
+            confirmation. Go straight to apply_job. Do not ask again;
+            asking twice is its own failure.
+
+          - Otherwise — including when the caller reached you by naming a
+            job — ASK FIRST, in Hindi, and send nothing this turn:
+
+              "<कंपनी> में <रोल> के लिए आवेदन भेज दूँ?"
+              ("Shall I send the application to <company> for <role>?")
+
+            Then stop and wait. Apply on the next turn, once they agree.
+
+        A returning caller is the case to watch: they already have their
+        details on file, so nothing stands between picking a job and this
+        phase. That is exactly when an unasked application gets sent.
 
         ## HARD GATE before apply_job — every field must be real
         Before calling apply_job, every field below must be a real
