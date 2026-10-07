@@ -491,7 +491,8 @@ class TestStreamTurnToolUse:
         replayed = " ".join(
             b.text for m in assistant for b in m.content if b.type == "text"
         )
-        assert "One." in replayed and "Three." in replayed
+        assert "One." in replayed
+        assert "Three." in replayed
 
     @pytest.mark.asyncio
     async def test_tool_start_names_the_tools_being_run(self):
