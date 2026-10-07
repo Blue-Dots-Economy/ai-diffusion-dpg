@@ -5311,9 +5311,7 @@ class AgentCore(AgentCoreBase):
             _llm_calls = 0
             sentence_index = 0
             token_buffer = ""
-            # How much of ``full_response_text`` the model has already been
-            # shown as its own prior words. Only the delta is replayed, so a
-            # multi-round tool chain never stacks the same sentence twice.
+            # Portion of ``full_response_text`` already replayed to the model.
             _spoken_sent_to_model = ""
             primary_model = self._llm.get_active_model()
             primary_provider = self._config.get("agent", {}).get("provider", "anthropic")
@@ -5671,14 +5669,9 @@ class AgentCore(AgentCoreBase):
                         "the only tool of the round"
                     )
                 else:
-                    # A completion can carry a finished answer AND a tool
-                    # call. Call #2 answers the same question again with the
-                    # tool result in hand, so anything call #1 said is about to
-                    # be said a second time. What is still held here has not
-                    # reached the caller, so drop it and let call #2 be the
-                    # only answer. The skip branch above is the opposite case:
-                    # no second pass is coming, so call #1's closing line IS
-                    # the reply and must survive.
+                    # Call #2 will answer again, so drop call #1's undelivered
+                    # text. Only on this branch: the skip branch above has no
+                    # second pass and keeps that text as the reply.
                     _dropped = _trust_batcher.discard_pending()
                     if _dropped or token_buffer.strip():
                         logger.info(
@@ -5693,9 +5686,7 @@ class AgentCore(AgentCoreBase):
                         )
                     token_buffer = ""
                     if sentence_index:
-                        # Already streamed to the caller — it cannot be unsaid,
-                        # and call #2 may well say it again. Logged so the
-                        # residue is measurable rather than invisible.
+                        # Already streamed; cannot be withdrawn.
                         logger.warning(
                             "orchestrator.stream_tool_preamble_delivered",
                             extra={
@@ -5721,13 +5712,8 @@ class AgentCore(AgentCoreBase):
                 while True:
                     if _skip_final_pass:
                         break
-                    # Rebuilt from tool calls alone, this assistant turn would
-                    # drop anything the model SAID in the same completion — and
-                    # with no record of having spoken, it speaks again. Text
-                    # still buffered was discarded above and is correctly
-                    # absent; text that already reached the caller cannot be
-                    # unsaid, so hand it back as what it is: the assistant's
-                    # own words, already spoken.
+                    # Replay delivered text as assistant content so the model
+                    # sees what it has already said and does not repeat it.
                     _assistant_blocks: list[Any] = []
                     _spoken_delta = full_response_text[
                         len(_spoken_sent_to_model):
@@ -5815,11 +5801,9 @@ class AgentCore(AgentCoreBase):
                             )
                             break
 
-                        # Same as the first tool call: another round is
-                        # definitely coming, so prose this one produced
-                        # alongside its tool call would be said twice. Placed
-                        # AFTER the max-rounds break, where no further round
-                        # runs and this text is the only reply there is.
+                        # Another round follows, so drop this one's
+                        # undelivered text. After the max-rounds break, where
+                        # that text is the only reply there is.
                         _dropped_n = _trust_batcher.discard_pending()
                         if _dropped_n or token_buffer.strip():
                             logger.info(
@@ -6424,9 +6408,7 @@ class _TrustOutputBatcher:
     def discard_pending(self) -> int:
         """Drop buffered sentences without releasing or Trust-checking them.
 
-        Used when the text that produced them has been superseded before
-        reaching the caller — a completion that turned out to be a tool call,
-        whose prose the follow-up completion is about to say again.
+        For text superseded before it reached the caller.
 
         Returns:
             Number of sentences dropped.
