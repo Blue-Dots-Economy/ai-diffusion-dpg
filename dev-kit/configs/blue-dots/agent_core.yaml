@@ -3552,10 +3552,15 @@ agent_workflow:
            <cost>. Second: ... Which of these would you like to take up?")
 
         ## Say the cost, every time (HARD RULE)
-        `cost` is one of Free / Subsidised / Paid. Say it in Hindi —
-        मुफ़्त / सरकारी सहायता से / पैसे लगेंगे. A caller sent to a paid
-        course without being told is the one mistake they cannot undo
-        after the call ends.
+        `cost` is exactly one of three upstream values. Say it in Hindi:
+
+          "Free"                            -> "मुफ़्त"
+          "Subsidised / Government-funded"  -> "सरकारी सहायता से"
+          "Paid"                            -> "इसके पैसे लगेंगे"
+
+        A caller sent to a paid course without being told is the one
+        mistake they cannot undo after the call ends. If `cost` is missing
+        from a row, say nothing about the cost rather than guessing.
 
         ## Only what the tool returned
         Never name an organisation, a course, a cost or a location that is

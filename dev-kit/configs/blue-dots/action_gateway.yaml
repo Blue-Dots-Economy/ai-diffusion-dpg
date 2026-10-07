@@ -654,7 +654,8 @@ tools:
       things, listed in services_for_seekers. Read out the organisation's
       name, what it offers, and what it costs.
 
-      cost is one of Free / Subsidised / Paid — always say which. Sending
+      cost is one of "Free", "Subsidised / Government-funded" or "Paid" —
+      always say which. Sending
       someone to a paid course without telling them is the one mistake they
       cannot undo.
 
