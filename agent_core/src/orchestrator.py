@@ -119,6 +119,8 @@ _CARRYOVER_CLOCK_SKEW_MS = 5000
 _HANDOFF_PENDING_WINDOW_MS = 30_000
 # Shared `operation` value for every handoff log record.
 _OP_HANDOFF = "orchestrator.handoff"
+# Shared `operation` value for every abandoned-offer log record.
+_OP_ABANDON_OFFERED = "orchestrator.abandon_offered"
 
 # Module-level guard to prevent double-instrumentation in test environments.
 _HTTPX_INSTRUMENTED = False
@@ -1169,7 +1171,7 @@ class AgentCore(AgentCoreBase):
             dropped = [t for t in tools if tool_cache.abandon(t)]
             if not dropped:
                 logger.info("orchestrator.offered_abandon_noop", extra={
-                    "operation": "orchestrator.abandon_offered", "status": "skipped",
+                    "operation": _OP_ABANDON_OFFERED, "status": "skipped",
                     "subagent_id": subagent_id, "served_tools": tools})
                 return False
             bundle.session[SERVED_TOOL_RESULTS_KEY] = {
@@ -1188,12 +1190,12 @@ class AgentCore(AgentCoreBase):
                 )
             ]
             logger.info("orchestrator.offered_abandoned", extra={
-                "operation": "orchestrator.abandon_offered", "status": "success",
+                "operation": _OP_ABANDON_OFFERED, "status": "success",
                 "subagent_id": subagent_id, "tools": dropped})
             return True
         except Exception as e:  # noqa: BLE001 — never raise into the turn
             logger.warning("orchestrator.abandon_offered_failed", extra={
-                "operation": "orchestrator.abandon_offered", "status": "failure",
+                "operation": _OP_ABANDON_OFFERED, "status": "failure",
                 "error": type(e).__name__})
             return False
 
