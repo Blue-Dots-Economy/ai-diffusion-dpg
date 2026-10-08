@@ -3439,12 +3439,14 @@ agent_workflow:
         text contains. There is no success line for it. This is not a
         judgement call — the string is there or it is not.
 
-        These are the three real payloads, measured against the live
-        upstream on 29 Sep. Match what you got against them:
+        These are the three result SHAPES. Match what you got against
+        them on structure and on the quoted field values. `<action-id>`
+        below is a placeholder standing for whatever id came back — it
+        is never a value to copy, and never a value to speak.
 
         SUCCESS — HTTP 201:
           {"results":[{"index":0,"status":"success",
-           "action_id":"44b68bc7-…","action_status":"created"}],
+           "action_id":"<action-id>","action_status":"created"}],
            "summary":{"total":1,"succeeded":1,"failed":0}}
 
         ALREADY APPLIED — HTTP 422:
