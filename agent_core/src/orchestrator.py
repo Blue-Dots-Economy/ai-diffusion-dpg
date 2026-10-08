@@ -102,6 +102,11 @@ logger = logging.getLogger(__name__)
 # Session key: tool → args_hash of the stored result the caller last heard
 # (NLU dialogue-acts spec §5.2).
 SERVED_TOOL_RESULTS_KEY = "served_tool_results"
+RECENT_TOOL_EXCHANGES_KEY = "recent_tool_exchanges"
+# What `_abandon_offered` rewrites: the list on offer, and the replayed rounds
+# that carry its rows. Both are session-scoped, so both must be written back or
+# the next turn reloads the list it was meant to forget.
+ABANDON_SESSION_KEYS = (SERVED_TOOL_RESULTS_KEY, RECENT_TOOL_EXCHANGES_KEY)
 
 # A ``turn_carryover`` is written by whichever replica ran the interrupted
 # turn and read by whichever runs the next one, so their clocks can disagree.
@@ -1169,6 +1174,19 @@ class AgentCore(AgentCoreBase):
                 return False
             bundle.session[SERVED_TOOL_RESULTS_KEY] = {
                 k: v for k, v in served.items() if k not in dropped}
+            # Drop the exchanges too. Clearing the cache stops the RESOLVER
+            # offering the rows, but the model reads them straight out of the
+            # replayed tool results and acts on them regardless — measured, it
+            # applied to a job by name on a turn where nothing resolved. The
+            # replay skips tools that are still fresh; an abandoned one is not
+            # fresh, so without this its whole list comes back.
+            bundle.session[RECENT_TOOL_EXCHANGES_KEY] = [
+                ex for ex in (bundle.session.get(RECENT_TOOL_EXCHANGES_KEY) or [])
+                if not any(
+                    (tu or {}).get("name") in dropped
+                    for tu in (ex or {}).get("tool_uses") or ()
+                )
+            ]
             logger.info("orchestrator.offered_abandoned", extra={
                 "operation": "orchestrator.abandon_offered", "status": "success",
                 "subagent_id": subagent_id, "tools": dropped})
@@ -1652,6 +1670,9 @@ class AgentCore(AgentCoreBase):
                                        turn_input.user_message)
         if self._abandon_offered(understanding, current_subagent_id, bundle, tool_cache):
             self._persist_tool_cache_sync(session_id, user_id, tool_cache)
+            for _k in ABANDON_SESSION_KEYS:
+                self._write_memory_sync(
+                    session_id, user_id, "session", _k, bundle.session.get(_k))
 
         # ── Language switch — handle before routing ───────────────────────
         if nlu_result.intent == "language_switch_request":
@@ -5029,6 +5050,9 @@ class AgentCore(AgentCoreBase):
                                                   turn_input.user_message)
             if self._abandon_offered(understanding, current_subagent_id, bundle, tool_cache):
                 await self._persist_tool_cache(session_id, user_id, tool_cache)
+                for _k in ABANDON_SESSION_KEYS:
+                    await self._write_memory_async(
+                        session_id, user_id, "session", _k, bundle.session.get(_k))
 
             # ── Language switch — handle before routing ───────────────
             if nlu_result.intent == "language_switch_request":

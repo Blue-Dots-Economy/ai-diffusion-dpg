@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from src.orchestrator import SERVED_TOOL_RESULTS_KEY
+from src.orchestrator import RECENT_TOOL_EXCHANGES_KEY, SERVED_TOOL_RESULTS_KEY
 from tests.test_stream_turn import _make_agent_core
 
 
@@ -37,11 +37,17 @@ def _agent():
     return agent
 
 
-def _bundle(served=None):
-    return SimpleNamespace(
-        session={SERVED_TOOL_RESULTS_KEY: served} if served is not None else {},
-        profile={},
-    )
+def _bundle(served=None, exchanges=None):
+    session = {}
+    if served is not None:
+        session[SERVED_TOOL_RESULTS_KEY] = served
+    if exchanges is not None:
+        session[RECENT_TOOL_EXCHANGES_KEY] = exchanges
+    return SimpleNamespace(session=session, profile={})
+
+
+def _exchange(tool):
+    return {"tool_uses": [{"name": tool}], "tool_results": [{"content": "rows"}]}
 
 
 def test_a_change_of_subject_drops_the_offered_list():
@@ -120,3 +126,30 @@ def test_a_failure_never_reaches_the_turn():
     except RuntimeError:
         raise AssertionError("a resolver failure must not break the turn")
     assert cache.abandoned == []
+
+
+def test_the_abandoned_tools_exchanges_leave_the_replay():
+    """The resolver is not the only way the model sees the rows.
+
+    Clearing the cache stops the list being OFFERED, but the replayed tool
+    results still carry it and the model acts on what it reads there.
+    """
+    agent, cache = _agent(), _Cache()
+    bundle = _bundle(
+        {"fetch_jobs": "h1"},
+        [_exchange("fetch_jobs"), _exchange("fetch_profile")],
+    )
+
+    agent._abandon_offered(_understanding("request_change"), "profile_setup", bundle, cache)
+
+    kept = bundle.session[RECENT_TOOL_EXCHANGES_KEY]
+    assert [tu["name"] for ex in kept for tu in ex["tool_uses"]] == ["fetch_profile"]
+
+
+def test_an_absent_exchange_list_is_not_an_error():
+    agent, cache = _agent(), _Cache()
+    bundle = _bundle({"fetch_jobs": "h1"})
+
+    assert agent._abandon_offered(
+        _understanding("request_change"), "profile_setup", bundle, cache) is True
+    assert bundle.session[RECENT_TOOL_EXCHANGES_KEY] == []
