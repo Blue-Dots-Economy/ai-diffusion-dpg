@@ -1118,7 +1118,7 @@ class AgentCore(AgentCoreBase):
         bundle.session[SERVED_TOOL_RESULTS_KEY] = merged
         return merged
 
-    def _abandon_offered(self, understanding, subagent_id: str, bundle, tool_cache) -> None:
+    def _abandon_offered(self, understanding, subagent_id: str, bundle, tool_cache) -> bool:
         """Drop the offered list when the caller has turned away from it.
 
         The list a tool returned stays on offer until something replaces it, so
@@ -1130,12 +1130,18 @@ class AgentCore(AgentCoreBase):
 
         Which acts mean "turned away" is the domain's to say; a turn that also
         SELECTS is choosing from the list, not leaving it.
+
+        Returns:
+            True when something was dropped, so the caller can persist it. The
+            turn that changes the subject runs no tool, and the cache is only
+            written back when one does — without that the drop lived for a
+            single turn and the list was reloaded in time to be picked from.
         """
         try:
             acts = set(getattr(getattr(understanding, "dialogue", None), "acts", ()) or ())
             triggers = set(self._dialogue_cfg.abandons_offered_acts)
             if not acts & triggers or "select" in acts:
-                return
+                return False
             # Read the tools from the subagent's DECLARED pending questions,
             # not from whichever one resolves this turn. On the turn that
             # changes the subject the pending routinely resolves to nothing —
@@ -1149,7 +1155,10 @@ class AgentCore(AgentCoreBase):
             }
             dropped = sorted(t for t in tools if tool_cache.abandon(t))
             if not dropped:
-                return
+                logger.info("orchestrator.offered_abandon_noop", extra={
+                    "operation": "orchestrator.abandon_offered", "status": "skipped",
+                    "subagent_id": subagent_id, "declared_tools": sorted(tools)})
+                return False
             served = bundle.session.get(SERVED_TOOL_RESULTS_KEY)
             if isinstance(served, dict):
                 bundle.session[SERVED_TOOL_RESULTS_KEY] = {
@@ -1157,10 +1166,12 @@ class AgentCore(AgentCoreBase):
             logger.info("orchestrator.offered_abandoned", extra={
                 "operation": "orchestrator.abandon_offered", "status": "success",
                 "subagent_id": subagent_id, "tools": dropped})
+            return True
         except Exception as e:  # noqa: BLE001 — never raise into the turn
             logger.warning("orchestrator.abandon_offered_failed", extra={
                 "operation": "orchestrator.abandon_offered", "status": "failure",
                 "error": type(e).__name__})
+            return False
 
     async def _apply_understanding_async(self, session_id: str, user_id: str, bundle,
                                          understanding, raw_text: str) -> None:
@@ -1633,7 +1644,8 @@ class AgentCore(AgentCoreBase):
         entity_map: dict = self._config.get("entity_to_profile_field", {})
         self._apply_understanding_sync(session_id, user_id, bundle, understanding,
                                        turn_input.user_message)
-        self._abandon_offered(understanding, current_subagent_id, bundle, tool_cache)
+        if self._abandon_offered(understanding, current_subagent_id, bundle, tool_cache):
+            self._persist_tool_cache_sync(session_id, user_id, tool_cache)
 
         # ── Language switch — handle before routing ───────────────────────
         if nlu_result.intent == "language_switch_request":
@@ -5009,7 +5021,8 @@ class AgentCore(AgentCoreBase):
             entity_map: dict = self._config.get("entity_to_profile_field", {})
             await self._apply_understanding_async(session_id, user_id, bundle, understanding,
                                                   turn_input.user_message)
-            self._abandon_offered(understanding, current_subagent_id, bundle, tool_cache)
+            if self._abandon_offered(understanding, current_subagent_id, bundle, tool_cache):
+                await self._persist_tool_cache(session_id, user_id, tool_cache)
 
             # ── Language switch — handle before routing ───────────────
             if nlu_result.intent == "language_switch_request":

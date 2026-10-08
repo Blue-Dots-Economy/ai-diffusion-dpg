@@ -54,8 +54,10 @@ def test_a_change_of_subject_drops_the_offered_list():
     agent, cache = _agent(), _Cache()
     bundle = _bundle({"fetch_jobs": "h1", "fetch_profile": "h2"})
 
-    agent._abandon_offered(_understanding("request_change"), "apply_confirm", bundle, cache)
+    dropped = agent._abandon_offered(
+        _understanding("request_change"), "apply_confirm", bundle, cache)
 
+    assert dropped is True, "the caller persists on this, so it must be reported"
     assert cache.abandoned == ["fetch_jobs"]
     assert bundle.session[SERVED_TOOL_RESULTS_KEY] == {"fetch_profile": "h2"}
 
@@ -63,9 +65,8 @@ def test_a_change_of_subject_drops_the_offered_list():
 def test_a_turn_that_also_selects_is_choosing_not_leaving():
     agent, cache = _agent(), _Cache()
 
-    agent._abandon_offered(
-        _understanding("request_change", "select"), "apply_confirm", _bundle(), cache)
-
+    assert agent._abandon_offered(
+        _understanding("request_change", "select"), "apply_confirm", _bundle(), cache) is False
     assert cache.abandoned == []
 
 
@@ -95,12 +96,14 @@ def test_it_does_not_need_the_pending_to_resolve_this_turn():
     assert cache.abandoned == ["fetch_jobs"]
 
 
-def test_served_is_left_alone_when_the_cache_had_nothing_to_drop():
+def test_nothing_is_persisted_when_the_cache_had_nothing_to_drop():
     agent, cache = _agent(), _Cache(had=False)
     bundle = _bundle({"fetch_jobs": "h1"})
 
-    agent._abandon_offered(_understanding("request_change"), "apply_confirm", bundle, cache)
+    dropped = agent._abandon_offered(
+        _understanding("request_change"), "apply_confirm", bundle, cache)
 
+    assert dropped is False
     assert bundle.session[SERVED_TOOL_RESULTS_KEY] == {"fetch_jobs": "h1"}
 
 
