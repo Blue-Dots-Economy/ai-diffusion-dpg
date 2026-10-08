@@ -1131,21 +1131,26 @@ class AgentCore(AgentCoreBase):
         Which acts mean "turned away" is the domain's to say; a turn that also
         SELECTS is choosing from the list, not leaving it.
         """
-        acts = set(getattr(getattr(understanding, "dialogue", None), "acts", ()) or ())
-        triggers = set(self._dialogue_cfg.abandons_offered_acts)
-        if not acts & triggers or "select" in acts:
-            return
-        pending = self._pending_resolver.resolve(subagent_id, self._routing_state(bundle))
-        of = getattr(pending, "options_from", None) if pending is not None else None
-        if of is None or not tool_cache.abandon(of.tool):
-            return
-        served = bundle.session.get(SERVED_TOOL_RESULTS_KEY)
-        if isinstance(served, dict) and of.tool in served:
-            bundle.session[SERVED_TOOL_RESULTS_KEY] = {
-                k: v for k, v in served.items() if k != of.tool}
-        logger.info("orchestrator.offered_abandoned", extra={
-            "operation": "orchestrator.abandon_offered", "status": "success",
-            "session_id": "", "tool": of.tool, "pending": getattr(pending, "id", None)})
+        try:
+            acts = set(getattr(getattr(understanding, "dialogue", None), "acts", ()) or ())
+            triggers = set(self._dialogue_cfg.abandons_offered_acts)
+            if not acts & triggers or "select" in acts:
+                return
+            pending = self._pending_resolver.resolve(subagent_id, self._routing_state(bundle))
+            of = getattr(pending, "options_from", None) if pending is not None else None
+            if of is None or not tool_cache.abandon(of.tool):
+                return
+            served = bundle.session.get(SERVED_TOOL_RESULTS_KEY)
+            if isinstance(served, dict) and of.tool in served:
+                bundle.session[SERVED_TOOL_RESULTS_KEY] = {
+                    k: v for k, v in served.items() if k != of.tool}
+            logger.info("orchestrator.offered_abandoned", extra={
+                "operation": "orchestrator.abandon_offered", "status": "success",
+                "tool": of.tool, "pending": getattr(pending, "id", None)})
+        except Exception as e:  # noqa: BLE001 — never raise into the turn
+            logger.warning("orchestrator.abandon_offered_failed", extra={
+                "operation": "orchestrator.abandon_offered", "status": "failure",
+                "error": type(e).__name__})
 
     async def _apply_understanding_async(self, session_id: str, user_id: str, bundle,
                                          understanding, raw_text: str) -> None:
@@ -5199,7 +5204,7 @@ class AgentCore(AgentCoreBase):
                 # fabricated-name fix. The domain lists what is not a real
                 # value; nothing here knows what any of them mean.
                 if any(v.casefold() in _pfx_skip for v in _pfx_vals.values()):
-                    _pfx_vals = {k: "" for k in _pfx_vals}
+                    _pfx_vals = dict.fromkeys(_pfx_vals, "")
                 _prefix = ""
                 if _pfx_tmpl and _pfx_req and all(_pfx_vals.values()):
                     try:

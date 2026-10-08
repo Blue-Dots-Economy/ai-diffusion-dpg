@@ -742,6 +742,25 @@ class TestFixedOpening:
         assert "CALLER" not in spoken
 
     @pytest.mark.asyncio
+    async def test_a_bad_prefix_placeholder_drops_only_the_prefix(self):
+        """A prefix naming a field it never required must not cost the line."""
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad",
+                             "stored_name": "Ravi"})
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening_prefix = "Hello {not_required_anywhere}. "
+            sa.fixed_opening_prefix_requires = ["stored_name"]
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert spoken.startswith("I found your details")
+        assert "Hello" not in spoken
+
+    @pytest.mark.asyncio
     async def test_the_callers_own_words_win(self):
         """If they named a trade themselves, the model handles the turn."""
         agent = self._agent(
