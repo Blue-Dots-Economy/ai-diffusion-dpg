@@ -49,7 +49,10 @@ application with a real `action_id`.
 **Guards:** F17, F18 (no placeholder name, no duplicate profile).
 
 ### A2 — returning user
-Call A1's number again on a new `call_id`.
+Call A1's number again on a new `call_id`. **Run A1 first and let it finish** —
+a "returning" call placed before its own seed finds no profile, asks for the
+age it should already know and loops there. That reads exactly like a broken
+returning path and is not one; check the seed before filing it.
 **Expect:** the stored trade and city are recognised and offered back; no
 re-asking for name or age. Exactly one profile still.
 **Guards:** F16, the profile-cap behaviour.
