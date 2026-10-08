@@ -125,10 +125,6 @@ tools:
           target: stored_trade
         - source: "items[lifecycle_status=live].item_state.location"
           target: stored_location
-        # What they told us their name was, last time. Not lifted before, which
-        # is why a returning caller was greeted as a stranger even though we
-        # had their name on file. Kept under its own key for the same reason as
-        # the two above: `name` holds what the caller says in THIS call.
         - source: "items[lifecycle_status=live].item_state.name"
           target: stored_name
       projection:
@@ -662,8 +658,6 @@ tools:
       Contact details are deliberately NOT projected: the upstream masks
       them ("9***", "b***@yopmail.com"), so there is nothing to read out.
       Never offer to pass on a phone number or an email.
-    # Same host and key as fetch_jobs — this is the same search service, with
-    # a different domain and item type. Never a dev host.
     base_url: "${SIGNALS_SEARCH_URL:-https://signals.bluedotseconomy.org/signals-search}"
     auth:
       type: api_key
@@ -680,9 +674,6 @@ tools:
           context:
             messageId: "{session_id}"
             networkId: "blue_dot"
-            # The service_provider domain, whose only item type is the
-            # organisation's own profile. Distinct from fetch_jobs, which
-            # reads provider/job_posting_1.0.
             domain: "service_provider"
             itemType: "profile_1.0"
           message:
@@ -746,10 +737,6 @@ tools:
       - name: connect
         method: POST
         path: /api/v1/action/perform
-        # Same endpoint and envelope as apply_job. The action differs: the
-        # network schema defines `apply` for seeker -> provider only, and
-        # `connect` for seeker -> service_provider ("Service Enquiry
-        # Requirement", no required fields).
         body_template:
           action_type: "connect"
           source_item:
@@ -763,8 +750,6 @@ tools:
             item_type: "profile_1.0"
             item_id: "{service_item_id}"
             item_instance_url: "{instance_url}"
-          # No `requirements_snapshot`: the upstream validates it with
-          # additionalProperties:false, so any field in it fails the call.
           acting_as_user_id: "{acting_as_user_id}"
           consent:
             acknowledged: true
@@ -782,8 +767,6 @@ tools:
               The caller's profile item_id — from fetch_profile or from
               save_profile's response.
           - name: acting_as_user_id
-            # Session, not agent: both producers map `user_id` to this key,
-            # so the model never has to echo a 36-character identifier.
             source: session
             type: string
             required: true

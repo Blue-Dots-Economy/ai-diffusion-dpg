@@ -544,12 +544,6 @@ connectors:
         max_calls_per_turn: 1
         grounded_params:
           # Same guard apply_job carries, for the same reason. Measured on
-          # a live local call: save_profile went out with a profile_item_id
-          # that was really a JOB id lifted from the fetch_jobs list, which
-          # made it an update of a profile that does not exist. The
-          # upstream answered 400 and the agent told the caller their
-          # details were saved AND their application sent. Neither had
-          # happened.
           #
           # Naming the source tools is what catches it: the value is a
           # well-formed UUID that really did appear in a tool result, just
@@ -639,23 +633,10 @@ connectors:
         # an application at an employer the caller never chose, sent to a real
         # hiring manager with their name and number on it.
         max_calls_per_turn: 1
-        # Asking before applying is a PROMPT rule, not an enforced one.
-        # Measured across 95 applications on this build: 3 went out unasked
-        # (3.2%), down from 5 in 41 (12%) before the apply_confirm rewrite.
-        # A framework guard keyed on the pending question was built and
-        # removed: the pending stops resolving across the profile_setup
-        # detour, so enforcing it would have refused 58% of genuine
-        # applications, and making it hold meant reworking the routing on the
-        # most irreversible step of the call for a 3% residue.
         # ENFORCED, not just described. Each of these must appear verbatim in a
         # tool result from this conversation or the call is refused before it
         # leaves us. `must_not_substitute` below has always asked for this in
         # prose and the model still broke it: on a live local call it sent
-        # a job_item_id appearing nowhere in any fetch_jobs response, in
-        # place of the id of the row the caller had actually picked. The
-        # upstream cannot tell an invented UUID from a stale one, so it
-        # answered 422 TARGET_ITEM_NOT_FOUND, and the agent relayed that
-        # to the caller as
         # "आपकी एप्लीकेशन पहले से लगी हुई है" — you have already applied.
         # The caller had not applied to anything.
         # Each param names the tools whose results may supply it. A bare list
@@ -698,11 +679,7 @@ connectors:
           selected_service_item_id are known AND the caller has explicitly
           said yes in the current turn.
         required_before_calling: [profile_item_id, selected_service_item_id]
-        # One enquiry per turn, for the same reason apply_job caps at one:
-        # each call is an outward-facing record in the caller's name.
         max_calls_per_turn: 1
-        # As on apply_job, asking first is a prompt rule rather than an
-        # enforced one — see the note there.
         grounded_params:
           service_item_id: [fetch_services]
           profile_item_id: [fetch_profile, save_profile]
@@ -753,17 +730,7 @@ preprocessing:
 
     # human: the caller wants a person ("इंसान से बात कराओ") — derives human_request below.
     # identity: who/what the assistant is ("आप कौन हैं?") — answered from the <identity> block.
-    # services: the caller wants help rather than a job — training, a course,
-    # placement help, counselling, travel or accommodation support. Without its
-    # own topic these land in `other`, which no routing rule can branch on.
     topics: [job_details, salary, location, search, profile, process, identity, human, language, services, other]
-    # Asking for something else puts the offered list out of date. Until this
-    # existed the list stayed live: after "नहीं, ट्रेनिंग दिखाइए" ("no, show me
-    # training") a later "पहला वाला" ("the first one") still resolved against
-    # the JOBS, and an application went to an employer the caller had declined.
-    # The mirror of it sent a training enquiry to someone who had asked for
-    # jobs. A turn that also SELECTS is choosing from the list, not leaving it,
-    # and is exempt in code.
     abandons_offered_acts: [request_change]
     signals: [pay_disappointment, distance_issue, counsellor_request]
     slots:
@@ -824,25 +791,15 @@ preprocessing:
       - { pending: age, caller: "ठीक है, मैं फोन रखता हूँ", out: { acts: [close], relation: new_topic } }
       - { pending: location, caller: "अभी रहने दीजिए, धन्यवाद", out: { acts: [close], relation: new_topic } }
       - { pending: name, caller: "नहीं, अभी नहीं चाहिए, बाय", out: { acts: [close], relation: new_topic } }
-      # Asking for help instead of a job. Each names a thing to learn or to be
-      # helped with, not a role to be hired for — that is what separates
-      # `services` from `search`.
       - { pending: select_job, caller: "मुझे ट्रेनिंग चाहिए", out: { acts: [request_change], relation: new_topic, topic: services } }
       - { pending: trade, caller: "कोई कोर्स है क्या", out: { acts: [ask], relation: new_topic, topic: services } }
-      # Measured: this wrote trade="Training" onto the caller's profile — a
-      # service request stored as the work they do. No slots here on purpose.
       - { pending: trade, caller: "मुझे ट्रेनिंग चाहिए", out: { acts: [request_change], relation: new_topic, topic: services } }
       - { pending: trade, caller: "काम सिखाने वाली जगह बताइए", out: { acts: [request_change], relation: new_topic, topic: services } }
       - { pending: location, caller: "पहले काम सीखना है", out: { acts: [provide_info], relation: new_topic, topic: services } }
       - { pending: select_job, caller: "इंटरव्यू की तैयारी में मदद मिलेगी", out: { acts: [ask], relation: new_topic, topic: services } }
-      # The answer to "another city or trade, or help like training?" — one
-      # branch each. The caller who wants another city is NOT asking for help.
       - { pending: jobs_or_services, caller: "हाँ, ट्रेनिंग दिखाइए", out: { acts: [affirm], relation: answers_pending, topic: services } }
       - { pending: jobs_or_services, caller: "मदद वाली बात बताइए", out: { acts: [request_change], relation: answers_pending, topic: services } }
       - { pending: jobs_or_services, caller: "नहीं, दूसरा शहर देखिए", out: { acts: [request_change], relation: answers_pending, topic: search } }
-      # Leaving the services path for jobs. Measured: without these the turn
-      # derived no intent at all, the catch-all kept the caller in
-      # connect_confirm, and their next pick sent a service enquiry.
       - { pending: enquiry_confirm, caller: "नहीं, नौकरी ही दिखाइए", out: { acts: [deny, request_change], relation: answers_pending, topic: search } }
       - { pending: select_service, caller: "नहीं, नौकरी ही दिखाइए", out: { acts: [deny, request_change], relation: answers_pending, topic: search } }
       - { pending: select_service, caller: "ट्रेनिंग नहीं, काम चाहिए", out: { acts: [deny, request_change], relation: answers_pending, topic: search } }
@@ -863,13 +820,8 @@ preprocessing:
       - { acts: [deny], pending: consent, relation: answers_pending, intent: decline }
       - { acts: [select], pending: select_job, intent: job_pick }
       - { acts: [select], pending: submit_confirm, intent: job_pick }
-      # The services twins of the two rows above: picking an organisation
-      # from the offered list, or re-picking at the confirmation.
       - { acts: [select], pending: select_service, intent: service_pick }
       - { acts: [select], pending: enquiry_confirm, intent: service_pick }
-      # Wanting JOBS wins over "show me other services": the row below treats a
-      # bare deny at the enquiry as "offer different help", which is right only
-      # when they have not said what they want instead.
       - { acts: [deny, request_change], topic: search, intent: explore_more }
       - { acts: [deny, request_change], pending: enquiry_confirm, intent: services_request }
       # UNREACHABLE as written, kept because routing still names apply_now.
@@ -891,8 +843,6 @@ preprocessing:
       - { acts: [deny], pending: submit_confirm, relation: answers_pending, intent: decline }
       - { acts: [request_change], topic: search, intent: explore_more }
       - { acts: [ask], topic: search, intent: explore_more }
-      # Wanting help rather than a job, however it is phrased. Routed by each
-      # phase to service_match; no phase treats it as a catch-all.
       - { acts: [request_change], topic: services, intent: services_request }
       - { acts: [ask], topic: services, intent: services_request }
       - { acts: [provide_info], topic: services, intent: services_request }
@@ -2234,15 +2184,8 @@ agent_workflow:
       # The gate reads this list, not the template's placeholders, so the two
       # are allowed to differ on purpose.
       fixed_opening_requires: [stored_trade, stored_location]
-      # Greet a caller we have met before by name. Separate from the line
-      # above because it must disappear cleanly when there is no name on
-      # file — a caller we cannot name should hear the sentence unchanged,
-      # not a gap where their name would be.
       fixed_opening_prefix: "नमस्ते {stored_name} जी। "
       fixed_opening_prefix_requires: [stored_name]
-      # Names written by the agent itself before it was stopped from inventing
-      # them. Greeting someone as "Unknown जी" or "caller जी" is worse than
-      # not greeting them at all, and the rows outlive the fix.
       fixed_opening_prefix_unless: ["Unknown", "caller", "Caller", "N/A", "NA", "[उपयोगकर्ता का नाम]"]
       opening_phrase: >
         आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?
@@ -2437,8 +2380,6 @@ agent_workflow:
           next_subagent_id: job_match
         - intent: job_pick
           next_subagent_id: job_match
-        # The caller asked for help rather than a job. Explicit, never a
-        # catch-all: no turn reaches the services path without saying so.
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
@@ -2679,10 +2620,6 @@ agent_workflow:
           expects: "इस नौकरी के लिए आवेदन भेजने की हाँ/ना, या कोई दूसरी नौकरी"
           options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
           resolves_to: selected_job_item_id
-        # The three-way question this phase asks when it has nothing to
-        # offer: another city, another trade, or help instead. Keyed on the
-        # bot's own last reply, so it applies only on the turn that answers
-        # that question and never shadows select_job.
         - id: jobs_or_services
           when: [{ field: current_question, operator: contains, value: ["मदद चाहिए", "ट्रेनिंग जैसी"] }]
           expects: "दूसरा शहर, दूसरा ट्रेड, या ट्रेनिंग जैसी मदद"
@@ -2713,8 +2650,6 @@ agent_workflow:
         - intent: termination_blocked
           next_subagent_id: confirm_close
           session_writes: { close_return_to: job_match }
-        # The caller asked for help rather than a job. Explicit, never a
-        # catch-all: no turn reaches the services path without saying so.
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
@@ -2997,13 +2932,6 @@ agent_workflow:
         - intent: termination_blocked
           next_subagent_id: confirm_close
           session_writes: { close_return_to: profile_setup }
-        # The caller changed their mind about WHAT they want while their
-        # profile was being saved. Measured: both arrive here, not in the
-        # phase that offered the list — "नहीं, नौकरी ही दिखाइए" derives
-        # explore_more and "नहीं, ट्रेनिंग दिखाइए" derives services_request,
-        # and with no rule for either they fell to the catch-all and stayed,
-        # where the phase could only ask which item they meant from a list it
-        # had just been made to forget. Send them back to the search instead.
         - intent: explore_more
           next_subagent_id: job_match
           session_writes: { services_in_play: "false", selected_service_item_id: "" }
@@ -3017,10 +2945,6 @@ agent_workflow:
         # the already-selected job and creates a name-asking loop.
         # Stay in profile_setup; the prompt will clarify.
         # Setup done → route to apply_confirm.
-        # A caller who came here from the services path has a service
-        # selected and no job. More specific than the rule below, so it is
-        # listed first; when no service is selected it cannot match and the
-        # job path is unchanged.
         - intent: "*"
           conditions:
             - field: profile_setup_done
@@ -3051,29 +2975,11 @@ agent_workflow:
         # talk. Measured on a live call — it answered "आपका आवेदन भेज दिया
         # गया है" from this phase, which its own prompt forbids, and no
         # application existed.
-        # The services twin of the rule below, and the one that actually
-        # fires for them: this phase is left the moment a profile exists,
-        # and a caller who came here from service_match is owed the enquiry
-        # confirmation, not the application one. More specific, so first.
-        #
-        # Keyed on `services_in_play`, a flag raised by the rules that route
-        # INTO service_match and lowered by the rules that route back to jobs.
-        # Two predicates were tried and both were one-way:
-        # `selected_service_item_id != ""` matched job callers, because an
-        # absent key reads as None and None is also not ""; an entry count of
-        # service_match never falls again, so a caller who said "नहीं, नौकरी
-        # ही दिखाइए" and then picked a JOB had a service enquiry sent in
-        # their name. `eq "true"` is false when the key is missing, so a
-        # caller who never went near the services path cannot match.
         - intent: "*"
           conditions:
             - field: profile_item_id
               operator: not_eq
               value: ""
-            # `in`, not `eq`, and both spellings. Memory Layer returns an
-            # enum of "true"/"false" as a Python BOOLEAN, so `eq "true"`
-            # compares True to "true" and is never satisfied — which is also
-            # why the `profile_setup_done` rule above has never fired once.
             - field: services_in_play
               operator: in
               value: [true, "true"]
@@ -3100,19 +3006,11 @@ agent_workflow:
         # before save_profile ran; two is tight enough that save_profile
         # has normally happened, and being early is recoverable (that
         # phase re-asks) where being stuck is not.
-        # A caller who came from the services path leaves to the enquiry
-        # confirmation, not the application one. Same trigger as the rule
-        # below and listed first; `selected_service_item_id` defaults to ""
-        # in the session schema, so for a job caller it cannot match.
         - intent: "*"
           conditions:
             - field: subagent_entry_count.profile_setup
               operator: gt
               value: 1
-            # `in`, not `eq`, and both spellings. Memory Layer returns an
-            # enum of "true"/"false" as a Python BOOLEAN, so `eq "true"`
-            # compares True to "true" and is never satisfied — which is also
-            # why the `profile_setup_done` rule above has never fired once.
             - field: services_in_play
               operator: in
               value: [true, "true"]
@@ -3162,16 +3060,6 @@ agent_workflow:
         - tool: apply_job
           enabled: false
           on_intent: [apply_now]
-          # `apply_now` alone is not enough to fire an application: in the
-          # 165-case NLU replay one plain acknowledgement derived apply_now, so
-          # with this rule enabled a bare "ठीक है" on a turn where a job is
-          # already selected would submit one.
-          #
-          # The requirement cannot be expressed as a condition here: `when`
-          # reads routing state (session over profile), which does not carry
-          # the pending question, so a condition on it would be permanently
-          # false and would silently stop the rule firing at all. Leave
-          # `enabled: false` until there is a way to express it.
           when: [{ field: applications_submitted, operator: eq, value: 0 }]
           args:
             profile_item_id: { from: session, key: profile_item_id }
@@ -3577,8 +3465,6 @@ agent_workflow:
               operator: eq
               value: ""
           next_subagent_id: profile_setup
-        # The caller asked for help rather than a job. Explicit, never a
-        # catch-all: no turn reaches the services path without saying so.
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
@@ -3616,19 +3502,6 @@ agent_workflow:
           next_subagent_id: ended
         - intent: "*"
           next_subagent_id: apply_confirm
-    # ─────────────────────────────────────────────────────────────
-    # service_match — the caller wants help rather than a job: training,
-    # a course, placement help, counselling, travel or accommodation
-    # support. Reached ONLY when they ask for it, or answer the "another
-    # city, another trade, or help?" question with the third option.
-    #
-    # Never reached by a catch-all. An earlier services phase was entered
-    # on `intent: "*"` after every apply and pitched a service to everyone
-    # whether they wanted one or not; it also shadowed the global
-    # termination rule, so a caller saying "अच्छा, मैं फोन रखता हूँ"
-    # ("alright, I'm hanging up") scored termination_intent at 0.95 and was
-    # routed into the pitch instead of out of the call. Every rule below is
-    # explicit for that reason.
     # ─────────────────────────────────────────────────────────────
     - id: service_match
       name: Service Match
@@ -3701,9 +3574,6 @@ agent_workflow:
       routing:
         - intent: off_track
           next_subagent_id: service_match
-        # A goodbye ends the call from here as from anywhere. Declared per
-        # phase because pass 1 (these rules) always beats the workflow-level
-        # global rule, and the phase ends in a catch-all.
         - intent: termination_intent
           next_subagent_id: ended
         - intent: termination_blocked
@@ -3711,16 +3581,12 @@ agent_workflow:
           next_subagent_id: ended
         - intent: termination_blocked
           next_subagent_id: confirm_close
-        # Back to jobs whenever they ask. The services path is a detour, not
-        # a destination.
         - intent: explore_more
           next_subagent_id: job_match
           session_writes: { services_in_play: "false", selected_service_item_id: "" }
         - intent: job_pick
           next_subagent_id: job_match
           session_writes: { services_in_play: "false", selected_service_item_id: "" }
-        # Picked an organisation and already has a profile: straight to the
-        # confirmation. Without one, the same detour the job path takes.
         - intent: service_pick
           conditions:
             - field: profile_item_id
@@ -3732,11 +3598,6 @@ agent_workflow:
         - intent: "*"
           next_subagent_id: service_match
 
-    # ─────────────────────────────────────────────────────────────
-    # connect_confirm — ask, then send the enquiry. The twin of
-    # apply_confirm, and irreversible in the same way: it puts the
-    # caller's name in front of a real organisation.
-    # ─────────────────────────────────────────────────────────────
     - id: connect_confirm
       name: Connect & Confirm
       description: >
@@ -3830,7 +3691,6 @@ agent_workflow:
           next_subagent_id: ended
         - intent: termination_blocked
           next_subagent_id: confirm_close
-        # Changed their mind about which organisation, or wants jobs instead.
         - intent: service_pick
           next_subagent_id: connect_confirm
         - intent: explore_more
@@ -3839,15 +3699,12 @@ agent_workflow:
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
-        # Once the enquiry is in, the call can close.
         - intent: "*"
           conditions:
             - field: service_enquiries_submitted
               operator: gt
               value: 0
           next_subagent_id: ended
-        # Backstop, as on the apply path: three turns here without one means
-        # it is not going to happen.
         - intent: "*"
           conditions:
             - field: subagent_entry_count.connect_confirm
@@ -3857,7 +3714,6 @@ agent_workflow:
         - intent: "*"
           next_subagent_id: connect_confirm
 
-    # ─────────────────────────────────────────────────────────────
     # confirm_close — the caller sounded like they were leaving before
     # anything was applied for ("अभी व्यस्त हूँ, बाद में बात करेंगे").
     #
