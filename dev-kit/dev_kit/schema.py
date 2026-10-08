@@ -65,13 +65,6 @@ class InvocationRulesConfig(BaseModel):
             "writes, a prompt rule is not enough."
         ),
     )
-    requires_pending: Optional[str] = Field(
-        default=None,
-        description=(
-            "Pending question that must be open for this tool to execute. For "
-            "irreversible, outward-facing tools, call_when is not enough."
-        ),
-    )
     grounded_params: Union[List[str], Dict[str, List[str]]] = Field(
         default_factory=list,
         description=(

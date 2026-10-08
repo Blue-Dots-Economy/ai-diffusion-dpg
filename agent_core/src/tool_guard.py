@@ -1,8 +1,7 @@
 """
 agent_core/src/tool_guard.py
 One guard + cache decision for every tool-execution site (Spec E §5.1-5.2):
-consent -> pending question -> per-turn cap -> grounding -> cache. Live
-execution, shaping,
+consent -> per-turn cap -> grounding -> cache. Live execution, shaping,
 mapping and persistence stay at each site. Belongs to the Agent Core DPG block.
 """
 from __future__ import annotations
@@ -42,15 +41,6 @@ def _cap_reason(tool_name: str) -> str:
     )
 
 
-def _unasked_reason(tool_name: str, required: str, pending: str | None) -> str:
-    return (
-        f"Refused: {tool_name} may only run as the answer to the "
-        f"'{required}' question, and that question is not open "
-        f"(pending={pending or 'none'}). Ask it, wait for the caller's "
-        f"answer, and call this tool on the turn that answers it."
-    )
-
-
 def _ungrounded_reason(bad: set[str]) -> str:
     return (
         f"Refused: {', '.join(sorted(bad))} did not come from "
@@ -72,8 +62,6 @@ def check_tool_call(
     session_grounded: dict | None,
     consent_ok: bool | None,
     cache_lookup: Callable[[Any], ToolResult | None],
-    requires_pending: str | None = None,
-    pending_id: str | None = None,
     ungrounded_error: str = "REFUSED",
 ) -> GuardVerdict:
     """Apply the guards in order and decide refuse / cache-hit / go.
@@ -88,9 +76,6 @@ def check_tool_call(
         session_grounded: Param -> session values lifted by ``session_mapping``, or None.
         consent_ok: None when consent is not required; else whether it is granted.
         cache_lookup: ``tool_cache.lookup``.
-        requires_pending: ``invocation_rules.requires_pending`` for this tool,
-            or None when the tool declares no required question.
-        pending_id: The question actually open this turn.
         ungrounded_error: ``error`` code on the grounding refusal (sync keeps
             its historical ``UNGROUNDED_PARAMETER``).
 
@@ -104,14 +89,6 @@ def check_tool_call(
             result={}, success=False, error="consent_required",
             result_text=_CONSENT_REASON,
         ))
-    if requires_pending and pending_id != requires_pending:
-        logger.warning(
-            "tool_guard.pending_not_open tool=%s requires=%s pending=%s",
-            tc.tool_name, requires_pending, pending_id,
-        )
-        return GuardVerdict("refuse", refusal_result(
-            tc.tool_name, tc.tool_use_id,
-            _unasked_reason(tc.tool_name, requires_pending, pending_id)))
     if over_call_cap(cap, used):
         logger.warning("tool_guard.tool_call_cap tool=%s used=%s", tc.tool_name, used)
         return GuardVerdict("refuse", refusal_result(

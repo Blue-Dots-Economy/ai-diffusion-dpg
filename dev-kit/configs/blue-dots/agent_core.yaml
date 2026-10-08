@@ -639,19 +639,14 @@ connectors:
         # an application at an employer the caller never chose, sent to a real
         # hiring manager with their name and number on it.
         max_calls_per_turn: 1
-        # NOT guarded with `requires_pending: submit_confirm`, though that is
-        # exactly the rule we want. It cannot be keyed on the pending question
-        # yet: measured over 72 live apply turns, only 30 ran while
-        # submit_confirm was open — 32 ran with NO pending resolved, 8 under
-        # select_job, 2 under consent. The pending is declared on job_match and
-        # apply_confirm, and the pick routes through profile_setup in between,
-        # so it stops resolving exactly when the apply question is answered.
-        # Enforcing it today would refuse 58% of genuine applications.
-        #
-        # The guard mechanism is in place and generic; what it needs is the
-        # pending surviving the phase transition, which changes which routing
-        # rule wins on the most irreversible step of the call. Worth doing with
-        # a measured run, not blind.
+        # Asking before applying is a PROMPT rule, not an enforced one.
+        # Measured across 95 applications on this build: 3 went out unasked
+        # (3.2%), down from 5 in 41 (12%) before the apply_confirm rewrite.
+        # A framework guard keyed on the pending question was built and
+        # removed: the pending stops resolving across the profile_setup
+        # detour, so enforcing it would have refused 58% of genuine
+        # applications, and making it hold meant reworking the routing on the
+        # most irreversible step of the call for a 3% residue.
         # ENFORCED, not just described. Each of these must appear verbatim in a
         # tool result from this conversation or the call is refused before it
         # leaves us. `must_not_substitute` below has always asked for this in
@@ -706,11 +701,8 @@ connectors:
         # One enquiry per turn, for the same reason apply_job caps at one:
         # each call is an outward-facing record in the caller's name.
         max_calls_per_turn: 1
-        # `requires_pending: enquiry_confirm` belongs here and is deliberately
-        # absent for now: this path has the same shape as the apply path, where
-        # the pending stops resolving across the profile_setup detour. Enable it
-        # once a measured run shows enquiry_confirm open on the turn that
-        # answers the question — see the note on apply_job.
+        # As on apply_job, asking first is a prompt rule rather than an
+        # enforced one — see the note there.
         grounded_params:
           service_item_id: [fetch_services]
           profile_item_id: [fetch_profile, save_profile]
@@ -840,6 +832,12 @@ preprocessing:
       - { pending: jobs_or_services, caller: "हाँ, ट्रेनिंग दिखाइए", out: { acts: [affirm], relation: answers_pending, topic: services } }
       - { pending: jobs_or_services, caller: "मदद वाली बात बताइए", out: { acts: [request_change], relation: answers_pending, topic: services } }
       - { pending: jobs_or_services, caller: "नहीं, दूसरा शहर देखिए", out: { acts: [request_change], relation: answers_pending, topic: search } }
+      # Leaving the services path for jobs. Measured: without these the turn
+      # derived no intent at all, the catch-all kept the caller in
+      # connect_confirm, and their next pick sent a service enquiry.
+      - { pending: enquiry_confirm, caller: "नहीं, नौकरी ही दिखाइए", out: { acts: [deny, request_change], relation: answers_pending, topic: search } }
+      - { pending: select_service, caller: "नहीं, नौकरी ही दिखाइए", out: { acts: [deny, request_change], relation: answers_pending, topic: search } }
+      - { pending: select_service, caller: "ट्रेनिंग नहीं, काम चाहिए", out: { acts: [deny, request_change], relation: answers_pending, topic: search } }
       - { pending: jobs_or_services, caller: "प्लंबर का काम देखिए", out: { acts: [provide_info], relation: answers_pending, slots: { trade: Plumber } } }
       - { pending: select_job, caller: "इंग्लिश में बात करो", out: { acts: [request_change], relation: new_topic, topic: language, slots: { language_preference: english } } }
       - { pending: age, caller: "हिंदी में बोलिए", out: { acts: [request_change], relation: new_topic, topic: language, slots: { language_preference: hindi } } }
@@ -861,6 +859,10 @@ preprocessing:
       # from the offered list, or re-picking at the confirmation.
       - { acts: [select], pending: select_service, intent: service_pick }
       - { acts: [select], pending: enquiry_confirm, intent: service_pick }
+      # Wanting JOBS wins over "show me other services": the row below treats a
+      # bare deny at the enquiry as "offer different help", which is right only
+      # when they have not said what they want instead.
+      - { acts: [deny, request_change], topic: search, intent: explore_more }
       - { acts: [deny, request_change], pending: enquiry_confirm, intent: services_request }
       # UNREACHABLE as written, kept because routing still names apply_now.
       # Measured over 108 live NLU turns: `affirm` + `submit_confirm` never
@@ -3047,9 +3049,13 @@ agent_workflow:
             - field: profile_item_id
               operator: not_eq
               value: ""
+            # `in`, not `eq`, and both spellings. Memory Layer returns an
+            # enum of "true"/"false" as a Python BOOLEAN, so `eq "true"`
+            # compares True to "true" and is never satisfied — which is also
+            # why the `profile_setup_done` rule above has never fired once.
             - field: services_in_play
-              operator: eq
-              value: "true"
+              operator: in
+              value: [true, "true"]
           next_subagent_id: connect_confirm
         - intent: "*"
           conditions:
@@ -3082,9 +3088,13 @@ agent_workflow:
             - field: subagent_entry_count.profile_setup
               operator: gt
               value: 1
+            # `in`, not `eq`, and both spellings. Memory Layer returns an
+            # enum of "true"/"false" as a Python BOOLEAN, so `eq "true"`
+            # compares True to "true" and is never satisfied — which is also
+            # why the `profile_setup_done` rule above has never fired once.
             - field: services_in_play
-              operator: eq
-              value: "true"
+              operator: in
+              value: [true, "true"]
           next_subagent_id: connect_confirm
         - intent: "*"
           conditions:
@@ -3136,14 +3146,11 @@ agent_workflow:
           # with this rule enabled a bare "ठीक है" on a turn where a job is
           # already selected would submit one.
           #
-          # The requirement is NOT expressed as a condition here. `when` reads
-          # routing state (session over profile), which does not carry the
-          # pending question, so a condition on it would be permanently false
-          # and would silently stop the rule firing at all. The framework now
-          # offers `invocation_rules.requires_pending` for this, enforced on
-          # the pre-dispatch path as on every other — but see the note on
-          # apply_job for why it is not switched on yet. Until it is, do not
-          # set `enabled: true` here.
+          # The requirement cannot be expressed as a condition here: `when`
+          # reads routing state (session over profile), which does not carry
+          # the pending question, so a condition on it would be permanently
+          # false and would silently stop the rule firing at all. Leave
+          # `enabled: false` until there is a way to express it.
           when: [{ field: applications_submitted, operator: eq, value: 0 }]
           args:
             profile_item_id: { from: session, key: profile_item_id }

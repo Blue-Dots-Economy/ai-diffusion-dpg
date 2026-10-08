@@ -366,19 +366,6 @@ class InvocationRules(BaseModel):
     context are the case that needs it — a fabricated one is well-formed, so
     only checking it against what upstreams actually returned catches it.
     """
-    requires_pending: Optional[str] = None
-    """Pending question that must be open for this tool to execute.
-
-    For tools whose effect is irreversible and outward-facing. ``call_when``
-    states the same requirement in prose and a model will still act on a turn
-    that merely NAMED the thing to act on — measured on live calls, an
-    application was submitted on a bare job pick, before anyone had been asked
-    whether to send it. The pending id is the question the framework recorded
-    itself asking; a tool call arriving when it is not open is refused.
-
-    The domain names the tool and the question it requires. Nothing here is
-    specific to any domain.
-    """
     session_only_params: dict[str, list[str]] = Field(default_factory=dict)
     """Params the model may not supply itself: param -> session keys to read.
 
