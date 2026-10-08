@@ -31,13 +31,15 @@ class _Cache:
 
 
 def _agent(options_tool="fetch_jobs"):
+    """An agent whose current subagent declares one pending offering a list."""
     agent = _make_agent_core()
     agent._dialogue_cfg = SimpleNamespace(abandons_offered_acts=("request_change",))
     pending = SimpleNamespace(
         id="submit_confirm",
         options_from=SimpleNamespace(tool=options_tool) if options_tool else None,
     )
-    agent._pending_resolver = SimpleNamespace(resolve=lambda *_: pending)
+    agent._workflow.subagents["apply_confirm"] = SimpleNamespace(pending=[pending])
+    agent._workflow.subagents["opening"] = SimpleNamespace(pending=[pending])
     return agent
 
 
@@ -75,12 +77,22 @@ def test_an_unlisted_act_leaves_the_offer_alone():
     assert cache.abandoned == []
 
 
-def test_nothing_happens_when_the_pending_offers_no_options():
+def test_nothing_happens_when_no_pending_offers_a_list():
     agent, cache = _agent(options_tool=None), _Cache()
 
     agent._abandon_offered(_understanding("request_change"), "opening", _bundle(), cache)
 
     assert cache.abandoned == []
+
+
+def test_it_does_not_need_the_pending_to_resolve_this_turn():
+    """The turn that changes the subject routinely resolves no pending."""
+    agent, cache = _agent(), _Cache()
+    agent._pending_resolver = SimpleNamespace(resolve=lambda *_: None)
+
+    agent._abandon_offered(_understanding("request_change"), "apply_confirm", _bundle(), cache)
+
+    assert cache.abandoned == ["fetch_jobs"]
 
 
 def test_served_is_left_alone_when_the_cache_had_nothing_to_drop():
@@ -100,10 +112,10 @@ def test_a_missing_served_map_is_not_an_error():
     assert cache.abandoned == ["fetch_jobs"]
 
 
-def test_a_resolver_failure_never_reaches_the_turn():
+def test_a_failure_never_reaches_the_turn():
     agent, cache = _agent(), _Cache()
-    agent._pending_resolver = SimpleNamespace(
-        resolve=lambda *_: (_ for _ in ()).throw(RuntimeError("boom")))
+    agent._workflow = SimpleNamespace(
+        subagents=property(lambda self: (_ for _ in ()).throw(RuntimeError("boom"))))
 
     try:
         agent._abandon_offered(_understanding("request_change"), "apply_confirm", _bundle(), cache)

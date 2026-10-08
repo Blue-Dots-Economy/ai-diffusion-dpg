@@ -1136,17 +1136,27 @@ class AgentCore(AgentCoreBase):
             triggers = set(self._dialogue_cfg.abandons_offered_acts)
             if not acts & triggers or "select" in acts:
                 return
-            pending = self._pending_resolver.resolve(subagent_id, self._routing_state(bundle))
-            of = getattr(pending, "options_from", None) if pending is not None else None
-            if of is None or not tool_cache.abandon(of.tool):
+            # Read the tools from the subagent's DECLARED pending questions,
+            # not from whichever one resolves this turn. On the turn that
+            # changes the subject the pending routinely resolves to nothing —
+            # measured, `pending=-` on every such turn — and keying on it meant
+            # this never ran once.
+            sa = self._workflow.subagents.get(subagent_id)
+            tools = {
+                of.tool for of in (
+                    getattr(p, "options_from", None) for p in getattr(sa, "pending", ()) or ()
+                ) if of is not None and getattr(of, "tool", None)
+            }
+            dropped = sorted(t for t in tools if tool_cache.abandon(t))
+            if not dropped:
                 return
             served = bundle.session.get(SERVED_TOOL_RESULTS_KEY)
-            if isinstance(served, dict) and of.tool in served:
+            if isinstance(served, dict):
                 bundle.session[SERVED_TOOL_RESULTS_KEY] = {
-                    k: v for k, v in served.items() if k != of.tool}
+                    k: v for k, v in served.items() if k not in dropped}
             logger.info("orchestrator.offered_abandoned", extra={
                 "operation": "orchestrator.abandon_offered", "status": "success",
-                "tool": of.tool, "pending": getattr(pending, "id", None)})
+                "subagent_id": subagent_id, "tools": dropped})
         except Exception as e:  # noqa: BLE001 — never raise into the turn
             logger.warning("orchestrator.abandon_offered_failed", extra={
                 "operation": "orchestrator.abandon_offered", "status": "failure",
