@@ -354,11 +354,6 @@ def test_has_fresh_for_is_false_for_an_uncached_tool():
     assert cache.has_fresh_for("fetch_jobs", {"query_text": "anything"}) is False
 
 
-# ---------------------------------------------------------------------------
-# abandon() — the offered list stops being on offer
-# ---------------------------------------------------------------------------
-
-
 def test_abandon_drops_the_tools_entries():
     h = args_hash({})
     cache = TurnToolCache(POL, [entry("fetch_jobs", {"items": [1, 2]}, h, scope="session")],

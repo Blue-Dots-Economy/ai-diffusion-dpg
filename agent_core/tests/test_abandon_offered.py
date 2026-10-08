@@ -1,10 +1,4 @@
-"""The offered list stops being on offer once the caller asks for something else.
-
-A tool's rows stay available to the option resolver until something replaces
-them, so an ordinal spoken after a change of subject still resolved against the
-old list — measured on both the job and the services paths, each sending the
-wrong thing. These cover the decision to drop them.
-"""
+"""The offered list stops being on offer once the caller asks for something else."""
 
 from __future__ import annotations
 
@@ -87,8 +81,7 @@ def test_nothing_happens_when_no_list_was_ever_read_out():
 
 
 def test_it_drops_what_was_read_out_whatever_phase_the_caller_is_in_now():
-    """By the time the subject changes the caller has left the phase that
-    offered the list, so the current subagent cannot name the tool."""
+    """The caller has left the phase that offered the list by then."""
     agent, cache = _agent(), _Cache()
     bundle = _bundle({"fetch_services": "h1"})
 
@@ -129,11 +122,7 @@ def test_a_failure_never_reaches_the_turn():
 
 
 def test_the_abandoned_tools_exchanges_leave_the_replay():
-    """The resolver is not the only way the model sees the rows.
-
-    Clearing the cache stops the list being OFFERED, but the replayed tool
-    results still carry it and the model acts on what it reads there.
-    """
+    """The model reads the rows from the replay, not only the resolver."""
     agent, cache = _agent(), _Cache()
     bundle = _bundle(
         {"fetch_jobs": "h1"},

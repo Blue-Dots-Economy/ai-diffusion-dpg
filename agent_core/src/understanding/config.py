@@ -63,8 +63,7 @@ class DialogueActConfig:
     examples: tuple[dict, ...]
     act_intents: tuple[ActIntentRule, ...]
     gate: tuple[GateItem, ...]
-    # Acts that mean the caller has turned away from the list they were
-    # offered. Declared by the domain; nothing here knows what any act means.
+    # Acts that mean the caller has turned away from the offered list.
     abandons_offered_acts: tuple[str, ...]
     off_track_threshold: int
     off_track_intent: str

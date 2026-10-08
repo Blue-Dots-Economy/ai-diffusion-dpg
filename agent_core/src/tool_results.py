@@ -268,11 +268,8 @@ class TurnToolCache:
     def abandon(self, tool: str) -> bool:
         """Drop a tool's cached results because the caller has turned away.
 
-        The option resolver offers the last list a tool returned, and that list
-        outlives the caller's interest in it: after "no, show me training" a
-        later "the first one" still resolved against the jobs and an
-        application went out. Dropping the entries leaves nothing for an
-        ordinal to point at, so the next list has to be fetched and read.
+        Leaves nothing for an ordinal to point at, so the next list has to be
+        fetched and read out before anything can be picked from it.
 
         Args:
             tool: Tool whose results are no longer on offer.

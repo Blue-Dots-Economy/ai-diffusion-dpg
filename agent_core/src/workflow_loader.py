@@ -135,13 +135,11 @@ class SubAgent:
                           field in fixed_opening_requires is present in session
                           and the caller's own turn carried no entities.
         fixed_opening_requires: Session field names the template substitutes.
-        fixed_opening_prefix: Optional fragment prepended to the fixed opening,
-                          spoken only when every fixed_opening_prefix_requires
-                          field has a value. For content that is welcome when
-                          present and must leave no trace when absent.
+        fixed_opening_prefix: Fragment prepended to the fixed opening, spoken
+                          only when every fixed_opening_prefix_requires field
+                          has a value.
         fixed_opening_prefix_requires: Session field names the prefix needs.
-        fixed_opening_prefix_unless: Values that count as absent — a stored
-                          placeholder rather than a real value.
+        fixed_opening_prefix_unless: Values that count as absent.
         predispatch:      Raw pre-dispatch rule dicts in config order (Spec E).
     """
 

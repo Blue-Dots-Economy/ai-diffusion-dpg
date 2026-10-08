@@ -103,9 +103,7 @@ logger = logging.getLogger(__name__)
 # (NLU dialogue-acts spec §5.2).
 SERVED_TOOL_RESULTS_KEY = "served_tool_results"
 RECENT_TOOL_EXCHANGES_KEY = "recent_tool_exchanges"
-# What `_abandon_offered` rewrites: the list on offer, and the replayed rounds
-# that carry its rows. Both are session-scoped, so both must be written back or
-# the next turn reloads the list it was meant to forget.
+# Session keys `_abandon_offered` rewrites; both must be written back.
 ABANDON_SESSION_KEYS = (SERVED_TOOL_RESULTS_KEY, RECENT_TOOL_EXCHANGES_KEY)
 
 # A ``turn_carryover`` is written by whichever replica ran the interrupted
@@ -375,10 +373,7 @@ class AgentCore(AgentCoreBase):
         # recent_turns serves both the NLU frame and <recent>; keep enough for either.
         self._recent_keep = max(self._dialogue_cfg.history_turns, self._agent_history_turns)
         self._pending_resolver = PendingResolver(self._workflow)
-        # Tools whose results are offered to the caller as a numbered list,
-        # taken from every pending that declares an ``options_from``. Only
-        # these can be pointed at by an ordinal, so only these are dropped
-        # when the caller turns away — a profile lookup is not an offer.
+        # Only rows offered as a numbered list can be named by an ordinal.
         self._option_tools: frozenset[str] = frozenset(
             of.tool
             for sa in (self._workflow.subagents or {}).values()
@@ -1136,36 +1131,27 @@ class AgentCore(AgentCoreBase):
         return merged
 
     def _abandon_offered(self, understanding, subagent_id: str, bundle, tool_cache) -> bool:
-        """Drop the offered list when the caller has turned away from it.
+        """Drop the offered list when the caller asks for something else.
 
-        The list a tool returned stays on offer until something replaces it, so
-        an ordinal spoken later still resolves against it. Measured: after
-        "नहीं, ट्रेनिंग दिखाइए" ("no, show me training") the caller's next
-        "पहला वाला" ("the first one") resolved against the JOBS they had just
-        declined and an application went out — and the mirror of it sent a
-        training enquiry to a caller who had asked for jobs.
+        Otherwise an ordinal spoken afterwards still resolves against the list
+        they turned away from. The domain names the acts that count; a turn
+        that also SELECTS is choosing from the list, not leaving it.
 
-        Which acts mean "turned away" is the domain's to say; a turn that also
-        SELECTS is choosing from the list, not leaving it.
+        Args:
+            understanding: This turn's TurnUnderstanding.
+            subagent_id: The subagent the caller is in, for the log record.
+            bundle: This turn's context bundle (mutated).
+            tool_cache: This turn's TurnToolCache.
 
         Returns:
-            True when something was dropped, so the caller can persist it. The
-            turn that changes the subject runs no tool, and the cache is only
-            written back when one does — without that the drop lived for a
-            single turn and the list was reloaded in time to be picked from.
+            True when something was dropped, so the caller persists it.
         """
         try:
             acts = set(getattr(getattr(understanding, "dialogue", None), "acts", ()) or ())
             triggers = set(self._dialogue_cfg.abandons_offered_acts)
             if not acts & triggers or "select" in acts:
                 return False
-            # `served_tool_results` is the record of what was last read OUT to
-            # the caller, which is what the option resolver offers and so the
-            # only thing an ordinal can point at. Two earlier keys were tried
-            # and both named the wrong thing: the pending resolved for the turn
-            # (which is nothing on the turn the subject changes), and the
-            # current subagent's declared pendings (by then the caller has
-            # moved on to profile_setup, which declares none).
+            # What was read OUT to the caller is what an ordinal points at.
             served = bundle.session.get(SERVED_TOOL_RESULTS_KEY)
             tools = sorted(set(served) & self._option_tools) if isinstance(served, dict) else []
             dropped = [t for t in tools if tool_cache.abandon(t)]
@@ -1176,12 +1162,7 @@ class AgentCore(AgentCoreBase):
                 return False
             bundle.session[SERVED_TOOL_RESULTS_KEY] = {
                 k: v for k, v in served.items() if k not in dropped}
-            # Drop the exchanges too. Clearing the cache stops the RESOLVER
-            # offering the rows, but the model reads them straight out of the
-            # replayed tool results and acts on them regardless — measured, it
-            # applied to a job by name on a turn where nothing resolved. The
-            # replay skips tools that are still fresh; an abandoned one is not
-            # fresh, so without this its whole list comes back.
+            # The model reads the rows from the replay, not only the resolver.
             bundle.session[RECENT_TOOL_EXCHANGES_KEY] = [
                 ex for ex in (bundle.session.get(RECENT_TOOL_EXCHANGES_KEY) or [])
                 if not any(
@@ -5236,14 +5217,8 @@ class AgentCore(AgentCoreBase):
                     k: str(bundle.session.get(k) or "").strip() for k in _requires
                 }
                 _have_all = bool(_requires) and all(_vals.values())
-                # An OPTIONAL prefix, spoken only when every field it names has
-                # a value. A placeholder outside ``fixed_opening_requires``
-                # cannot go in the template itself — ``format`` raises KeyError
-                # and the whole fixed line is dropped — and adding it to the
-                # required list would withhold the line from everyone the value
-                # is missing for. A separate fragment keeps the sentence intact
-                # either way, which a template with an empty slot cannot do:
-                # it leaves the punctuation behind.
+                # A fragment, not a template slot: an empty slot leaves its
+                # punctuation behind and a missing key drops the whole line.
                 _pfx_tmpl = (getattr(_sa, "fixed_opening_prefix", "") or "")
                 _pfx_req = list(getattr(_sa, "fixed_opening_prefix_requires", []) or [])
                 _pfx_skip = {
@@ -5253,11 +5228,7 @@ class AgentCore(AgentCoreBase):
                 _pfx_vals = {
                     k: str(bundle.session.get(k) or "").strip() for k in _pfx_req
                 }
-                # A stored value can be a placeholder rather than a real one.
-                # Treated as present it gets spoken: callers were greeted as
-                # "Unknown" and as "caller", from profiles written before the
-                # fabricated-name fix. The domain lists what is not a real
-                # value; nothing here knows what any of them mean.
+                # A stored placeholder would otherwise be spoken as a name.
                 if any(v.casefold() in _pfx_skip for v in _pfx_vals.values()):
                     _pfx_vals = dict.fromkeys(_pfx_vals, "")
                 _prefix = ""
