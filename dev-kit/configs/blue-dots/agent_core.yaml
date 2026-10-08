@@ -3784,6 +3784,14 @@ agent_workflow:
         Only these count as the yes: हाँ, जी हाँ, ठीक है, भेज दीजिए,
         पहुँचा दीजिए — an agreement, not a choice.
 
+        A caller who already has a profile is the case to watch. Nothing
+        stands between their pick and this phase — no details to collect, no
+        question on the way — so you arrive holding an organisation they
+        merely named. Measured: on that path the enquiry went out on the
+        pick itself, while callers who came through profile_setup were
+        asked first and were not. Arriving with a choice is not arriving
+        with a yes; ask, and send on the next turn.
+
         ## Where the fields come from
         profile_item_id — the caller's profile item_id, from fetch_profile
         or from save_profile's response. service_item_id — the chosen
