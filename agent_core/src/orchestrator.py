@@ -368,6 +368,16 @@ class AgentCore(AgentCoreBase):
         # recent_turns serves both the NLU frame and <recent>; keep enough for either.
         self._recent_keep = max(self._dialogue_cfg.history_turns, self._agent_history_turns)
         self._pending_resolver = PendingResolver(self._workflow)
+        # Tools whose results are offered to the caller as a numbered list,
+        # taken from every pending that declares an ``options_from``. Only
+        # these can be pointed at by an ordinal, so only these are dropped
+        # when the caller turns away — a profile lookup is not an offer.
+        self._option_tools: frozenset[str] = frozenset(
+            of.tool
+            for sa in (self._workflow.subagents or {}).values()
+            for of in (getattr(p, "options_from", None) for p in getattr(sa, "pending", ()) or ())
+            if of is not None and getattr(of, "tool", None)
+        )
 
         # User-state model (GH-139) — cached lookup for per-turn guidance injection.
         usm = (self._config or {}).get("conversation", {}).get("user_state_model", {}) or {}
@@ -1142,27 +1152,23 @@ class AgentCore(AgentCoreBase):
             triggers = set(self._dialogue_cfg.abandons_offered_acts)
             if not acts & triggers or "select" in acts:
                 return False
-            # Read the tools from the subagent's DECLARED pending questions,
-            # not from whichever one resolves this turn. On the turn that
-            # changes the subject the pending routinely resolves to nothing —
-            # measured, `pending=-` on every such turn — and keying on it meant
-            # this never ran once.
-            sa = self._workflow.subagents.get(subagent_id)
-            tools = {
-                of.tool for of in (
-                    getattr(p, "options_from", None) for p in getattr(sa, "pending", ()) or ()
-                ) if of is not None and getattr(of, "tool", None)
-            }
-            dropped = sorted(t for t in tools if tool_cache.abandon(t))
+            # `served_tool_results` is the record of what was last read OUT to
+            # the caller, which is what the option resolver offers and so the
+            # only thing an ordinal can point at. Two earlier keys were tried
+            # and both named the wrong thing: the pending resolved for the turn
+            # (which is nothing on the turn the subject changes), and the
+            # current subagent's declared pendings (by then the caller has
+            # moved on to profile_setup, which declares none).
+            served = bundle.session.get(SERVED_TOOL_RESULTS_KEY)
+            tools = sorted(set(served) & self._option_tools) if isinstance(served, dict) else []
+            dropped = [t for t in tools if tool_cache.abandon(t)]
             if not dropped:
                 logger.info("orchestrator.offered_abandon_noop", extra={
                     "operation": "orchestrator.abandon_offered", "status": "skipped",
-                    "subagent_id": subagent_id, "declared_tools": sorted(tools)})
+                    "subagent_id": subagent_id, "served_tools": tools})
                 return False
-            served = bundle.session.get(SERVED_TOOL_RESULTS_KEY)
-            if isinstance(served, dict):
-                bundle.session[SERVED_TOOL_RESULTS_KEY] = {
-                    k: v for k, v in served.items() if k not in dropped}
+            bundle.session[SERVED_TOOL_RESULTS_KEY] = {
+                k: v for k, v in served.items() if k not in dropped}
             logger.info("orchestrator.offered_abandoned", extra={
                 "operation": "orchestrator.abandon_offered", "status": "success",
                 "subagent_id": subagent_id, "tools": dropped})

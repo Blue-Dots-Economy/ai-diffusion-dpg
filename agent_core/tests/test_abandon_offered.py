@@ -30,16 +30,10 @@ class _Cache:
         return self.had
 
 
-def _agent(options_tool="fetch_jobs"):
-    """An agent whose current subagent declares one pending offering a list."""
+def _agent():
     agent = _make_agent_core()
     agent._dialogue_cfg = SimpleNamespace(abandons_offered_acts=("request_change",))
-    pending = SimpleNamespace(
-        id="submit_confirm",
-        options_from=SimpleNamespace(tool=options_tool) if options_tool else None,
-    )
-    agent._workflow.subagents["apply_confirm"] = SimpleNamespace(pending=[pending])
-    agent._workflow.subagents["opening"] = SimpleNamespace(pending=[pending])
+    agent._option_tools = frozenset({"fetch_jobs", "fetch_services"})
     return agent
 
 
@@ -58,7 +52,7 @@ def test_a_change_of_subject_drops_the_offered_list():
         _understanding("request_change"), "apply_confirm", bundle, cache)
 
     assert dropped is True, "the caller persists on this, so it must be reported"
-    assert cache.abandoned == ["fetch_jobs"]
+    assert cache.abandoned == ["fetch_jobs"], "a profile lookup is not an offered list"
     assert bundle.session[SERVED_TOOL_RESULTS_KEY] == {"fetch_profile": "h2"}
 
 
@@ -78,22 +72,23 @@ def test_an_unlisted_act_leaves_the_offer_alone():
     assert cache.abandoned == []
 
 
-def test_nothing_happens_when_no_pending_offers_a_list():
-    agent, cache = _agent(options_tool=None), _Cache()
+def test_nothing_happens_when_no_list_was_ever_read_out():
+    agent, cache = _agent(), _Cache()
 
-    agent._abandon_offered(_understanding("request_change"), "opening", _bundle(), cache)
-
+    assert agent._abandon_offered(
+        _understanding("request_change"), "opening", _bundle(), cache) is False
     assert cache.abandoned == []
 
 
-def test_it_does_not_need_the_pending_to_resolve_this_turn():
-    """The turn that changes the subject routinely resolves no pending."""
+def test_it_drops_what_was_read_out_whatever_phase_the_caller_is_in_now():
+    """By the time the subject changes the caller has left the phase that
+    offered the list, so the current subagent cannot name the tool."""
     agent, cache = _agent(), _Cache()
-    agent._pending_resolver = SimpleNamespace(resolve=lambda *_: None)
+    bundle = _bundle({"fetch_services": "h1"})
 
-    agent._abandon_offered(_understanding("request_change"), "apply_confirm", _bundle(), cache)
-
-    assert cache.abandoned == ["fetch_jobs"]
+    assert agent._abandon_offered(
+        _understanding("request_change"), "profile_setup", bundle, cache) is True
+    assert cache.abandoned == ["fetch_services"]
 
 
 def test_nothing_is_persisted_when_the_cache_had_nothing_to_drop():
@@ -110,15 +105,15 @@ def test_nothing_is_persisted_when_the_cache_had_nothing_to_drop():
 def test_a_missing_served_map_is_not_an_error():
     agent, cache = _agent(), _Cache()
 
-    agent._abandon_offered(_understanding("request_change"), "apply_confirm", _bundle(), cache)
-
-    assert cache.abandoned == ["fetch_jobs"]
+    assert agent._abandon_offered(
+        _understanding("request_change"), "apply_confirm", _bundle(), cache) is False
 
 
 def test_a_failure_never_reaches_the_turn():
     agent, cache = _agent(), _Cache()
-    agent._workflow = SimpleNamespace(
-        subagents=property(lambda self: (_ for _ in ()).throw(RuntimeError("boom"))))
+    agent._dialogue_cfg = SimpleNamespace(
+        abandons_offered_acts=property(
+            lambda self: (_ for _ in ()).throw(RuntimeError("boom"))))
 
     try:
         agent._abandon_offered(_understanding("request_change"), "apply_confirm", _bundle(), cache)
