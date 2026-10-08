@@ -689,6 +689,11 @@ class NLUProcessorConfig(BaseModel):
     examples: list[NLUExampleConfig] = Field(default_factory=list)
     act_intents: list[ActIntentRuleConfig] = Field(default_factory=list)
     termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig)
+    # Acts after which the offered list is no longer on offer. A list outlives
+    # the caller's interest in it: an ordinal spoken after they asked for
+    # something else still resolved against the old rows. Domain-declared;
+    # a turn that also selects is choosing from the list, not leaving it.
+    abandons_offered_acts: list[str] = Field(default_factory=list)
     off_track: OffTrackConfig = Field(default_factory=OffTrackConfig)
 
 

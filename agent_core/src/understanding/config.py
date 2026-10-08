@@ -63,6 +63,9 @@ class DialogueActConfig:
     examples: tuple[dict, ...]
     act_intents: tuple[ActIntentRule, ...]
     gate: tuple[GateItem, ...]
+    # Acts that mean the caller has turned away from the list they were
+    # offered. Declared by the domain; nothing here knows what any act means.
+    abandons_offered_acts: tuple[str, ...]
     off_track_threshold: int
     off_track_intent: str
     history_turns: int
@@ -118,6 +121,8 @@ class DialogueActConfig:
             examples=tuple(nlu.get("examples") or ()),
             act_intents=rows,
             gate=gate,
+            abandons_offered_acts=tuple(
+                str(a) for a in (nlu.get("abandons_offered_acts") or ())),
             off_track_threshold=int(off.get("threshold", 3)),
             off_track_intent=str(off.get("intent", "off_track")),
             history_turns=int(nlu.get("history_turns", 2)),

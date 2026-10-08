@@ -482,6 +482,10 @@ class NLUProcessorConfig(BaseModel):
     examples: list[NLUExampleConfig] = Field(default_factory=list, description="Few-shot examples for the NLU prompt")
     act_intents: list[ActIntentRuleConfig] = Field(default_factory=list, description="Ordered (acts, pending, relation, topic) → intent table")
     termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig, description="When a gated act-intent row may fire")
+    abandons_offered_acts: list[str] = Field(
+        default_factory=list,
+        description="Acts after which the previously offered list is no longer on offer.",
+    )
     off_track: OffTrackConfig = Field(default_factory=OffTrackConfig, description="Off-track threshold and recovery intent")
 
 

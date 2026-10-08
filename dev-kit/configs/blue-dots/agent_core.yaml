@@ -757,6 +757,14 @@ preprocessing:
     # placement help, counselling, travel or accommodation support. Without its
     # own topic these land in `other`, which no routing rule can branch on.
     topics: [job_details, salary, location, search, profile, process, identity, human, language, services, other]
+    # Asking for something else puts the offered list out of date. Until this
+    # existed the list stayed live: after "नहीं, ट्रेनिंग दिखाइए" ("no, show me
+    # training") a later "पहला वाला" ("the first one") still resolved against
+    # the JOBS, and an application went to an employer the caller had declined.
+    # The mirror of it sent a training enquiry to someone who had asked for
+    # jobs. A turn that also SELECTS is choosing from the list, not leaving it,
+    # and is exempt in code.
+    abandons_offered_acts: [request_change]
     signals: [pay_disappointment, distance_issue, counsellor_request]
     slots:
       consent_response: { type: enum, values: [granted, declined], accept_when_pending: [consent],

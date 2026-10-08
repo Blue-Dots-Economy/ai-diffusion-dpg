@@ -1118,6 +1118,35 @@ class AgentCore(AgentCoreBase):
         bundle.session[SERVED_TOOL_RESULTS_KEY] = merged
         return merged
 
+    def _abandon_offered(self, understanding, subagent_id: str, bundle, tool_cache) -> None:
+        """Drop the offered list when the caller has turned away from it.
+
+        The list a tool returned stays on offer until something replaces it, so
+        an ordinal spoken later still resolves against it. Measured: after
+        "नहीं, ट्रेनिंग दिखाइए" ("no, show me training") the caller's next
+        "पहला वाला" ("the first one") resolved against the JOBS they had just
+        declined and an application went out — and the mirror of it sent a
+        training enquiry to a caller who had asked for jobs.
+
+        Which acts mean "turned away" is the domain's to say; a turn that also
+        SELECTS is choosing from the list, not leaving it.
+        """
+        acts = set(getattr(getattr(understanding, "dialogue", None), "acts", ()) or ())
+        triggers = set(self._dialogue_cfg.abandons_offered_acts)
+        if not acts & triggers or "select" in acts:
+            return
+        pending = self._pending_resolver.resolve(subagent_id, self._routing_state(bundle))
+        of = getattr(pending, "options_from", None) if pending is not None else None
+        if of is None or not tool_cache.abandon(of.tool):
+            return
+        served = bundle.session.get(SERVED_TOOL_RESULTS_KEY)
+        if isinstance(served, dict) and of.tool in served:
+            bundle.session[SERVED_TOOL_RESULTS_KEY] = {
+                k: v for k, v in served.items() if k != of.tool}
+        logger.info("orchestrator.offered_abandoned", extra={
+            "operation": "orchestrator.abandon_offered", "status": "success",
+            "session_id": "", "tool": of.tool, "pending": getattr(pending, "id", None)})
+
     async def _apply_understanding_async(self, session_id: str, user_id: str, bundle,
                                          understanding, raw_text: str) -> None:
         """Apply an understanding's writes and signals (stream path).
@@ -1589,6 +1618,7 @@ class AgentCore(AgentCoreBase):
         entity_map: dict = self._config.get("entity_to_profile_field", {})
         self._apply_understanding_sync(session_id, user_id, bundle, understanding,
                                        turn_input.user_message)
+        self._abandon_offered(understanding, current_subagent_id, bundle, tool_cache)
 
         # ── Language switch — handle before routing ───────────────────────
         if nlu_result.intent == "language_switch_request":
@@ -4964,6 +4994,7 @@ class AgentCore(AgentCoreBase):
             entity_map: dict = self._config.get("entity_to_profile_field", {})
             await self._apply_understanding_async(session_id, user_id, bundle, understanding,
                                                   turn_input.user_message)
+            self._abandon_offered(understanding, current_subagent_id, bundle, tool_cache)
 
             # ── Language switch — handle before routing ───────────────
             if nlu_result.intent == "language_switch_request":
