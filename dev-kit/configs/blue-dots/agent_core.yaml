@@ -544,12 +544,12 @@ connectors:
         max_calls_per_turn: 1
         grounded_params:
           # Same guard apply_job carries, for the same reason. Measured on
-          # a live local call: save_profile went out with profile_item_id
-          # 8d3bc85b-1785-4658-9459-c5e72964ab25 — the Aditya Birla JOB id
-          # from the fetch_jobs list — which made it an update of a profile
-          # that does not exist. The upstream answered 400 and the agent
-          # told the caller their details were saved AND their application
-          # sent. Neither had happened.
+          # a live local call: save_profile went out with a profile_item_id
+          # that was really a JOB id lifted from the fetch_jobs list, which
+          # made it an update of a profile that does not exist. The
+          # upstream answered 400 and the agent told the caller their
+          # details were saved AND their application sent. Neither had
+          # happened.
           #
           # Naming the source tools is what catches it: the value is a
           # well-formed UUID that really did appear in a tool result, just
@@ -651,11 +651,11 @@ connectors:
         # tool result from this conversation or the call is refused before it
         # leaves us. `must_not_substitute` below has always asked for this in
         # prose and the model still broke it: on a live local call it sent
-        # job_item_id 835d12cf-4a66-4fab-9e42-873e2f4d8b65, which appears
-        # nowhere in any fetch_jobs response — the real Flipkart row was
-        # 038a09fa-6497-4672-b06c-e1cc580e17ff. The upstream cannot tell an
-        # invented UUID from a stale one, so it answered 422
-        # TARGET_ITEM_NOT_FOUND, and the agent relayed that to the caller as
+        # a job_item_id appearing nowhere in any fetch_jobs response, in
+        # place of the id of the row the caller had actually picked. The
+        # upstream cannot tell an invented UUID from a stale one, so it
+        # answered 422 TARGET_ITEM_NOT_FOUND, and the agent relayed that
+        # to the caller as
         # "आपकी एप्लीकेशन पहले से लगी हुई है" — you have already applied.
         # The caller had not applied to anything.
         # Each param names the tools whose results may supply it. A bare list
