@@ -1,4 +1,4 @@
-# "Yes, show me other jobs" ends the call — design
+# Calls end at the apply step without the caller asking — design
 
 Issue: #501 (sub-issue of #414). Branch `fix/501-yes-other-jobs-ends-call`, cut from #495.
 
@@ -51,6 +51,18 @@ Against `submit_confirm`, the act-intent row `{acts: [affirm], pending: submit_c
 
 The backstop is meant as "three turns here without an application, so stop". But `subagent_entry_count.apply_confirm` goes up on every turn spent in the phase, including re-picks and returns from `job_match`, and nothing resets it. After about four turns, any reply in `apply_confirm` ends the call.
 
+The same rule also drops a caller who asks about the job before agreeing to apply. A caller enters `apply_confirm` as soon as they pick a job, including "तीसरे नंबर के जॉब के बारे में जानना चाहता हूँ" ("I want to know about the third job"), which is before they have decided anything. A question about salary, place or type of work has no rule of its own in that phase, so it stays there and the counter rises:
+
+| Turn | Caller | Counter at routing | Result |
+| --- | --- | --- | --- |
+| 1 | picks a job | 0 | enters `apply_confirm` |
+| 2 | "सैलरी कितनी है?" ("what is the salary?") | 1 | stays |
+| 3 | "जगह कहाँ है?" ("where is it?") | 2 | stays |
+| 4 | "काम कैसा है?" ("what is the work like?") | 3 | stays |
+| 5 | "हाँ, भेज दीजिए" ("yes, send it") | 4 | `ended`, no application |
+
+Routing runs before the tool call, so the caller's yes ends the call before `apply_job` is ever made.
+
 The same rules are on `develop`, so this is live.
 
 ## Changes
@@ -87,9 +99,12 @@ New act-intent rows:
 
 Every routing rule that takes the caller to a new pick or back to the list writes `apply_failed: 0` via `session_writes`. That is `job_pick` and `explore_more` in `apply_confirm`, and `job_pick` / `apply_now` from `job_match` into `apply_confirm`. Without this, a stale `more_jobs_offer` would answer the next "send it?".
 
-### 5. The backstop asks before it hangs up
+### 5. Remove the turn-count backstop, and keep "apply now" in the phase
 
-`subagent_entry_count.apply_confirm > 3` routes to `confirm_close` (with `close_return_to: apply_confirm`) instead of `ended`. It only does so while `subagent_entry_count.confirm_close` is 0. That way the caller is asked "shall I end the call?" at most once, rather than every other turn as the counter keeps rising. A goodbye still ends the call from any phase.
+- Delete the `subagent_entry_count.apply_confirm > 3 → ended` rule. Turns are the wrong measure: questions about the job, re-picks and returns from the list all count, and the rule fires before the apply it was meant to wait for. Its purpose, not looping when an application will not happen, is now covered by `more_jobs_offer`. After a failed apply, the caller is always offered other jobs.
+- Add `apply_now → apply_confirm` to `apply_confirm`'s routing, ahead of the catch-alls. A "yes, send it" then always reaches the apply, however many questions came before it.
+
+The call still ends on a goodbye from any phase, or once an application exists. A caller who keeps going round in circles is no longer cut off automatically. A limit on failed applies, rather than on turns, would cover that, but it is out of scope here.
 
 ### 6. Safety net
 
