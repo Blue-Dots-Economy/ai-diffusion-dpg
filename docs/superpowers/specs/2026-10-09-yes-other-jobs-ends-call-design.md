@@ -4,15 +4,17 @@ Issue: #501 (sub-issue of #414). Branch `fix/501-yes-other-jobs-ends-call`, cut 
 
 ## Observed
 
-On the shared VM (7 Oct 2026, image `sha-46fb6e6`), two calls ended with the goodbye straight after the caller said yes to "shall I show you more jobs?". Both followed the same shape:
+Calls end with the goodbye at the apply step (`apply_confirm`) even though the caller never asked to leave and nothing was applied for. There are two cases.
+
+### Case 1: "yes, show me other jobs" ends the call
+
+Seen on the shared VM on 7 Oct 2026 (image `sha-46fb6e6`), in calls `2ee0af51` and `d500461e`. Both followed the same shape:
 
 1. The caller picked a job they had already applied to.
 2. `apply_job` returned HTTP 422 `ACTION_LIMIT_REACHED`.
 3. The bot said "इस जॉब के लिए आपकी एप्लीकेशन पहले से लगी हुई है… क्या मैं आपको दूसरी जॉब्स बताऊँ?" ("You have already applied for this job… shall I tell you about other jobs?").
 4. The caller said "हाँ, दूसरी जॉब बताइए" ("yes, tell me other jobs").
-5. The bot spoke the termination message and the call ended. No application was made, and the caller never asked to leave.
-
-### In the logs
+5. The bot spoke the termination message and the call ended.
 
 From Agent Core's logs in Loki, for the final turn of both calls:
 
@@ -31,27 +33,9 @@ In call `d500461e` the same sentence was said twice:
 
 The NLU output was identical both times. Only the counter differed.
 
-## Cause
+### Case 2: asking about a job before applying ends the call
 
-Two defects stack.
-
-**1. The open question is stale.** After the "already applied" line, the question actually asked is "shall I show you other jobs?". But `apply_confirm`'s pending question is still `submit_confirm` ("shall I send the application?"). A pending question is chosen from session state, and nothing in session records that the apply failed:
-
-- On any HTTP error, Action Gateway's REST adapter returns from its error branch before `session_mapping` runs. So the 422 writes nothing to session, even though its body is the full bulk envelope (`results[].error`, `summary.failed`).
-
-Against `submit_confirm`, the act-intent row `{acts: [affirm], pending: submit_confirm} → apply_now` matches first, because rows match on a subset of acts. So "yes, other jobs" is read as "apply now".
-
-**2. The backstop counts every turn and never resets.** `apply_confirm` has no rule for `apply_now`, so the turn falls through to the catch-alls:
-
-```
-"*"  if applications_submitted > 0              → ended
-"*"  if subagent_entry_count.apply_confirm > 3  → ended   ← fired
-"*"                                             → apply_confirm
-```
-
-The backstop is meant as "three turns here without an application, so stop". But `subagent_entry_count.apply_confirm` goes up on every turn spent in the phase, including re-picks and returns from `job_match`, and nothing resets it. After about four turns, any reply in `apply_confirm` ends the call.
-
-The same rule also drops a caller who asks about the job before agreeing to apply. A caller enters `apply_confirm` as soon as they pick a job, including "तीसरे नंबर के जॉब के बारे में जानना चाहता हूँ" ("I want to know about the third job"), which is before they have decided anything. A question about salary, place or type of work has no rule of its own in that phase, so it stays there and the counter rises:
+Found while tracing case 1; it has not yet been seen on a call. A caller enters `apply_confirm` as soon as they pick a job. That includes "तीसरे नंबर के जॉब के बारे में जानना चाहता हूँ" ("I want to know about the third job"), which is before they have decided anything. If they then ask a few questions and agree, the call ends before the application is sent:
 
 | Turn | Caller | Counter at routing | Result |
 | --- | --- | --- | --- |
@@ -61,9 +45,32 @@ The same rule also drops a caller who asks about the job before agreeing to appl
 | 4 | "काम कैसा है?" ("what is the work like?") | 3 | stays |
 | 5 | "हाँ, भेज दीजिए" ("yes, send it") | 4 | `ended`, no application |
 
-Routing runs before the tool call, so the caller's yes ends the call before `apply_job` is ever made.
+## Cause
 
-The same rules are on `develop`, so this is live.
+### A. The open question is stale (case 1)
+
+After the "already applied" line, the question actually asked is "shall I show you other jobs?". But `apply_confirm`'s pending question is still `submit_confirm` ("shall I send the application?"). A pending question is chosen from session state, and nothing in session records that the apply failed:
+
+- On any HTTP error, Action Gateway's REST adapter returns from its error branch before `session_mapping` runs. So the 422 writes nothing to session, even though its body is the full bulk envelope (`results[].error`, `summary.failed`).
+
+Against `submit_confirm`, the act-intent row `{acts: [affirm], pending: submit_confirm} → apply_now` matches first, because rows match on a subset of acts. So "yes, other jobs" is read as "apply now".
+
+### B. The turn-count backstop ends the call (cases 1 and 2)
+
+`apply_confirm` has no rule for `apply_now`, or for a question about the job, so those turns fall through to the catch-alls:
+
+```
+"*"  if applications_submitted > 0              → ended
+"*"  if subagent_entry_count.apply_confirm > 3  → ended   ← fires
+"*"                                             → apply_confirm
+```
+
+The backstop is meant as "three turns here without an application, so stop". But `subagent_entry_count.apply_confirm` goes up on every turn spent in the phase, and nothing resets it. That includes questions about the job, re-picks and returns from `job_match`. After about four turns, any reply in `apply_confirm` ends the call:
+
+- In case 1, the reply is "yes, other jobs", read as `apply_now`.
+- In case 2, the reply is "yes, send it". Routing runs before the tool call, so the call ends before `apply_job` is ever made.
+
+The same rules are on `develop`, so both cases are live.
 
 ## Changes
 
