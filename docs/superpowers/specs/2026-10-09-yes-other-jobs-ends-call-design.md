@@ -2,11 +2,9 @@
 
 Issue: #501 (sub-issue of #414). Branch `fix/501-yes-other-jobs-ends-call`, cut from #495.
 
-## What was seen
+## Observed
 
-A tester on the shared VM (7 Oct 2026, image `sha-46fb6e6`) reported two calls that ended with the goodbye straight after the caller said yes to "shall I show you more jobs?".
-
-Both calls followed the same shape:
+On the shared VM (7 Oct 2026, image `sha-46fb6e6`), two calls ended with the goodbye straight after the caller said yes to "shall I show you more jobs?". Both followed the same shape:
 
 1. The caller picked a job they had already applied to.
 2. `apply_job` returned HTTP 422 `ACTION_LIMIT_REACHED`.
@@ -14,7 +12,7 @@ Both calls followed the same shape:
 4. The caller said "हाँ, दूसरी जॉब बताइए" ("yes, tell me other jobs").
 5. The bot spoke the termination message and the call ended. No application was made, and the caller never asked to leave.
 
-## What the logs show
+### In the logs
 
 From Agent Core's logs in Loki, for the final turn of both calls:
 
@@ -55,7 +53,7 @@ The backstop is meant as "three turns here without an application, so stop". But
 
 The same rules are on `develop`, so this is live.
 
-## Fix
+## Changes
 
 ### 1. `session_mapping` on error responses (Action Gateway, opt-in)
 
@@ -96,26 +94,3 @@ Every routing rule that takes the caller to a new pick or back to the list write
 ### 6. Safety net
 
 Add `{acts: [affirm, request_change], pending: submit_confirm, intent: explore_more}` above the `apply_now` row. It catches "yes, other jobs" if it still reaches the old question, for example after a timeout that wrote no flag.
-
-## Unchanged
-
-- A goodbye ends the call from any phase.
-- The call ends after a real application (`applications_submitted > 0`).
-- pick → "send it?" → yes → apply is untouched.
-
-## Known gap
-
-An apply that times out, or returns a body that isn't JSON, writes no `apply_failed`. In that case `submit_confirm` stays the pending question, and only change 6 covers "yes, other jobs".
-
-## Testing
-
-- Unit tests (Action Gateway):
-  - An error body with an `on_error` mapping is lifted into session.
-  - Without `on_error`, nothing is lifted (unchanged behaviour).
-  - A non-JSON error body lifts nothing.
-- Agent Core: the config loads, and the new act-intent rows derive the expected intents.
-- End to end, local host-mode stack against the test cluster, fresh numbers, every outcome checked in Signals:
-  - The 7 Oct shape: an already-applied job, then "हाँ, दूसरी जॉब बताइए" ("yes, tell me other jobs") → other jobs are read out, and the call continues.
-  - Five or more turns choosing jobs → no hang-up, and at most one "shall I end the call?".
-  - Normal path: pick → yes → the application exists upstream → the call ends.
-  - After "already applied": a bare "हाँ" ("yes"), a "नहीं" ("no"), and naming a job.
