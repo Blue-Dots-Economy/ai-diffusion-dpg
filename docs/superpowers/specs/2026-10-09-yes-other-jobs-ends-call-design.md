@@ -74,6 +74,8 @@ The same rules are on `develop`, so both cases are live.
 
 ## Changes
 
+Changes 1–4 and 6 fix cause A (case 1). Change 5 fixes cause B (cases 1 and 2).
+
 ### 1. `session_mapping` on error responses (Action Gateway, opt-in)
 
 Add `on_error: bool = False` to `SessionMapping`. In the REST adapter's HTTP error branch, when the body decodes as JSON, apply only the mappings with `on_error: true`.
