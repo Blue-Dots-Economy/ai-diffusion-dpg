@@ -415,7 +415,8 @@ connectors:
           Always fetch fresh.
         on_empty: >
           अभी उस शहर में उस ट्रेड की कोई नौकरी नहीं दिख रही। क्या मैं पास
-          के शहरों में देखूँ, या किसी और ट्रेड में?
+          के शहरों में देखूँ, किसी और ट्रेड में, या आपको ट्रेनिंग जैसी कोई
+          मदद चाहिए?
         on_failure: >
           माफ़ कीजिए, नौकरियों की सेवा अभी उपलब्ध नहीं है। मैं थोड़ी देर
           में दोबारा कोशिश करती हूँ।
@@ -440,6 +441,47 @@ connectors:
           stipend_spoken: { format: range_thousands, from: [stipend_min, stipend_max], unit: per_month }
           task_rate_spoken: { format: amount, from: [task_rate_min, task_rate_max], unit: per_task }
         strip_numbers_in: [location]
+    - name: fetch_services
+      description: >
+        Search the Blue Dots network for support organisations — skilling
+        and vocational training, job placement assistance, career
+        counselling and interview preparation, financial aid and scheme
+        enrolment, help with accommodation or travel. Call only when the
+        caller has asked for this kind of help.
+      input_schema:
+        type: object
+        properties:
+          query_text:
+            type: string
+            description: >
+              What the caller needs, in an English sentence, naming the city
+              when it is known — "skill training for a welder in Ghaziabad".
+          offset:
+            type: integer
+            description: "How many results to skip. OMIT on a first search."
+        required: ["query_text"]
+        additionalProperties: false
+      invocation_rules:
+        call_when: >
+          User is in the service_match subagent AND has said what kind of
+          help they want, or has agreed to hear what support is available.
+        required_before_calling: []
+        must_not_substitute: >
+          Never describe an organisation, a course or a cost from memory.
+          Only what this tool returned in this call may be spoken.
+        on_empty: >
+          अभी इस तरह की कोई मदद उपलब्ध नहीं दिख रही। क्या मैं नौकरियाँ देखूँ?
+        on_failure: >
+          माफ़ कीजिए, यह जानकारी अभी नहीं मिल पा रही। क्या मैं नौकरियाँ देखूँ?
+        bridge_line: "मैं देखती हूँ कि क्या मदद उपलब्ध है।"
+      cache:
+        scope: session
+        ttl_seconds: 1800
+      result_shaping:
+        drop_when:
+          - { field: organisation_name, operator: in, value: [null, "", "na", "NA", "Na"] }
+        sort:
+          - { field: match_score, order: desc }
   # save_profile and apply_job were listed under `read:` though both are
   # write tools (category: write in action_gateway.yaml). `invalidates` is only
   # valid on `write`, so they moved here; tool order and consent handling are
@@ -502,12 +544,6 @@ connectors:
         max_calls_per_turn: 1
         grounded_params:
           # Same guard apply_job carries, for the same reason. Measured on
-          # a live local call: save_profile went out with profile_item_id
-          # 8d3bc85b-1785-4658-9459-c5e72964ab25 — the Aditya Birla JOB id
-          # from the fetch_jobs list — which made it an update of a profile
-          # that does not exist. The upstream answered 400 and the agent
-          # told the caller their details were saved AND their application
-          # sent. Neither had happened.
           #
           # Naming the source tools is what catches it: the value is a
           # well-formed UUID that really did appear in a tool result, just
@@ -601,11 +637,6 @@ connectors:
         # tool result from this conversation or the call is refused before it
         # leaves us. `must_not_substitute` below has always asked for this in
         # prose and the model still broke it: on a live local call it sent
-        # job_item_id 835d12cf-4a66-4fab-9e42-873e2f4d8b65, which appears
-        # nowhere in any fetch_jobs response — the real Flipkart row was
-        # 038a09fa-6497-4672-b06c-e1cc580e17ff. The upstream cannot tell an
-        # invented UUID from a stale one, so it answered 422
-        # TARGET_ITEM_NOT_FOUND, and the agent relayed that to the caller as
         # "आपकी एप्लीकेशन पहले से लगी हुई है" — you have already applied.
         # The caller had not applied to anything.
         # Each param names the tools whose results may supply it. A bare list
@@ -629,6 +660,34 @@ connectors:
         on_failure: >
           माफ़ कीजिए, आवेदन जमा नहीं हो पाया। मैं दोबारा कोशिश करती हूँ।
         bridge_line: "मैं आपका आवेदन भेज रही हूँ।"
+    - name: connect_service
+      description: >
+        Send the caller's enquiry to the support organisation they chose,
+        linking their profile to that organisation. Call only after a
+        profile exists and the caller has confirmed in this turn.
+      input_schema:
+        type: object
+        properties:
+          profile_item_id: {type: string}
+          acting_as_user_id: {type: string}
+          service_item_id: {type: string}
+        required: ["profile_item_id", "acting_as_user_id", "service_item_id"]
+        additionalProperties: false
+      invocation_rules:
+        call_when: >
+          User is in the connect_confirm subagent AND profile_item_id AND
+          selected_service_item_id are known AND the caller has explicitly
+          said yes in the current turn.
+        required_before_calling: [profile_item_id, selected_service_item_id]
+        max_calls_per_turn: 1
+        grounded_params:
+          service_item_id: [fetch_services]
+          profile_item_id: [fetch_profile, save_profile]
+        must_not_substitute: >
+          Never send without an explicit yes in the most recent user turn.
+        on_failure: >
+          माफ़ कीजिए, आपकी बात उन तक नहीं पहुँच पाई। मैं दोबारा कोशिश करती हूँ।
+        bridge_line: "मैं आपकी बात उन तक पहुँचा रही हूँ।"
 
   internal: []   # No knowledge_retrieval — KE not used in this domain.
 
@@ -671,7 +730,8 @@ preprocessing:
 
     # human: the caller wants a person ("इंसान से बात कराओ") — derives human_request below.
     # identity: who/what the assistant is ("आप कौन हैं?") — answered from the <identity> block.
-    topics: [job_details, salary, location, search, profile, process, identity, human, language, other]
+    topics: [job_details, salary, location, search, profile, process, identity, human, language, services, other]
+    abandons_offered_acts: [request_change]
     signals: [pay_disappointment, distance_issue, counsellor_request]
     slots:
       consent_response: { type: enum, values: [granted, declined], accept_when_pending: [consent],
@@ -686,7 +746,7 @@ preprocessing:
       age:              { type: int, min: 5, max: 99, accept_when_pending: [consent, age],
                           description: "उम्र, digits में",
                           examples: ["बाईस → 22", "सोलह → 16", "उनतीस → 29", "उनतालीस → 39"] }
-      trade:            { type: string, normalise: title, description: "काम/ट्रेड, English में (Welder, Plumber). Only a concrete trade; vague answers (कुछ भी, कोई भी काम) → omit" }
+      trade:            { type: string, normalise: title, description: "काम/ट्रेड, English में (Welder, Plumber). Only a concrete trade; vague answers (कुछ भी, कोई भी काम) → omit. A request for HELP is not a trade — ट्रेनिंग, कोर्स, मदद, सिखाना all → omit, they are the services topic" }
       location:         { type: string, normalise: title, description: "शहर, canonical English (Bengaluru, Hubli). Only a named place; vague answers (आसपास, कहीं भी, दूसरे शहर) → omit" }
       name:             { type: string, description: "caller का नाम" }
       gender:           { type: enum, values: [male, female, other] }
@@ -731,6 +791,19 @@ preprocessing:
       - { pending: age, caller: "ठीक है, मैं फोन रखता हूँ", out: { acts: [close], relation: new_topic } }
       - { pending: location, caller: "अभी रहने दीजिए, धन्यवाद", out: { acts: [close], relation: new_topic } }
       - { pending: name, caller: "नहीं, अभी नहीं चाहिए, बाय", out: { acts: [close], relation: new_topic } }
+      - { pending: select_job, caller: "मुझे ट्रेनिंग चाहिए", out: { acts: [request_change], relation: new_topic, topic: services } }
+      - { pending: trade, caller: "कोई कोर्स है क्या", out: { acts: [ask], relation: new_topic, topic: services } }
+      - { pending: trade, caller: "मुझे ट्रेनिंग चाहिए", out: { acts: [request_change], relation: new_topic, topic: services } }
+      - { pending: trade, caller: "काम सिखाने वाली जगह बताइए", out: { acts: [request_change], relation: new_topic, topic: services } }
+      - { pending: location, caller: "पहले काम सीखना है", out: { acts: [provide_info], relation: new_topic, topic: services } }
+      - { pending: select_job, caller: "इंटरव्यू की तैयारी में मदद मिलेगी", out: { acts: [ask], relation: new_topic, topic: services } }
+      - { pending: jobs_or_services, caller: "हाँ, ट्रेनिंग दिखाइए", out: { acts: [affirm], relation: answers_pending, topic: services } }
+      - { pending: jobs_or_services, caller: "मदद वाली बात बताइए", out: { acts: [request_change], relation: answers_pending, topic: services } }
+      - { pending: jobs_or_services, caller: "नहीं, दूसरा शहर देखिए", out: { acts: [request_change], relation: answers_pending, topic: search } }
+      - { pending: enquiry_confirm, caller: "नहीं, नौकरी ही दिखाइए", out: { acts: [deny, request_change], relation: answers_pending, topic: search } }
+      - { pending: select_service, caller: "नहीं, नौकरी ही दिखाइए", out: { acts: [deny, request_change], relation: answers_pending, topic: search } }
+      - { pending: select_service, caller: "ट्रेनिंग नहीं, काम चाहिए", out: { acts: [deny, request_change], relation: answers_pending, topic: search } }
+      - { pending: jobs_or_services, caller: "प्लंबर का काम देखिए", out: { acts: [provide_info], relation: answers_pending, slots: { trade: Plumber } } }
       - { pending: select_job, caller: "इंग्लिश में बात करो", out: { acts: [request_change], relation: new_topic, topic: language, slots: { language_preference: english } } }
       - { pending: age, caller: "हिंदी में बोलिए", out: { acts: [request_change], relation: new_topic, topic: language, slots: { language_preference: hindi } } }
       - { pending: select_job, caller: "इंसान से बात कराओ", out: { acts: [request_change], relation: new_topic, topic: human } }
@@ -747,6 +820,10 @@ preprocessing:
       - { acts: [deny], pending: consent, relation: answers_pending, intent: decline }
       - { acts: [select], pending: select_job, intent: job_pick }
       - { acts: [select], pending: submit_confirm, intent: job_pick }
+      - { acts: [select], pending: select_service, intent: service_pick }
+      - { acts: [select], pending: enquiry_confirm, intent: service_pick }
+      - { acts: [deny, request_change], topic: search, intent: explore_more }
+      - { acts: [deny, request_change], pending: enquiry_confirm, intent: services_request }
       # UNREACHABLE as written, kept because routing still names apply_now.
       # Measured over 108 live NLU turns: `affirm` + `submit_confirm` never
       # co-occurred once. The confirm turn ("yes, send it") always arrived as
@@ -766,6 +843,10 @@ preprocessing:
       - { acts: [deny], pending: submit_confirm, relation: answers_pending, intent: decline }
       - { acts: [request_change], topic: search, intent: explore_more }
       - { acts: [ask], topic: search, intent: explore_more }
+      - { acts: [request_change], topic: services, intent: services_request }
+      - { acts: [ask], topic: services, intent: services_request }
+      - { acts: [provide_info], topic: services, intent: services_request }
+      - { acts: [affirm], topic: services, intent: services_request }
       - { acts: [request_change], topic: language, intent: language_switch_request }
       # Asking for a person. The orchestrator handles human_request before routing
       # (handoff when identity.human_handoff is request; otherwise <identity> answers
@@ -927,6 +1008,14 @@ agent_workflow:
 
     The pattern to avoid is "आपकी जानकारी में …" in ANY form — about a city, a
     trade, a name, anything, and whether what follows is "है" or "नहीं है".
+
+    It is the INVENTORY that is banned, not one phrasing of it. Measured, a
+    reply that dodged the wording above and leaked the same thing:
+      "अभी आपके नाम और उम्र का विवरण है लेकिन ट्रेड और शहर का नहीं।"
+      ("Right now we have your name and age on record but not your trade and
+       city.")
+    Never list what we hold, never list what we lack, and never contrast the
+    two. Ask for the one thing you need next.
     What we hold is not the caller's business: neither its emptiness nor its
     contents is an explanation they asked for. Narrating the record at all is
     what teaches you to narrate it when it is empty.
@@ -981,9 +1070,14 @@ agent_workflow:
          इनमें से किसके लिए आवेदन करना चाहेंगे?"
         Say the city you actually searched, taken from the tool result —
         never a different city.
-      - After fetch_jobs (no results):
+      - After fetch_jobs (no results): offer the third option too. A caller
+        with nothing to apply for is the one most likely to want training or
+        placement help, and it is the only thing left to give them.
         "<location> में अभी <trade> की कोई नौकरी नहीं है। क्या मैं पास के
-         किसी शहर में या किसी और ट्रेड में देखूँ?"
+         किसी शहर में या किसी और ट्रेड में देखूँ, या आपको ट्रेनिंग जैसी कोई
+         मदद चाहिए?"
+        ("There is no <trade> work in <location> right now. Shall I look in a
+         nearby city or another trade, or do you need help like training?")
       - Profile choice (saved details found):
         "मुझे आपकी जानकारी मिली — <city> में <trade>। क्या इन्हीं से
          नौकरियाँ ढूंढूँ?"
@@ -2090,6 +2184,9 @@ agent_workflow:
       # The gate reads this list, not the template's placeholders, so the two
       # are allowed to differ on purpose.
       fixed_opening_requires: [stored_trade, stored_location]
+      fixed_opening_prefix: "नमस्ते {stored_name} जी। "
+      fixed_opening_prefix_requires: [stored_name]
+      fixed_opening_prefix_unless: ["Unknown", "caller", "Caller", "N/A", "NA", "[उपयोगकर्ता का नाम]"]
       opening_phrase: >
         आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?
 
@@ -2126,12 +2223,42 @@ agent_workflow:
         Only when `profile_item_id` is NON-EMPTY. If it is empty, you are
         on Path B, whatever else the fetch result appears to contain.
 
+        ## "मुझे आपकी जानकारी मिली" is ONLY for when there is something to offer
+        That opener promises the caller you found something useful. Use it
+        only when BOTH `stored_trade` and `stored_location` have values, and
+        follow it with those values and nothing else.
+
+        When either is missing you have nothing to offer, so do not open
+        with it. Ask the next question on its own. Measured, three replies
+        that opened with it and then had to explain the absence:
+          "मुझे आपकी जानकारी मिली — आपके नाम विकास है, लेकिन ट्रेड और शहर
+           का विवरण नहीं है।"
+          "मुझे आपकी जानकारी मिली — बेंगलुरु में काम नहीं जुड़ा है।"
+          "मुझे आपकी जानकारी मिली — में काम।"
+        Each one tells the caller what we do and do not hold on them, which
+        is the lookup leak under a different wording.
+
         Offer it, once, in ONE Hindi sentence naming what it holds:
 
           "मुझे आपकी जानकारी मिली — <city> में <trade>। क्या इन्हीं से
            नौकरियाँ ढूंढूँ?"
           ("I found your details — <trade> in <city>. Shall I search
            with these?")
+
+        ## The caller's name is never a topic here
+        `stored_name` in <state> is what this caller told us their name was
+        on an earlier call. Do not confirm it, do not read it back, do not
+        offer to change it, and never ask whether they want to use it. Two
+        measured failures from instructions that tried to have you greet
+        with it: "आपके नाम विकास है। क्या आप इसी नाम से काम ढूंढ रहे हैं, या
+        नाम बदलना चाहेंगे?" ("Your name is Vikas. Are you looking for work
+        under this name, or would you like to change it?"), and "विकास जी की
+        जानकारी अभी नाम और उम्र तक सीमित है" ("Vikas's information is
+        currently limited to name and age"). Greeting a caller by name is
+        the fixed opening's job, not yours.
+
+        Never send `stored_name` as the name on a write: it is what to call
+        them, not a value to collect.
 
         <trade> and <city> are already in <state> collected as
         `stored_trade` and `stored_location`, lifted from the live item by
@@ -2253,6 +2380,9 @@ agent_workflow:
           next_subagent_id: job_match
         - intent: job_pick
           next_subagent_id: job_match
+        - intent: services_request
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
         - intent: explore_more
           next_subagent_id: job_match
         # BACKSTOP. Four turns is already one more than this phase should
@@ -2356,9 +2486,9 @@ agent_workflow:
         against those rows, and do NOT apply. Ask what they want instead:
 
           "अभी <location> में तो कुछ नहीं है। क्या मैं पास के किसी शहर में
-           देखूँ, या किसी और ट्रेड में?"
+           देखूँ, किसी और ट्रेड में, या आपको ट्रेनिंग जैसी कोई मदद चाहिए?"
           ("There's nothing in <location> right now. Shall I look in a nearby
-           city, or in another trade?")
+           city, in another trade, or do you need help like training?")
 
         If they then agree to a different city or trade, SEARCH AGAIN and read
         the new list out before anyone picks from it.
@@ -2490,6 +2620,9 @@ agent_workflow:
           expects: "इस नौकरी के लिए आवेदन भेजने की हाँ/ना, या कोई दूसरी नौकरी"
           options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
           resolves_to: selected_job_item_id
+        - id: jobs_or_services
+          when: [{ field: current_question, operator: contains, value: ["मदद चाहिए", "ट्रेनिंग जैसी"] }]
+          expects: "दूसरा शहर, दूसरा ट्रेड, या ट्रेनिंग जैसी मदद"
         - id: select_job
           expects: "offered jobs में से एक, या दूसरी search"
           options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
@@ -2517,6 +2650,9 @@ agent_workflow:
         - intent: termination_blocked
           next_subagent_id: confirm_close
           session_writes: { close_return_to: job_match }
+        - intent: services_request
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
         - intent: explore_more
           next_subagent_id: job_match
         # A pick goes straight to applying. The deep-dive phase that used to
@@ -2743,9 +2879,25 @@ agent_workflow:
 
         ## After save_profile SUCCESS
         Say exactly ONE sentence in Hindi (no more, no less), asking
-        whether to submit the application — e.g. "आपकी जानकारी सेव हो गई —
-        क्या मैं आवेदन भेज दूँ?" The user's yes routes to apply_confirm,
-        which calls apply_job. Do not say anything else this turn.
+        whether to go ahead. Which question depends on what the caller
+        chose, and <state> says which:
+
+          A JOB was chosen (`services_in_play` is not "true"):
+            "आपकी जानकारी सेव हो गई — क्या मैं आवेदन भेज दूँ?"
+            ("Your details are saved — shall I send the application?")
+            The yes routes to apply_confirm, which calls apply_job.
+
+          A SUPPORT ORGANISATION was chosen (`services_in_play` is "true"):
+            "आपकी जानकारी सेव हो गई — क्या मैं आपकी बात उन तक पहुँचा दूँ?"
+            ("Your details are saved — shall I pass your enquiry on to
+            them?")
+            The yes routes to connect_confirm, which calls connect_service.
+
+        Read the FLAG, not the ids. A caller who saw jobs and then asked for
+        training has BOTH `selected_job_item_id` and `selected_service_item_id`
+        set, and picking by id asked them about an आवेदन for a training centre.
+        Never offer an आवेदन to someone who asked for help: there is no job in
+        play and nothing to apply to. Do not say anything else this turn.
 
         ## After save_profile FAILURE
         First failure: apologise briefly in Hindi and say you will try
@@ -2780,6 +2932,12 @@ agent_workflow:
         - intent: termination_blocked
           next_subagent_id: confirm_close
           session_writes: { close_return_to: profile_setup }
+        - intent: explore_more
+          next_subagent_id: job_match
+          session_writes: { services_in_play: "false", selected_service_item_id: "" }
+        - intent: services_request
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
         # decline intent intentionally NOT routed to job_match here —
         # mid-profile-collection a "No" is overwhelmingly an STT
         # misrecognition of a one-word answer (e.g. "Mo" → "No"),
@@ -2822,6 +2980,15 @@ agent_workflow:
             - field: profile_item_id
               operator: not_eq
               value: ""
+            - field: services_in_play
+              operator: in
+              value: [true, "true"]
+          next_subagent_id: connect_confirm
+        - intent: "*"
+          conditions:
+            - field: profile_item_id
+              operator: not_eq
+              value: ""
           next_subagent_id: apply_confirm
         - intent: apply_now
           next_subagent_id: apply_confirm
@@ -2839,6 +3006,15 @@ agent_workflow:
         # before save_profile ran; two is tight enough that save_profile
         # has normally happened, and being early is recoverable (that
         # phase re-asks) where being stuck is not.
+        - intent: "*"
+          conditions:
+            - field: subagent_entry_count.profile_setup
+              operator: gt
+              value: 1
+            - field: services_in_play
+              operator: in
+              value: [true, "true"]
+          next_subagent_id: connect_confirm
         - intent: "*"
           conditions:
             - field: subagent_entry_count.profile_setup
@@ -3151,12 +3327,14 @@ agent_workflow:
         text contains. There is no success line for it. This is not a
         judgement call — the string is there or it is not.
 
-        These are the three real payloads, measured against the live
-        upstream on 29 Sep. Match what you got against them:
+        These are the three result SHAPES. Match what you got against
+        them on structure and on the quoted field values. `<action-id>`
+        below is a placeholder standing for whatever id came back — it
+        is never a value to copy, and never a value to speak.
 
         SUCCESS — HTTP 201:
           {"results":[{"index":0,"status":"success",
-           "action_id":"44b68bc7-…","action_status":"created"}],
+           "action_id":"<action-id>","action_status":"created"}],
            "summary":{"total":1,"succeeded":1,"failed":0}}
 
         ALREADY APPLIED — HTTP 422:
@@ -3287,6 +3465,9 @@ agent_workflow:
               operator: eq
               value: ""
           next_subagent_id: profile_setup
+        - intent: services_request
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
         - intent: explore_more
           next_subagent_id: job_match
         # Re-pick at the confirmation: selected_job_item_id is already
@@ -3322,6 +3503,217 @@ agent_workflow:
         - intent: "*"
           next_subagent_id: apply_confirm
     # ─────────────────────────────────────────────────────────────
+    - id: service_match
+      name: Service Match
+      description: >
+        Call fetch_services with what the caller said they need. Read out
+        up to 3 organisations as a compact spoken block; the caller picks
+        one and the NLU resolver sets selected_service_item_id.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "ठीक है।"
+
+      tools:
+        - fetch_services
+
+      system_prompt: |
+        You are in the **service_match** phase. The caller wants help
+        rather than a job.
+
+        ## What you are offering
+        Each result is an ORGANISATION, not a single course. One
+        organisation offers several things — training, placement help,
+        counselling, travel or accommodation support. The caller picks an
+        organisation, and we pass their enquiry to it.
+
+        ## Reading the list out
+        Up to THREE, shortest form that still identifies them. For each:
+        the organisation's name, the one thing it offers that best matches
+        what the caller asked for, and what it costs.
+
+          "आपके लिए ये मिले — पहला: <संस्था>, <जो काम आती है>, <खर्च>।
+           दूसरा: <संस्था>, <जो काम आती है>, <खर्च>।
+           इनमें से किसके बारे में बात करनी है?"
+          ("Here's what I found — first: <organisation>, <what it offers>,
+           <cost>. Second: ... Which of these would you like to take up?")
+
+        ## Say the cost, every time (HARD RULE)
+        `cost` is exactly one of three upstream values. Say it in Hindi:
+
+          "Free"                            -> "मुफ़्त"
+          "Subsidised / Government-funded"  -> "सरकारी सहायता से"
+          "Paid"                            -> "इसके पैसे लगेंगे"
+
+        A caller sent to a paid course without being told is the one
+        mistake they cannot undo after the call ends. If `cost` is missing
+        from a row, say nothing about the cost rather than guessing.
+
+        ## Only what the tool returned
+        Never name an organisation, a course, a cost or a location that is
+        not in this turn's fetch_services result. If it returned nothing,
+        say so and offer to look at jobs instead — do not invent an
+        alternative.
+
+        ## Contact details are not yours to give
+        The result carries no phone number or email, deliberately. Never
+        offer to pass one on and never read one out. Our team makes the
+        connection.
+
+        ## This is not a job
+        Do not describe these as नौकरी or as vacancies, and never say an
+        application has been sent from this phase — you have no tool that
+        sends one. Picking one here only means the caller wants us to put
+        them in touch.
+
+      pending:
+        - id: select_service
+          expects: "offered organisations में से एक, या नौकरियों पर वापस"
+          options_from: { tool: fetch_services, fields: [organisation_name], id_field: item_id }
+          resolves_to: selected_service_item_id
+
+      routing:
+        - intent: off_track
+          next_subagent_id: service_match
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+        - intent: explore_more
+          next_subagent_id: job_match
+          session_writes: { services_in_play: "false", selected_service_item_id: "" }
+        - intent: job_pick
+          next_subagent_id: job_match
+          session_writes: { services_in_play: "false", selected_service_item_id: "" }
+        - intent: service_pick
+          conditions:
+            - field: profile_item_id
+              operator: not_eq
+              value: ""
+          next_subagent_id: connect_confirm
+        - intent: service_pick
+          next_subagent_id: profile_setup
+        - intent: "*"
+          next_subagent_id: service_match
+
+    - id: connect_confirm
+      name: Connect & Confirm
+      description: >
+        Confirm with the caller, then call connect_service. Announces the
+        result. Takes its inputs from the prior tool results —
+        profile_item_id and selected_service_item_id — and asks for nothing.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "क्या मैं आपकी बात उन तक पहुँचा दूँ?"
+
+      tools:
+        - connect_service
+
+      system_prompt: |
+        You are in the **connect_confirm** phase. Your job is to call
+        connect_service for the organisation the caller chose, and say what
+        happened. If a result for it is already in this conversation, speak
+        from that and do not call it again.
+
+        ## Ask before you send (HARD RULE)
+        Sending the enquiry puts the caller's name and number in front of a
+        real organisation. It happens only after they have said yes to
+        being asked.
+
+          - If the turn immediately before this one asked whether to send it
+            and the caller said YES — that is your confirmation. Call
+            connect_service. Do not ask twice.
+
+          - Otherwise — including when the caller arrived here by naming an
+            organisation — ASK FIRST and send nothing this turn:
+
+              "<संस्था> तक आपकी बात पहुँचा दूँ?"
+              ("Shall I pass your enquiry on to <organisation>?")
+
+            Then stop and wait.
+
+        **Naming an organisation is not asking you to contact it.** A
+        caller who picks the first one to hear more about it has asked for
+        nothing to be sent.
+
+        That holds just as firmly AFTER you have asked. Measured: you asked
+        "पहुँचा दूँ?", the caller answered "पहला वाला", and the enquiry went
+        out. Naming one at this step changes WHICH organisation, it does not
+        answer the question — say what that one offers and what it costs,
+        ask again for that one, and send nothing this turn.
+
+        Only these count as the yes: हाँ, जी हाँ, ठीक है, भेज दीजिए,
+        पहुँचा दीजिए — an agreement, not a choice.
+
+        A caller who already has a profile is the case to watch. Nothing
+        stands between their pick and this phase — no details to collect, no
+        question on the way — so you arrive holding an organisation they
+        merely named. Measured: on that path the enquiry went out on the
+        pick itself, while callers who came through profile_setup were
+        asked first and were not. Arriving with a choice is not arriving
+        with a yes; ask, and send on the next turn.
+
+        ## Where the fields come from
+        profile_item_id — the caller's profile item_id, from fetch_profile
+        or from save_profile's response. service_item_id — the chosen
+        organisation's item_id from the fetch_services result, copied
+        verbatim as the full hyphenated UUID, never the caller's words for
+        which one they picked. acting_as_user_id is supplied for you; do
+        not pass it.
+
+        ## Announce only what the result says
+        On success: "आपकी बात <संस्था> तक पहुँचा दी गई है। वे आपसे संपर्क
+        करेंगे।" ("Your enquiry has been passed to <organisation>. They
+        will contact you.")
+
+        On failure, say plainly that it did not go through and what you
+        will do next. Never report a success that the tool did not return,
+        and never promise a callback the result does not support.
+
+      pending:
+        - id: closing_offer
+          expects: "और कुछ मदद चाहिए? / कॉल खत्म"
+          when: [{ field: service_enquiries_submitted, operator: gt, value: 0 }]
+        - id: enquiry_confirm
+          expects: "बात पहुँचाऊँ? हाँ/नहीं, या दूसरी संस्था चुनना"
+          options_from: { tool: fetch_services, fields: [organisation_name], id_field: item_id }
+          resolves_to: selected_service_item_id
+
+      routing:
+        - intent: off_track
+          next_subagent_id: connect_confirm
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+        - intent: service_pick
+          next_subagent_id: connect_confirm
+        - intent: explore_more
+          next_subagent_id: job_match
+          session_writes: { services_in_play: "false", selected_service_item_id: "" }
+        - intent: services_request
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
+        - intent: "*"
+          conditions:
+            - field: service_enquiries_submitted
+              operator: gt
+              value: 0
+          next_subagent_id: ended
+        - intent: "*"
+          conditions:
+            - field: subagent_entry_count.connect_confirm
+              operator: gt
+              value: 3
+          next_subagent_id: ended
+        - intent: "*"
+          next_subagent_id: connect_confirm
+
     # confirm_close — the caller sounded like they were leaving before
     # anything was applied for ("अभी व्यस्त हूँ, बाद में बात करेंगे").
     #

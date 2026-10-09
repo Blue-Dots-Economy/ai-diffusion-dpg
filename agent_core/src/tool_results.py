@@ -265,6 +265,23 @@ class TurnToolCache:
             self._invalidated.append(tool)
         _log("invalidate", tool)
 
+    def abandon(self, tool: str) -> bool:
+        """Drop a tool's cached results because the caller has turned away.
+
+        Leaves nothing for an ordinal to point at, so the next list has to be
+        fetched and read out before anything can be picked from it.
+
+        Args:
+            tool: Tool whose results are no longer on offer.
+
+        Returns:
+            True when something was dropped.
+        """
+        had = any(t == tool for t, _ in self._entries)
+        if had:
+            self._invalidate(tool)
+        return had
+
     def fresh_tools(self) -> set[str]:
         """Tools with at least one unexpired entry (their exchanges leave the replay)."""
         return {tool for tool, _ in self._fresh()}

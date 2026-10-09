@@ -49,16 +49,22 @@ application with a real `action_id`.
 **Guards:** F17, F18 (no placeholder name, no duplicate profile).
 
 ### A2 — returning user
-Call A1's number again on a new `call_id`.
+Call A1's number again on a new `call_id`. **Run A1 first and let it finish** —
+a "returning" call placed before its own seed finds no profile, asks for the
+age it should already know and loops there. That reads exactly like a broken
+returning path and is not one; check the seed before filing it.
 **Expect:** the stored trade and city are recognised and offered back; no
 re-asking for name or age. Exactly one profile still.
 **Guards:** F16, the profile-cap behaviour.
 
 ### A3 — returning user with a full address stored
 Use a number whose stored `location` is a full postal address.
-**Expect:** the bot speaks the **city only** — "आपकी जानकारी में बैंगलोर है".
-Never a company name, cross road, sector or layout.
-**Guards:** **F22**. Regression here means addresses are being read aloud again.
+**Expect:** the address is never spoken — no company name, cross road, sector
+or layout. Nor is the record narrated: "आपकी जानकारी में बैंगलोर है" used to be
+the expected line here and is now **banned**, along with every other
+"आपकी जानकारी में …" form. A stored value is confirmed by asking about it —
+"क्या आप बेंगलुरु में ही काम ढूंढ रहे हैं?" — never by reading it back.
+**Guards:** **F22**, and the lookup leak.
 
 ---
 
@@ -270,6 +276,82 @@ while the bot speaks as though both happened. The NLU is not at fault here: it
 returns `act=select`, `pending=select_job` correctly.
 **Guards:** **F53**. Measured: `job_pick` 0 → 4 and applications 0 → 3 on an
 identical build by setting that one variable.
+
+---
+
+## S. Support services
+
+The services path is reached ONLY when the caller asks for help, or answers the
+no-jobs question with the third option. It is never entered by a catch-all —
+the phase that preceded it was, and it swallowed goodbyes.
+
+One result is one ORGANISATION offering several things, not one course. The
+caller picks an organisation and we pass their enquiry to it with
+`connect_service` — the network schema defines `apply` for seeker→provider
+only; seeker→service_provider is `connect`.
+
+### S1 — new caller asks for training
+> हाँ / हाँ ठीक है / अट्ठाईस साल / मेरा नाम विकास है /
+> मुझे ट्रेनिंग चाहिए / पहला वाला / हाँ भेज दीजिए / बस इतना ही धन्यवाद
+
+**Expect:** a list of organisations, each with its name, what it offers and
+what it costs → profile saved → **asked** whether to pass the enquiry on →
+`connect_service` → "आपकी बात <संस्था> तक पहुँचा दी गई है".
+**Check upstream:** `POST /api/v1/action/perform` 201, and session
+`service_enquiries_submitted` = 1 with `applications_submitted` = 0.
+
+### S2 — returning caller asks for training
+Call S1's number again on a new `call_id`, ask for training, pick one.
+**Expect:** no re-asking of name or age; the enquiry still **asked for** before
+it is sent. This is the case that fails first — nothing stands between the pick
+and the confirmation when there are no details left to collect.
+
+### S3 — the cost is always spoken
+**Expect:** every organisation read out carries its cost, in Hindi — मुफ़्त /
+सरकारी सहायता से / इसके पैसे लगेंगे. The upstream values are `Free`,
+`Subsidised / Government-funded` and `Paid`; a row with no cost is passed over
+in silence, never guessed at.
+**Guards:** a caller sent to a paid course without being told cannot undo it.
+
+### S4 — contact details are never read out
+**Expect:** no phone number, no email, no offer to pass one on. They are masked
+upstream ("9***", "b***@yopmail.com") and deliberately not projected.
+
+### S5 — naming an organisation is not asking to contact it
+> … मुझे ट्रेनिंग चाहिए / दूसरा वाला सुनाइए
+
+**Expect:** the second organisation is described and the caller is **asked**.
+Nothing is sent on that turn.
+
+### S6 — services → jobs, mid-call
+> … मुझे ट्रेनिंग चाहिए / पहला वाला / नहीं, नौकरी ही दिखाइए /
+> वेल्डर / गाज़ियाबाद / पहला वाला / हाँ भेज दीजिए
+
+**Expect:** a real job **search** runs, and the pick applies to a JOB.
+**Guards:** the list on offer is dropped when the caller turns away. Without
+that, "पहला वाला" resolved against the organisations and sent an enquiry to a
+training centre the caller had just declined.
+
+### S7 — jobs → services, mid-call
+> … वेल्डर / गाज़ियाबाद / पहला वाला / नहीं, ट्रेनिंग दिखाइए / पहला वाला
+
+**Expect:** a real services **search** runs, and the pick sends an enquiry.
+**Guards:** the mirror of S6. This half was live on the job path before the
+services path existed — an ordinal after "show me training" applied to a job.
+
+### S8 — a goodbye inside the services path
+**Expect:** the same close as anywhere else — "क्या मैं कॉल यहीं ख़त्म करूँ?",
+then the call ends on yes. The services phase must not be a place goodbyes go
+to die.
+
+### S9 — no jobs offers help as the third option
+> … वेल्डर / पोर्ट ब्लेयर
+
+**Expect:** "क्या मैं पास के किसी शहर में या किसी और ट्रेड में देखूँ, **या
+आपको ट्रेनिंग जैसी कोई मदद चाहिए?**" — all three, and the tool fires only if
+they choose the third.
+**Note:** semantic search rarely returns zero today, so this fires mainly once
+the wrong-city filtering lands. The answer is resolved either way.
 
 ---
 

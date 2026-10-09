@@ -125,6 +125,8 @@ tools:
           target: stored_trade
         - source: "items[lifecycle_status=live].item_state.location"
           target: stored_location
+        - source: "items[lifecycle_status=live].item_state.name"
+          target: stored_name
       projection:
         fields:
           # Both names map to the same root value. The existing prompts refer
@@ -624,6 +626,169 @@ tools:
       # surfaces the raw envelope to the LLM. error/message here cover the
       # mixed-success (HTTP 207) path that bypasses that branch — harmless
       # for apply_job's single element today, correct if it ever batches.
+      projection:
+        list_key: results
+        fields:
+          status: status
+          error: error
+          message: message
+          action_id: action_id
+          action_status: action_status
+          source_item_id: source_item_id
+          target_item_id: target_item_id
+
+  - id: fetch_services
+    type: rest_api
+    category: read
+    description: >
+      Support organisations on the network — skilling and vocational
+      training, job placement assistance, career counselling and interview
+      preparation, financial aid and scheme enrolment, and help with
+      accommodation or travel.
+
+      One result is one ORGANISATION, not one service: each offers several
+      things, listed in services_for_seekers. Read out the organisation's
+      name, what it offers, and what it costs.
+
+      cost is one of "Free", "Subsidised / Government-funded" or "Paid" —
+      always say which. Sending
+      someone to a paid course without telling them is the one mistake they
+      cannot undo.
+
+      Contact details are deliberately NOT projected: the upstream masks
+      them ("9***", "b***@yopmail.com"), so there is nothing to read out.
+      Never offer to pass on a phone number or an email.
+    base_url: "${SIGNALS_SEARCH_URL:-https://signals.bluedotseconomy.org/signals-search}"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_SEARCH_API_KEY
+    timeout_ms: 8000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: services_fetch
+        method: POST
+        path: /v1/search
+        body_template:
+          context:
+            messageId: "{session_id}"
+            networkId: "blue_dot"
+            domain: "service_provider"
+            itemType: "profile_1.0"
+          message:
+            intent:
+              textSearch: "{query_text}"
+            pagination:
+              limit: 5
+              offset: "{offset}"
+        params:
+          - name: offset
+            source: agent
+            type: integer
+            required: false
+            description: >
+              How many results to skip. OMIT on a first search. When the
+              caller asks for more, pass the number already read out.
+          - name: query_text
+            source: agent
+            type: string
+            required: true
+            description: >
+              What the caller needs, in an English sentence, naming the city
+              when it is known — the search is semantic, so a phrase works
+              better than a keyword. Examples: "skill training for a welder
+              in Ghaziabad", "interview preparation in Kanpur",
+              "help with travel to work".
+    response:
+      max_size_chars: 3000
+      projection:
+        list_key: message.items
+        fields:
+          item_id: item_id
+          organisation_name: item_state.organisationName
+          service_description: item_state.serviceDescription
+          cost: item_state.costToBeneficiary
+          service_areas: item_state.serviceAreas
+          services_for_seekers: item_state.servicesEducationalForSeekers
+          other_support: item_state.servicesNonEducationalForSeekers
+          status: lifecycle_status
+          match_score: score
+
+  - id: connect_service
+    type: rest_api
+    category: write
+    description: >
+      Send the caller's enquiry to the chosen support organisation, linking
+      their seeker profile to that organisation's profile. Call only after a
+      profile exists and the caller has confirmed they want the enquiry sent.
+    base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_API_KEY
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: BLUE_DOTS_ORG_ID
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: connect
+        method: POST
+        path: /api/v1/action/perform
+        body_template:
+          action_type: "connect"
+          source_item:
+            item_network: "blue_dot"
+            item_domain: "seeker"
+            item_type: "profile_1.0"
+            item_id: "{profile_item_id}"
+          target_item:
+            item_network: "blue_dot"
+            item_domain: "service_provider"
+            item_type: "profile_1.0"
+            item_id: "{service_item_id}"
+            item_instance_url: "{instance_url}"
+          acting_as_user_id: "{acting_as_user_id}"
+          consent:
+            acknowledged: true
+            version: 1
+        params:
+          - name: instance_url
+            source: static
+            type: string
+            value: "${SIGNALS_INSTANCE_URL:-https://signals.bluedotseconomy.org}"
+          - name: profile_item_id
+            source: agent
+            type: string
+            required: true
+            description: >
+              The caller's profile item_id — from fetch_profile or from
+              save_profile's response.
+          - name: acting_as_user_id
+            source: session
+            type: string
+            required: true
+            description: >
+              The seeker's user UUID. Injected from session state by the
+              adapter — do NOT supply it.
+          - name: service_item_id
+            source: agent
+            type: string
+            required: true
+            format: uuid
+            description: >
+              The chosen organisation's item_id from the prior
+              fetch_services result, copied verbatim — the full hyphenated
+              UUID, never the caller's words for which one they picked.
+    response:
+      max_size_chars: 1000
+      session_mapping:
+        - source: "summary.succeeded"
+          target: service_enquiries_submitted
+        - source: "results[status=success].action_id"
+          target: last_enquiry_id
       projection:
         list_key: results
         fields:

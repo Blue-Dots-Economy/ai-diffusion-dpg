@@ -301,6 +301,8 @@ class NLUProcessorSection(BaseModel):
     examples: list[NLUExampleConfig] = Field(default_factory=list)
     act_intents: list[ActIntentRuleConfig] = Field(default_factory=list)
     termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig)
+    # Mirrors agent_core/src/schema/config.py.
+    abandons_offered_acts: list[str] = Field(default_factory=list)
     off_track: OffTrackConfig = Field(default_factory=OffTrackConfig)
 
     @model_validator(mode="after")
@@ -837,6 +839,9 @@ class SubAgent(BaseModel):
     # every fixed_opening_requires field is in session and the turn had no entities.
     fixed_opening: str = ""
     fixed_opening_requires: list[str] = Field(default_factory=list)
+    fixed_opening_prefix: str = ""
+    fixed_opening_prefix_requires: list[str] = Field(default_factory=list)
+    fixed_opening_prefix_unless: list[str] = Field(default_factory=list)
     predispatch: list[PredispatchRule] = Field(default_factory=list)
     # opening_phrase non-empty enforced by Field(..., min_length=1) above —
     # runtime requires it for ALL subagents (adopted-state callbacks).

@@ -102,6 +102,9 @@ logger = logging.getLogger(__name__)
 # Session key: tool → args_hash of the stored result the caller last heard
 # (NLU dialogue-acts spec §5.2).
 SERVED_TOOL_RESULTS_KEY = "served_tool_results"
+RECENT_TOOL_EXCHANGES_KEY = "recent_tool_exchanges"
+# Session keys `_abandon_offered` rewrites; both must be written back.
+ABANDON_SESSION_KEYS = (SERVED_TOOL_RESULTS_KEY, RECENT_TOOL_EXCHANGES_KEY)
 
 # A ``turn_carryover`` is written by whichever replica ran the interrupted
 # turn and read by whichever runs the next one, so their clocks can disagree.
@@ -114,6 +117,8 @@ _CARRYOVER_CLOCK_SKEW_MS = 5000
 _HANDOFF_PENDING_WINDOW_MS = 30_000
 # Shared `operation` value for every handoff log record.
 _OP_HANDOFF = "orchestrator.handoff"
+# Shared `operation` value for every abandoned-offer log record.
+_OP_ABANDON_OFFERED = "orchestrator.abandon_offered"
 
 # Module-level guard to prevent double-instrumentation in test environments.
 _HTTPX_INSTRUMENTED = False
@@ -368,6 +373,13 @@ class AgentCore(AgentCoreBase):
         # recent_turns serves both the NLU frame and <recent>; keep enough for either.
         self._recent_keep = max(self._dialogue_cfg.history_turns, self._agent_history_turns)
         self._pending_resolver = PendingResolver(self._workflow)
+        # Only rows offered as a numbered list can be named by an ordinal.
+        self._option_tools: frozenset[str] = frozenset(
+            of.tool
+            for sa in (self._workflow.subagents or {}).values()
+            for of in (getattr(p, "options_from", None) for p in getattr(sa, "pending", ()) or ())
+            if of is not None and getattr(of, "tool", None)
+        )
 
         # User-state model (GH-139) — cached lookup for per-turn guidance injection.
         usm = (self._config or {}).get("conversation", {}).get("user_state_model", {}) or {}
@@ -1118,6 +1130,56 @@ class AgentCore(AgentCoreBase):
         bundle.session[SERVED_TOOL_RESULTS_KEY] = merged
         return merged
 
+    def _abandon_offered(self, understanding, subagent_id: str, bundle, tool_cache) -> bool:
+        """Drop the offered list when the caller asks for something else.
+
+        Otherwise an ordinal spoken afterwards still resolves against the list
+        they turned away from. The domain names the acts that count; a turn
+        that also SELECTS is choosing from the list, not leaving it.
+
+        Args:
+            understanding: This turn's TurnUnderstanding.
+            subagent_id: The subagent the caller is in, for the log record.
+            bundle: This turn's context bundle (mutated).
+            tool_cache: This turn's TurnToolCache.
+
+        Returns:
+            True when something was dropped, so the caller persists it.
+        """
+        try:
+            acts = set(getattr(getattr(understanding, "dialogue", None), "acts", ()) or ())
+            triggers = set(self._dialogue_cfg.abandons_offered_acts)
+            if not acts & triggers or "select" in acts:
+                return False
+            # What was read OUT to the caller is what an ordinal points at.
+            served = bundle.session.get(SERVED_TOOL_RESULTS_KEY)
+            tools = sorted(set(served) & self._option_tools) if isinstance(served, dict) else []
+            dropped = [t for t in tools if tool_cache.abandon(t)]
+            if not dropped:
+                logger.info("orchestrator.offered_abandon_noop", extra={
+                    "operation": _OP_ABANDON_OFFERED, "status": "skipped",
+                    "subagent_id": subagent_id, "served_tools": tools})
+                return False
+            bundle.session[SERVED_TOOL_RESULTS_KEY] = {
+                k: v for k, v in served.items() if k not in dropped}
+            # The model reads the rows from the replay, not only the resolver.
+            bundle.session[RECENT_TOOL_EXCHANGES_KEY] = [
+                ex for ex in (bundle.session.get(RECENT_TOOL_EXCHANGES_KEY) or [])
+                if not any(
+                    (tu or {}).get("name") in dropped
+                    for tu in (ex or {}).get("tool_uses") or ()
+                )
+            ]
+            logger.info("orchestrator.offered_abandoned", extra={
+                "operation": _OP_ABANDON_OFFERED, "status": "success",
+                "subagent_id": subagent_id, "tools": dropped})
+            return True
+        except Exception as e:  # noqa: BLE001 — never raise into the turn
+            logger.warning("orchestrator.abandon_offered_failed", extra={
+                "operation": _OP_ABANDON_OFFERED, "status": "failure",
+                "error": type(e).__name__})
+            return False
+
     async def _apply_understanding_async(self, session_id: str, user_id: str, bundle,
                                          understanding, raw_text: str) -> None:
         """Apply an understanding's writes and signals (stream path).
@@ -1589,6 +1651,11 @@ class AgentCore(AgentCoreBase):
         entity_map: dict = self._config.get("entity_to_profile_field", {})
         self._apply_understanding_sync(session_id, user_id, bundle, understanding,
                                        turn_input.user_message)
+        if self._abandon_offered(understanding, current_subagent_id, bundle, tool_cache):
+            self._persist_tool_cache_sync(session_id, user_id, tool_cache)
+            for _k in ABANDON_SESSION_KEYS:
+                self._write_memory_sync(
+                    session_id, user_id, "session", _k, bundle.session.get(_k))
 
         # ── Language switch — handle before routing ───────────────────────
         if nlu_result.intent == "language_switch_request":
@@ -4964,6 +5031,11 @@ class AgentCore(AgentCoreBase):
             entity_map: dict = self._config.get("entity_to_profile_field", {})
             await self._apply_understanding_async(session_id, user_id, bundle, understanding,
                                                   turn_input.user_message)
+            if self._abandon_offered(understanding, current_subagent_id, bundle, tool_cache):
+                await self._persist_tool_cache(session_id, user_id, tool_cache)
+                for _k in ABANDON_SESSION_KEYS:
+                    await self._write_memory_async(
+                        session_id, user_id, "session", _k, bundle.session.get(_k))
 
             # ── Language switch — handle before routing ───────────────
             if nlu_result.intent == "language_switch_request":
@@ -5145,10 +5217,35 @@ class AgentCore(AgentCoreBase):
                     k: str(bundle.session.get(k) or "").strip() for k in _requires
                 }
                 _have_all = bool(_requires) and all(_vals.values())
+                # A fragment, not a template slot: an empty slot leaves its
+                # punctuation behind and a missing key drops the whole line.
+                _pfx_tmpl = (getattr(_sa, "fixed_opening_prefix", "") or "")
+                _pfx_req = list(getattr(_sa, "fixed_opening_prefix_requires", []) or [])
+                _pfx_skip = {
+                    v.strip().casefold()
+                    for v in (getattr(_sa, "fixed_opening_prefix_unless", []) or [])
+                }
+                _pfx_vals = {
+                    k: str(bundle.session.get(k) or "").strip() for k in _pfx_req
+                }
+                # A stored placeholder would otherwise be spoken as a name.
+                if any(v.casefold() in _pfx_skip for v in _pfx_vals.values()):
+                    _pfx_vals = dict.fromkeys(_pfx_vals, "")
+                _prefix = ""
+                if _pfx_tmpl and _pfx_req and all(_pfx_vals.values()):
+                    try:
+                        _prefix = _pfx_tmpl.format(**_pfx_vals)
+                    except (KeyError, IndexError):
+                        logger.warning(
+                            "orchestrator.fixed_opening_prefix_placeholder_missing",
+                            extra={"operation": "orchestrator.stream_turn",
+                                   "status": "skipped",
+                                   "subagent_id": next_subagent_id},
+                        )
                 _caller_said_something = bool(nlu_result.entities or {})
                 if _first_entry and _have_all and not _caller_said_something:
                     try:
-                        _line = _tmpl.format(**_vals).strip()
+                        _line = (_prefix + _tmpl.format(**_vals)).strip()
                     except (KeyError, IndexError):
                         logger.warning(
                             "orchestrator.fixed_opening_placeholder_missing",

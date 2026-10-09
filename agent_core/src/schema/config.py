@@ -689,6 +689,8 @@ class NLUProcessorConfig(BaseModel):
     examples: list[NLUExampleConfig] = Field(default_factory=list)
     act_intents: list[ActIntentRuleConfig] = Field(default_factory=list)
     termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig)
+    # Acts after which the offered list is no longer on offer.
+    abandons_offered_acts: list[str] = Field(default_factory=list)
     off_track: OffTrackConfig = Field(default_factory=OffTrackConfig)
 
 
@@ -844,6 +846,12 @@ class SubAgent(BaseModel):
     # handles that turn as before.
     fixed_opening: str = ""
     fixed_opening_requires: list[str] = Field(default_factory=list)
+    # Fragment prepended to `fixed_opening`, spoken only when every
+    # `fixed_opening_prefix_requires` field has a value.
+    fixed_opening_prefix: str = ""
+    fixed_opening_prefix_requires: list[str] = Field(default_factory=list)
+    # Values that count as absent, so a stored placeholder is never spoken.
+    fixed_opening_prefix_unless: list[str] = Field(default_factory=list)
     routing: list[RoutingRule] = Field(default_factory=list)
     pending: list[PendingQuestionConfig] = Field(default_factory=list)
     predispatch: list[PredispatchRule] = Field(default_factory=list)

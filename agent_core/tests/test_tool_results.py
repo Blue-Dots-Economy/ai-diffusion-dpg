@@ -352,3 +352,34 @@ def test_has_fresh_for_is_false_for_an_uncached_tool():
     from src.tool_results import ToolResultPolicies, TurnToolCache
     cache = TurnToolCache(ToolResultPolicies.from_config({}), [], {})
     assert cache.has_fresh_for("fetch_jobs", {"query_text": "anything"}) is False
+
+
+def test_abandon_drops_the_tools_entries():
+    h = args_hash({})
+    cache = TurnToolCache(POL, [entry("fetch_jobs", {"items": [1, 2]}, h, scope="session")],
+                          {}, clock())
+    assert cache.latest_entry("fetch_jobs") is not None
+
+    assert cache.abandon("fetch_jobs") is True
+
+    assert cache.latest_entry("fetch_jobs") is None
+    assert cache.entry("fetch_jobs", h) is None
+
+
+def test_abandon_leaves_other_tools_alone():
+    h = args_hash({})
+    cache = TurnToolCache(
+        POL,
+        [entry("fetch_jobs", {"items": [1]}, h, scope="session"),
+         entry("fetch_profile", {"items": [9]}, h)],
+        {}, clock())
+
+    cache.abandon("fetch_jobs")
+
+    assert cache.latest_entry("fetch_jobs") is None
+    assert cache.latest_entry("fetch_profile") is not None
+
+
+def test_abandon_reports_false_when_there_was_nothing_on_offer():
+    cache = TurnToolCache(POL, [], {}, clock())
+    assert cache.abandon("fetch_jobs") is False

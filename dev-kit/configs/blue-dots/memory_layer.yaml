@@ -63,6 +63,10 @@ state:
       # Application outcome
       last_application_id:     { type: string, default: "" }
       applications_submitted:  { type: int,    default: 0 }
+      services_in_play:          { type: enum, values: ["true", "false"], default: "false" }
+      selected_service_item_id:  { type: string, default: "" }
+      last_enquiry_id:           { type: string, default: "" }
+      service_enquiries_submitted: { type: int,  default: 0 }
 
   persistent:
     backend: memgraph
