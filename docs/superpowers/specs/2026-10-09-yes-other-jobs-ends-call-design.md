@@ -35,14 +35,14 @@ The NLU output was identical both times. Only the counter differed.
 
 ### Case 2: asking about a job before applying ends the call
 
-Found while tracing case 1; it has not yet been seen on a call. A caller enters `apply_confirm` as soon as they pick a job. That includes "तीसरे नंबर के जॉब के बारे में जानना चाहता हूँ" ("I want to know about the third job"), which is before they have decided anything. If they then ask a few questions and agree, the call ends before the application is sent:
+When the caller picks a job, the bot asks "shall I apply?". If the caller asks something about the job instead, for example its salary, the bot answers and asks "shall I apply?" again, every turn. After about four turns the call ends, before the caller has decided:
 
 | Turn | Caller | Counter at routing | Result |
 | --- | --- | --- | --- |
-| 1 | picks a job | 0 | enters `apply_confirm` |
-| 2 | "सैलरी कितनी है?" ("what is the salary?") | 1 | stays |
-| 3 | "जगह कहाँ है?" ("where is it?") | 2 | stays |
-| 4 | "काम कैसा है?" ("what is the work like?") | 3 | stays |
+| 1 | "तीसरे नंबर के जॉब के बारे में जानना चाहता हूँ" ("I want to know about the third job") | 0 | enters `apply_confirm`, asked "shall I apply?" |
+| 2 | "सैलरी कितनी है?" ("what is the salary?") | 1 | stays, asked "shall I apply?" again |
+| 3 | "जगह कहाँ है?" ("where is it?") | 2 | stays, asked again |
+| 4 | "काम कैसा है?" ("what is the work like?") | 3 | stays, asked again |
 | 5 | "हाँ, भेज दीजिए" ("yes, send it") | 4 | `ended`, no application |
 
 ## Cause
@@ -53,40 +53,47 @@ After the "already applied" line, the question actually asked is "shall I show y
 
 - On any HTTP error, Action Gateway's REST adapter returns from its error branch before `session_mapping` runs. So the 422 writes nothing to session, even though its body is the full bulk envelope (`results[].error`, `summary.failed`).
 
-Against `submit_confirm`, the act-intent row `{acts: [affirm], pending: submit_confirm} → apply_now` matches first, because rows match on a subset of acts. So "yes, other jobs" is read as "apply now".
+Against `submit_confirm`, the act-intent row `{acts: [affirm], pending: submit_confirm} → apply_now` matches first, because rows match on a subset of acts. So "yes, other jobs" is read as "apply now". `apply_confirm` has no rule for `apply_now`, so the turn falls to the catch-alls, where the turn counter (`subagent_entry_count.apply_confirm > 3 → ended`) ends the call.
 
-### B. The turn-count backstop ends the call (cases 1 and 2)
+### B. There is no step for questions about a job (case 2)
 
-`apply_confirm` has no rule for `apply_now`, or for a question about the job, so those turns fall through to the catch-alls:
+Picking a job, even only to hear about it, sends the caller straight from `job_match` to `apply_confirm`. That step has one purpose, to apply, so it ends every reply on "shall I apply?". A question about the job (`acts: [ask]`, `topic: salary | location | job_details`) maps to no intent, so it falls to the same catch-alls, and each question counts as a turn. On the fifth turn the counter ends the call. Routing runs before the tool call, so a "yes, send it" on that turn ends the call before `apply_job` is ever made.
 
-```
-"*"  if applications_submitted > 0              → ended
-"*"  if subagent_entry_count.apply_confirm > 3  → ended   ← fires
-"*"                                             → apply_confirm
-```
-
-The backstop is meant as "three turns here without an application, so stop". But `subagent_entry_count.apply_confirm` goes up on every turn spent in the phase, and nothing resets it. That includes questions about the job, re-picks and returns from `job_match`. After about four turns, any reply in `apply_confirm` ends the call:
-
-- In case 1, the reply is "yes, other jobs", read as `apply_now`.
-- In case 2, the reply is "yes, send it". Routing runs before the tool call, so the call ends before `apply_job` is ever made.
+The counter itself is reasonable for the apply step. The fault is that questions are being asked in the apply step at all.
 
 The same rules are on `develop`, so both cases are live.
 
+### Why the earlier question step failed
+
+A `job_detail` step sat between the pick and the apply from 29 to 30 Sep, and was removed because the flow broke: callers were asked the same question repeatedly and could not get to the apply. Its config shows why:
+
+| What it did | Effect |
+| --- | --- |
+| Moved on by turn count: one turn to describe the job, then any reply went to `profile_choice` | A question on the second turn was not answered, it was routed away. A caller who wanted to apply on the first turn was held for one more. |
+| Ended on "any questions?" and was told never to ask about applying | No `submit_confirm` question was open, so a "yes" could not be read as "apply". |
+| Handed off to `profile_choice`, which asked its own question, and then to `apply_confirm`, which asked "shall I send it?" again | Three questions between the pick and the apply. |
+| No `apply_now` rule | The only way out to the apply was the turn count. |
+| `opening_phrase: ""` and no tools | Produced two of the three empty replies on a live call. |
+
+The new step below is built against each of these.
+
 ## Changes
 
-Changes 1–4 and 6 fix cause A (case 1). Change 5 fixes cause B (cases 1 and 2).
+Changes 1–5 fix cause A (case 1). Changes 6–8 fix cause B (case 2).
 
-### 1. `session_mapping` on error responses (Action Gateway, opt-in)
+### Case 1
+
+#### 1. `session_mapping` on error responses (Action Gateway, opt-in)
 
 Add `on_error: bool = False` to `SessionMapping`. In the REST adapter's HTTP error branch, when the body decodes as JSON, apply only the mappings with `on_error: true`.
 
 It is opt-in so that existing mappings keep their meaning. Otherwise a failed apply after an earlier success would overwrite `applications_submitted` with 0, bringing back the "send it?" question and stopping the call from ending after a real application.
 
-### 2. Record the failure (`action_gateway.yaml`, `apply_job`)
+#### 2. Record the failure (`action_gateway.yaml`, `apply_job`)
 
 Map `summary.failed` to a new session field `apply_failed`, with `on_error: true`. A failed apply writes 1, and a successful one writes 0 through the existing success path.
 
-### 3. A pending question for "other jobs?" (`agent_core.yaml`, `apply_confirm`)
+#### 3. A pending question for "other jobs?" (`agent_core.yaml`, `apply_confirm`)
 
 | Order | Pending | Applies when |
 | --- | --- | --- |
@@ -101,20 +108,73 @@ New act-intent rows:
 | Caller | Acts | Intent | Routes to |
 | --- | --- | --- | --- |
 | "हाँ" ("yes") / "हाँ, दूसरी जॉब बताइए" ("yes, tell me other jobs") | `affirm` | `explore_more` | `job_match` |
-| names a job | `select` | `job_pick` | `apply_confirm`, which asks "send it?" |
+| names a job | `select` | `job_pick` | `job_details` (change 6) |
 | "नहीं" ("no") | `deny` | declines more jobs | `confirm_close`, with `close_return_to: apply_confirm` |
 
-### 4. Clear the flag when the caller moves on
+#### 4. Clear the flag when the caller moves on
 
-Every routing rule that takes the caller to a new pick or back to the list writes `apply_failed: 0` via `session_writes`. That is `job_pick` and `explore_more` in `apply_confirm`, and `job_pick` / `apply_now` from `job_match` into `apply_confirm`. Without this, a stale `more_jobs_offer` would answer the next "send it?".
+Every routing rule that takes the caller to a new pick or back to the list writes `apply_failed: 0` via `session_writes`. Without this, a stale `more_jobs_offer` would answer the next "send it?".
 
-### 5. Remove the turn-count backstop, and keep "apply now" in the phase
-
-- Delete the `subagent_entry_count.apply_confirm > 3 → ended` rule. Turns are the wrong measure: questions about the job, re-picks and returns from the list all count, and the rule fires before the apply it was meant to wait for. Its purpose, not looping when an application will not happen, is now covered by `more_jobs_offer`. After a failed apply, the caller is always offered other jobs.
-- Add `apply_now → apply_confirm` to `apply_confirm`'s routing, ahead of the catch-alls. A "yes, send it" then always reaches the apply, however many questions came before it.
-
-The call still ends on a goodbye from any phase, or once an application exists. A caller who keeps going round in circles is no longer cut off automatically. A limit on failed applies, rather than on turns, would cover that, but it is out of scope here.
-
-### 6. Safety net
+#### 5. Safety net
 
 Add `{acts: [affirm, request_change], pending: submit_confirm, intent: explore_more}` above the `apply_now` row. It catches "yes, other jobs" if it still reaches the old question, for example after a timeout that wrote no flag.
+
+### Case 2
+
+#### 6. A new `job_details` step between the pick and the apply
+
+The caller picks a job and lands here. This step describes the job, answers questions about it, and hands over to the apply the moment the caller says yes.
+
+Each reply ends on a single question, the apply question: "कुछ पूछना हो तो पूछिए। क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?" ("Ask if you have any questions. Shall I send the application for this job?"). Because "shall I send it?" is always the open question, "yes" always means apply and "no" always means not this job. This avoids the "no questions" vs "no, don't apply" confusion the old step had.
+
+| Setting | Value | Against which old failure |
+| --- | --- | --- |
+| Pending | `submit_confirm`, with no `when`, so it is always open here, with `options_from: fetch_jobs` | "yes" had no question to answer |
+| Job data | The `fetch_jobs` result, already in `<known_facts>` for every step (session cache, 30 min TTL) | No tools, empty replies |
+| Tools | None of its own. `end_session` is added to every step by the orchestrator | Applying can only happen through routing, never from this step |
+| `opening_phrase` | A short neutral bridge, like `job_match`'s "ठीक है।" ("Okay.") | Empty opening phrase |
+| Turn counter | None. Questions here are expected, however many there are | Routed away on turn count |
+
+New act-intent rows, placed above the existing `submit_confirm` rows:
+
+| Caller | Acts / topic | Intent |
+| --- | --- | --- |
+| "सैलरी कितनी है?" ("what is the salary?"), "जगह कहाँ है?" ("where is it?"), "काम क्या है?" ("what is the work?") | `ask` with topic `salary`, `location` or `job_details` | `job_question` |
+| "हाँ, पर सैलरी कितनी है?" ("yes, but what is the salary?") | `affirm` + `ask`, pending `submit_confirm` | `job_question`, not `apply_now`: a yes with a question is not a yes |
+
+Routing in `job_details`, in order. Every exit is driven by the caller's intent, never by a turn count:
+
+| Intent | Goes to | Note |
+| --- | --- | --- |
+| `off_track` | `job_details` | same as other steps |
+| `termination_intent` / `termination_blocked` | `ended` / `confirm_close` | same as other steps, `close_return_to: job_details` |
+| `apply_now`, profile exists | **`apply_confirm`** | the caller said yes |
+| `apply_now`, no profile | `profile_setup` | it saves the name and goes on to `apply_confirm`, as today |
+| `job_pick` | `job_details` | another job; `selected_job_item_id` is already updated by the resolver |
+| `job_question` | `job_details` | answer and ask again |
+| `explore_more`, `decline` | `job_match` | |
+| `services_request` | `service_match` | |
+| `*` | `job_details` | |
+
+#### 7. `job_match` and `apply_confirm` changes
+
+- `job_match`: `job_pick` goes to `job_details`, whether or not a profile exists. `apply_now` from `job_match` ("apply to the second one") keeps going straight to `apply_confirm` / `profile_setup`. The caller has already said what they want, so they don't go through `job_details`.
+- `apply_confirm` is now entered only after a yes. Its prompt drops the "if the caller reached you by naming a job, ASK FIRST" branch: on arrival it calls `apply_job` in the same turn, without asking again. Routing runs first, then `apply_confirm`'s prompt and its `apply_job` call, all in the turn where the caller said yes.
+- `apply_confirm`: `job_pick` (a re-pick after a failed apply) goes to `job_details` instead of staying, and its re-pick prompt section goes. Add `apply_now → apply_confirm` ahead of the catch-alls.
+- The turn counter in `apply_confirm` stays. Questions no longer count against it, because they are asked in `job_details`.
+
+#### 8. Transitions to prove before shipping
+
+Each one is a scripted voice-bench run, with the step and intent checked in the turn banner:
+
+| Path | Expected |
+| --- | --- |
+| pick → "yes" | `job_details` → `apply_confirm`, application sent in the yes turn, no second "shall I send it?" |
+| pick → 4 questions → "yes" | every question answered in `job_details`; the yes turn reaches `apply_confirm` and applies |
+| pick → "yes, but what is the salary?" | stays in `job_details`, answers, nothing applied |
+| pick → "no" | back to `job_match` |
+| pick → another job → "yes" | applies to the second job only |
+| "apply to the second one" from the list | straight to `apply_confirm`, applies |
+| new caller: pick → "yes" | `profile_setup` asks the name → `apply_confirm` applies |
+| already-applied job → "yes, other jobs" | `job_match` (case 1) |
+| any step → goodbye | ends as today |
