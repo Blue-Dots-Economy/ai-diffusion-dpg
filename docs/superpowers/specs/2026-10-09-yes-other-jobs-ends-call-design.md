@@ -123,9 +123,23 @@ Add `{acts: [affirm, request_change], pending: submit_confirm, intent: explore_m
 
 #### 6. A new `job_details` step between the pick and the apply
 
-The caller picks a job and lands here. This step describes the job, answers questions about it, and hands over to the apply the moment the caller says yes.
+The caller picks a job and lands here. This step describes the job and answers questions about it. There is no limit on questions: the caller can ask as many as they like, for as many turns as they like. From here they can:
 
-Each reply ends on a single question, the apply question: "कुछ पूछना हो तो पूछिए। क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?" ("Ask if you have any questions. Shall I send the application for this job?"). Because "shall I send it?" is always the open question, "yes" always means apply and "no" always means not this job. This avoids the "no questions" vs "no, don't apply" confusion the old step had.
+- **apply**, by saying yes, which hands them over to the apply straight away;
+- **change the job**, by naming another job from the list, which stays here with that job, or by asking to hear the list again, which goes back to `job_match`;
+- **leave the job**, by saying no, which goes back to `job_match`.
+
+##### Every reply ends on "shall I apply?"
+
+Every reply in this step, the first description and each answer to a question, ends on the same question: "कुछ पूछना हो तो पूछिए। क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?" ("Ask if you have any questions. Shall I send the application for this job?").
+
+Why:
+
+- **A "yes" must always mean apply.** The caller's short reply is understood against the question the bot just asked. If one reply ends on "shall I apply?" and the next on "anything else?", the same "हाँ" ("yes") means "apply" after one and "I have another question" after the other. Ending every reply on the apply question means a yes is always read as `apply_now`, whenever the caller is ready, after no questions or after many.
+- **A "no" must always mean not this job.** The old step ended on "any questions?", where "नहीं" ("no") meant "no questions, go ahead". It needed special prompt rules to avoid treating that as a refusal, and still went wrong. Here "no" can only mean "don't apply".
+- **The way to apply is never more than one word away.** A caller who has asked several questions does not have to guess how to move on; the next step is always offered.
+
+It is one sentence at the end of the answer, not a separate turn, and the caller is free to ignore it and ask another question.
 
 | Setting | Value | Against which old failure |
 | --- | --- | --- |
@@ -133,7 +147,7 @@ Each reply ends on a single question, the apply question: "कुछ पूछ�
 | Job data | The `fetch_jobs` result, already in `<known_facts>` for every step (session cache, 30 min TTL) | No tools, empty replies |
 | Tools | None of its own. `end_session` is added to every step by the orchestrator | Applying can only happen through routing, never from this step |
 | `opening_phrase` | A short neutral bridge, like `job_match`'s "ठीक है।" ("Okay.") | Empty opening phrase |
-| Turn counter | None. Questions here are expected, however many there are | Routed away on turn count |
+| Turn counter | None. The caller can ask any number of questions; nothing here ends or moves on by count | Routed away on turn count |
 
 New act-intent rows, placed above the existing `submit_confirm` rows:
 
@@ -150,9 +164,9 @@ Routing in `job_details`, in order. Every exit is driven by the caller's intent,
 | `termination_intent` / `termination_blocked` | `ended` / `confirm_close` | same as other steps, `close_return_to: job_details` |
 | `apply_now`, profile exists | **`apply_confirm`** | the caller said yes |
 | `apply_now`, no profile | `profile_setup` | it saves the name and goes on to `apply_confirm`, as today |
-| `job_pick` | `job_details` | another job; `selected_job_item_id` is already updated by the resolver |
-| `job_question` | `job_details` | answer and ask again |
-| `explore_more`, `decline` | `job_match` | |
+| `job_pick` | `job_details` | changes to another job from the list; `selected_job_item_id` is already updated by the resolver |
+| `job_question` | `job_details` | answer and ask again, any number of times |
+| `explore_more`, `decline` | `job_match` | back to choosing a job |
 | `services_request` | `service_match` | |
 | `*` | `job_details` | |
 
@@ -170,7 +184,8 @@ Each one is a scripted voice-bench run, with the step and intent checked in the 
 | Path | Expected |
 | --- | --- |
 | pick → "yes" | `job_details` → `apply_confirm`, application sent in the yes turn, no second "shall I send it?" |
-| pick → 4 questions → "yes" | every question answered in `job_details`; the yes turn reaches `apply_confirm` and applies |
+| pick → 8 questions → "yes" | every question answered in `job_details`, each reply ending on "shall I apply?"; the call does not end; the yes turn reaches `apply_confirm` and applies |
+| pick → questions → "show me the list again" → pick another → "yes" | back to `job_match`, then `job_details` with the new job, applies to the new job only |
 | pick → "yes, but what is the salary?" | stays in `job_details`, answers, nothing applied |
 | pick → "no" | back to `job_match` |
 | pick → another job → "yes" | applies to the second job only |
