@@ -2590,9 +2590,10 @@ agent_workflow:
 
         ## On user picking a job
         When the caller picks a job, <caller_turn> shows it as resolved and
-        the next phase describes it. If they ask about a job and <caller_turn>
-        shows nothing resolved, ask which one they mean by its number or
-        company. Never describe a single job or ask whether to apply here.
+        the next phase describes it. If they ask about a job or say yes and
+        <caller_turn> shows nothing resolved, ask which one they mean by its
+        number or company. Never describe a single job or ask whether to apply
+        here.
 
         ## On explore_more / pay_disappointment / distance_issue
         Acknowledge briefly. If user wants different city/trade,
