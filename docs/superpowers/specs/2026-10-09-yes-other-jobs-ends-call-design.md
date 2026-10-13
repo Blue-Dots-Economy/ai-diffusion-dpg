@@ -79,7 +79,7 @@ The new step below is built against each of these.
 
 ## Changes
 
-Changes 1–5 fix cause A (case 1). Changes 6–8 fix cause B (case 2).
+Changes 1–5 (with 4a) fix cause A (case 1). Changes 6–8 fix cause B (case 2).
 
 ### Case 1
 
@@ -114,6 +114,12 @@ New act-intent rows:
 #### 4. Clear the flag when the caller moves on
 
 Every routing rule that takes the caller to a new pick or back to the list writes `apply_failed: 0` via `session_writes`. Without this, a stale `more_jobs_offer` would answer the next "send it?".
+
+#### 4a. A new pick forgets the previous apply (Agent Core, `clear_tool_exchanges`)
+
+Once case 1 keeps the call going, the caller can pick another job and say yes. But the orchestrator replays the previous turns' tool exchanges to the model, so it saw the earlier `apply_job` 422 and repeated "already applied" instead of applying for the new job.
+
+Routing rules get a `clear_tool_exchanges: [tool, ...]` option. When the rule fires, those tools' uses and results are removed from the stored exchanges before this turn's replay. The `job_pick` rules in `job_match`, `job_details` and `apply_confirm` clear `apply_job`, so each new job starts with no apply result in context. Tool names are checked against the connectors at startup.
 
 #### 5. Safety net
 

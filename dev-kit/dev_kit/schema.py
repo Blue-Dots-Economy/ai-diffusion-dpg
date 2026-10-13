@@ -538,6 +538,10 @@ class RoutingRuleSchema(BaseModel):
         description="Session field/value pairs written when this rule fires. "
                     "Values must be scalars (str, int, float, bool).",
     )
+    clear_tool_exchanges: list[str] = Field(
+        default_factory=list,
+        description="Tool names whose stored exchanges are dropped when this rule fires.",
+    )
 
 
 class OptionsFromConfig(BaseModel):

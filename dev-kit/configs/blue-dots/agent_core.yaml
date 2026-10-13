@@ -2655,6 +2655,7 @@ agent_workflow:
         - intent: job_pick
           next_subagent_id: job_details
           session_writes: { apply_failed: 0 }
+          clear_tool_exchanges: [apply_job]
         # An explicit "apply to this one" from the list skips job_details.
         - intent: apply_now
           conditions:
@@ -2737,6 +2738,7 @@ agent_workflow:
           next_subagent_id: profile_setup
         - intent: job_pick
           next_subagent_id: job_details
+          clear_tool_exchanges: [apply_job]
         - intent: job_question
           next_subagent_id: job_details
         - intent: explore_more
@@ -3523,6 +3525,7 @@ agent_workflow:
         - intent: job_pick
           next_subagent_id: job_details
           session_writes: { apply_failed: 0 }
+          clear_tool_exchanges: [apply_job]
         - intent: decline
           next_subagent_id: job_match
         - intent: apply_now

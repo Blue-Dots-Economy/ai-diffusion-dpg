@@ -585,3 +585,12 @@ def test_yes_in_job_details_with_a_profile_goes_to_apply_confirm():
     nxt, _ = _make_agent_core(workflow=wf)._resolve_next_subagent(
         current_subagent=wf.subagents["job_details"], nlu_result=u.nlu_result, session=state)
     assert (u.nlu_result.intent, nxt) == ("apply_now", "apply_confirm")
+
+
+def test_clear_tool_exchanges_must_name_a_connector():
+    cfg = load_merged_config(BLUE_DOTS)
+    sub = next(s for s in cfg["agent_workflow"]["subagents"] if s["id"] == "job_details")
+    rule = next(r for r in sub["routing"] if r["intent"] == "job_pick")
+    rule["clear_tool_exchanges"] = ["apply_jobs"]
+    with pytest.raises(ValueError, match="unknown tools"):
+        MergedConfig.validate_full(cfg)
