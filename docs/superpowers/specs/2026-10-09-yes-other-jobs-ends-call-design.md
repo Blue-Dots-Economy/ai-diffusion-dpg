@@ -109,7 +109,7 @@ New act-intent rows:
 | --- | --- | --- | --- |
 | "हाँ" ("yes") / "हाँ, दूसरी जॉब बताइए" ("yes, tell me other jobs") | `affirm` | `explore_more` | `job_match` |
 | names a job | `select` | `job_pick` | `job_details` (change 6) |
-| "नहीं" ("no") | `deny` | declines more jobs | `confirm_close`, with `close_return_to: apply_confirm` |
+| "नहीं" ("no") | `deny` | `termination_blocked` | `confirm_close`, with `close_return_to: apply_confirm`, through `apply_confirm`'s existing rule |
 
 #### 4. Clear the flag when the caller moves on
 
@@ -149,11 +149,12 @@ It is one sentence at the end of the answer, not a separate turn, and the caller
 | `opening_phrase` | A short neutral bridge, like `job_match`'s "ठीक है।" ("Okay.") | Empty opening phrase |
 | Turn counter | None. The caller can ask any number of questions; nothing here ends or moves on by count | Routed away on turn count |
 
-New act-intent rows, placed above the existing `submit_confirm` rows:
+A plain question ("सैलरी कितनी है?", "what is the salary?") matches no act-intent row, so it stays in `job_details` through the catch-all. It does not count as off-track either: the NLU marks it `new_topic`, and only `unrelated` / `unclear` turns count towards `off_track`.
 
-| Caller | Acts / topic | Intent |
+One new act-intent row, placed above the `apply_now` row:
+
+| Caller | Acts | Intent |
 | --- | --- | --- |
-| "सैलरी कितनी है?" ("what is the salary?"), "जगह कहाँ है?" ("where is it?"), "काम क्या है?" ("what is the work?") | `ask` with topic `salary`, `location` or `job_details` | `job_question` |
 | "हाँ, पर सैलरी कितनी है?" ("yes, but what is the salary?") | `affirm` + `ask`, pending `submit_confirm` | `job_question`, not `apply_now`: a yes with a question is not a yes |
 
 Routing in `job_details`, in order. Every exit is driven by the caller's intent, never by a turn count:
