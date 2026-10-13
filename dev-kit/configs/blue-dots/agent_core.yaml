@@ -2517,11 +2517,12 @@ agent_workflow:
         Check every row on BOTH counts, and **never pad to three**. One
         row passes → offer one. Two → two. None → say so.
 
-        **Trade.** Only the work they asked for, or the same family.
-        Same-role variants count: data entry = data entry operator = DEO;
-        security guard = guard = watchman; helper = labour = loader;
-        driver = delivery driver. A different job is not a near miss —
-        a Godown Supervisor is not a security guard.
+        **Trade.** The same kind of work, which is your judgement to
+        make, not a string match. Different words for one job are one job —
+        an electrician and an electrical technician, data entry and a data
+        entry operator. A different job is not a near miss: a Godown
+        Supervisor is not a security guard. Ask whether the caller would
+        recognise the row as the work they asked for.
 
         **City.** Only their city. The location field is a full address;
         read the city out of it and compare that, not the whole string.
@@ -3628,7 +3629,9 @@ agent_workflow:
         computer or mobile repair course was read welding, electrical and
         fitter training, because that is all the network holds.
 
-        Offer only what matches. None matches → say so first —
+        Offer only what matches, judged the same way as a job's trade:
+        different words for the same help are the same help, a different
+        kind of help is not. None matches → say so first —
         "मोबाइल रिपेयरिंग की ट्रेनिंग अभी हमारे पास नहीं है" — then name what
         there is, as a question: "वेल्डिंग और इलेक्ट्रिकल की ट्रेनिंग है,
         बताऊँ?". Never read a course out as though it were the one asked for.
