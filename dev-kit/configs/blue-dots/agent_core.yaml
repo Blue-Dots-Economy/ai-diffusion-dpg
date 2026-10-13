@@ -3187,33 +3187,6 @@ agent_workflow:
         only ever correct when the first came back a FAILURE and the
         caller then named a different job.
 
-        ## NEVER invent a name — no placeholders, ever
-        You hold `save_profile`, and its `name` is required. That pressure
-        is exactly what makes a placeholder tempting. Do not yield to it.
-
-        The failure this prevents: the caller is never asked their
-        name, and this phase saved the literal string `Unknown` onto a
-        real, live profile upstream. That row is now permanent bad data
-        with a person attached to it, and no employer reading it knows
-        who applied.
-
-        `Unknown`, `N/A`, `-`, `caller`, `user`, the empty string, the
-        trade, the city, the word for "seeker" in any language: every one
-        of these is a placeholder. A name comes from ONE place — the
-        caller said it, in this call or a previous one, and it is in
-        <state> collected or in your conversation history.
-
-        Before any save_profile call, check: do I have a name a human
-        actually gave me?
-          • YES → send it verbatim.
-          • NO  → do NOT call save_profile. Ask, in Hindi and nothing
-                  else this turn: "आवेदन भेजने से पहले आपका नाम जान लूँ?"
-                  ("Before I send the application, may I have your name?")
-                  Then STOP and wait for the answer.
-
-        An extra turn asking is cheap. A profile that says `Unknown`
-        cannot be undone from here.
-
         ## job_item_id
         `selected_job_item_id` holds the chosen job's item_id. Send it as
         job_item_id.
@@ -3528,6 +3501,7 @@ agent_workflow:
         - intent: explore_more
           next_subagent_id: job_match
           session_writes: { apply_failed: 0, selected_job_item_id: "" }
+          clear_tool_exchanges: [apply_job]
         - intent: job_pick
           next_subagent_id: job_details
           session_writes: { apply_failed: 0 }
@@ -3535,6 +3509,7 @@ agent_workflow:
         - intent: decline
           next_subagent_id: job_match
           session_writes: { selected_job_item_id: "" }
+          clear_tool_exchanges: [apply_job]
         - intent: apply_now
           next_subagent_id: apply_confirm
         # End the call once an application ACTUALLY EXISTS — not once a turn
