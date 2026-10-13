@@ -118,9 +118,9 @@ def test_blue_dots_journey_routes_end_to_end():
         state.update(tool_effects)
         trail.append((u.nlu_result.intent, nxt))
         sid = nxt
-    intents = [i for i, _ in trail]
     assert trail[6] == ("off_track", "job_match")
-    assert trail[7] == ("job_pick", "job_details") and state["selected_job_item_id"] == "j1"
+    assert trail[7] == ("job_pick", "job_details")
+    assert state["selected_job_item_id"] == "j1"
     assert trail[8:14] == [("any_input", "job_details")] * 6
     assert trail[14] == ("job_question", "job_details")
     assert trail[15] == ("apply_now", "profile_setup")

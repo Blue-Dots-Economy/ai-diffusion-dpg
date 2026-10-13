@@ -779,6 +779,8 @@ preprocessing:
       - { pending: age, caller: "वेल्डिंग का काम चाहिए", out: { acts: [provide_info], relation: answers_other, slots: { trade: Welder } } }
       - { pending: select_job, caller: "इलेक्ट्रीशियन नहीं वेल्डर", out: { acts: [correct], relation: answers_other, slots: { trade: Welder } } }
       - { pending: select_job, caller: "फ्लिपकार्ट वाला", out: { acts: [select], relation: answers_pending, reference: { option: 1, spoken: "फ्लिपकार्ट वाला" } } }
+      - { pending: select_job, caller: "दूसरे वाले के बारे में बताइए", out: { acts: [select], relation: answers_pending, reference: { option: 2, spoken: "दूसरे वाले" } } }
+      - { pending: submit_confirm, caller: "नहीं, तीसरा वाला बताइए", out: { acts: [deny, select], relation: answers_pending, reference: { option: 3, spoken: "तीसरा वाला" } } }
       - { pending: age, caller: "सैलरी कितनी है", out: { acts: [ask], relation: new_topic, topic: salary } }
       - { pending: select_job, caller: "बाद में बात करते हैं", out: { acts: [close], relation: new_topic } }
       # A goodbye is a goodbye wherever it lands. Without these, a caller
@@ -2587,8 +2589,10 @@ agent_workflow:
           what they just ruled out.
 
         ## On user picking a job
-        When the caller picks a job, <caller_turn> shows it as resolved.
-        Say the role and company back once, then continue.
+        When the caller picks a job, <caller_turn> shows it as resolved and
+        the next phase describes it. If they ask about a job and <caller_turn>
+        shows nothing resolved, ask which one they mean by its number or
+        company. Never describe a single job or ask whether to apply here.
 
         ## On explore_more / pay_disappointment / distance_issue
         Acknowledge briefly. If user wants different city/trade,
@@ -2683,6 +2687,8 @@ agent_workflow:
         ## What to say
         - On the first turn here, describe the job in one or two short
           sentences: [role], [company], [location], pay, and the type of work.
+          Do this even if the caller asked to apply while picking it: nothing
+          has been sent yet, and their yes to the question below sends it.
         - When the caller asks something, answer only that, in one or two
           sentences.
         - If the row does not have what they asked, say you do not have that
@@ -2735,8 +2741,10 @@ agent_workflow:
           next_subagent_id: job_details
         - intent: explore_more
           next_subagent_id: job_match
+          session_writes: { selected_job_item_id: "" }
         - intent: decline
           next_subagent_id: job_match
+          session_writes: { selected_job_item_id: "" }
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
@@ -3127,8 +3135,9 @@ agent_workflow:
       system_prompt: |
         You are in the **apply_confirm** phase. Your job is to call
         apply_job with the correct identifiers and announce the result.
-        If a result for this step's tool is already in the conversation, speak from it;
-        do not call the tool again.
+        If an apply_job result for the job in `selected_job_item_id` is already
+        in the conversation, speak from it; do not call the tool again. A
+        different selected job has not been applied for yet: call apply_job.
 
         ## Where each required field comes from (HARD)
         apply_job needs six values. There are only two ways to get
