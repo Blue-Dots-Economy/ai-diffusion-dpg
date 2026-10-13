@@ -570,7 +570,8 @@ def test_answer_to_other_jobs_after_a_failed_apply(acts, expected):
     _, wf = _load()
     nxt, rule = _make_agent_core(workflow=wf)._resolve_next_subagent(
         current_subagent=wf.subagents["apply_confirm"], nlu_result=u.nlu_result, session=state)
-    assert (u.nlu_result.intent, nxt) == expected
+    actual = (u.nlu_result.intent, nxt)
+    assert actual == expected
     if nxt == "job_match":
         assert rule.session_writes == {"apply_failed": 0, "selected_job_item_id": ""}
 
