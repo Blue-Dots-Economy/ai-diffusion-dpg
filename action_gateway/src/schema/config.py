@@ -253,12 +253,14 @@ class SessionMapping(BaseModel):
             ``src.adapters.response_path`` for the grammar. Domain-specific by
             nature and therefore config, never code.
         target: Session key to write. Routing conditions test this name.
+        on_error: Also apply this mapping to a JSON body of an HTTP error response.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     source: str
     target: str
+    on_error: bool = False
 
 
 class ResponseConfig(BaseModel):
