@@ -739,6 +739,7 @@ class RoutingRule(BaseModel):
     condition: Optional[RoutingCondition] = None
     conditions: list[RoutingCondition] = Field(default_factory=list)
     session_writes: dict[str, Any] = Field(default_factory=dict)
+    clear_tool_exchanges: list[str] = Field(default_factory=list)
 
 
 class OptionsFromConfig(BaseModel):
@@ -1264,6 +1265,14 @@ class MergedConfig(BaseModel):
             raise ValueError(
                 f"preprocessing.nlu_processor.off_track.intent '{nlu.off_track.intent}' "
                 f"is not used by any routing rule")
+
+        connectors = {c.name for c in (*self.connectors.read, *self.connectors.write, *self.connectors.identity)}
+        for s in wf.subagents:
+            for r in s.routing:
+                unknown = set(r.clear_tool_exchanges) - connectors
+                if unknown:
+                    raise ValueError(f"subagent '{s.id}' routing intent '{r.intent}': "
+                                     f"clear_tool_exchanges names unknown tools {sorted(unknown)}")
 
         cached = {c.name for c in self.connectors.read if c.cache is not None}
         state_keys = {self.entity_to_profile_field.get(n, n) for n in nlu.slots}

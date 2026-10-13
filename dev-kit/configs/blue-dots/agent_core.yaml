@@ -779,6 +779,8 @@ preprocessing:
       - { pending: age, caller: "वेल्डिंग का काम चाहिए", out: { acts: [provide_info], relation: answers_other, slots: { trade: Welder } } }
       - { pending: select_job, caller: "इलेक्ट्रीशियन नहीं वेल्डर", out: { acts: [correct], relation: answers_other, slots: { trade: Welder } } }
       - { pending: select_job, caller: "फ्लिपकार्ट वाला", out: { acts: [select], relation: answers_pending, reference: { option: 1, spoken: "फ्लिपकार्ट वाला" } } }
+      - { pending: select_job, caller: "दूसरे वाले के बारे में बताइए", out: { acts: [select], relation: answers_pending, reference: { option: 2, spoken: "दूसरे वाले" } } }
+      - { pending: submit_confirm, caller: "नहीं, तीसरा वाला बताइए", out: { acts: [deny, select], relation: answers_pending, reference: { option: 3, spoken: "तीसरा वाला" } } }
       - { pending: age, caller: "सैलरी कितनी है", out: { acts: [ask], relation: new_topic, topic: salary } }
       - { pending: select_job, caller: "बाद में बात करते हैं", out: { acts: [close], relation: new_topic } }
       # A goodbye is a goodbye wherever it lands. Without these, a caller
@@ -822,21 +824,14 @@ preprocessing:
       - { acts: [select], pending: submit_confirm, intent: job_pick }
       - { acts: [select], pending: select_service, intent: service_pick }
       - { acts: [select], pending: enquiry_confirm, intent: service_pick }
+      - { acts: [select], pending: more_jobs_offer, intent: job_pick }
       - { acts: [deny, request_change], topic: search, intent: explore_more }
       - { acts: [deny, request_change], pending: enquiry_confirm, intent: services_request }
-      # UNREACHABLE as written, kept because routing still names apply_now.
-      # Measured over 108 live NLU turns: `affirm` + `submit_confirm` never
-      # co-occurred once. The confirm turn ("yes, send it") always arrived as
-      # `affirm` + pending=none, because the pick routes the caller into
-      # profile_setup first and the submit_confirm pending is declared on
-      # job_match — so it stops resolving the moment the caller leaves that
-      # phase, even though the question asked there carries the trigger phrase.
-      #
-      # The OUTCOME is already correct: those turns reach apply_confirm through
-      # the catch-all rules and the application is created. Scoping the pending
-      # so this row can fire would change which rule wins on the apply path,
-      # which is the most irreversible step in the call — not worth doing
-      # blind. Fix it with a measured run, or delete the row.
+      # A yes that also asks or wants something else is not a yes to applying.
+      - { acts: [affirm, ask], pending: submit_confirm, intent: job_question }
+      - { acts: [affirm, request_change], pending: submit_confirm, intent: explore_more }
+      - { acts: [affirm], pending: more_jobs_offer, intent: explore_more }
+      - { acts: [deny], pending: more_jobs_offer, intent: termination_blocked }
       - { acts: [affirm], pending: submit_confirm, relation: answers_pending, intent: apply_now }
       # "नहीं, कोई दूसरी दिखाइए" refuses this job and asks for another: explore, not a bare decline.
       - { acts: [deny, request_change], pending: submit_confirm, intent: explore_more }
@@ -2594,8 +2589,11 @@ agent_workflow:
           what they just ruled out.
 
         ## On user picking a job
-        When the caller picks a job, <caller_turn> shows it as resolved.
-        Say the role and company back once, then continue.
+        When the caller picks a job, <caller_turn> shows it as resolved and
+        the next phase describes it. If they ask about a job or say yes and
+        <caller_turn> shows nothing resolved, ask which one they mean by its
+        number or company. Never describe a single job or ask whether to apply
+        here.
 
         ## On explore_more / pay_disappointment / distance_issue
         Acknowledge briefly. If user wants different city/trade,
@@ -2655,35 +2653,113 @@ agent_workflow:
           session_writes: { services_in_play: "true" }
         - intent: explore_more
           next_subagent_id: job_match
-        # A pick goes straight to applying. The deep-dive phase that used to
-        # sit here was removed: it held no tools, produced empty turns on a
-        # live call, and a caller who asks about a job is answered inline by
-        # this phase from the same tool_result it already read out.
-        #
-        # Which way depends on whether the caller HAS a usable profile.
-        # profile_item_id is written by fetch_profile's session_mapping and
-        # only ever holds a LIVE item's id, so it is the honest test for
-        # "can we apply right now?".
         - intent: job_pick
+          next_subagent_id: job_details
+          session_writes: { apply_failed: 0 }
+          clear_tool_exchanges: [apply_job]
+        # A yes with no job selected stays here so the caller is asked which one.
+        - intent: apply_now
           conditions:
-            - field: profile_item_id
-              operator: not_eq
+            - field: selected_job_item_id
+              operator: eq
               value: ""
-          next_subagent_id: apply_confirm
+          next_subagent_id: job_match
         - intent: apply_now
           conditions:
             - field: profile_item_id
               operator: not_eq
               value: ""
           next_subagent_id: apply_confirm
-        # No live profile — collect the one thing we still need (the name)
-        # and create it, then apply.
-        - intent: job_pick
-          next_subagent_id: profile_setup
+          session_writes: { apply_failed: 0 }
         - intent: apply_now
           next_subagent_id: profile_setup
+          session_writes: { apply_failed: 0 }
         - intent: "*"
           next_subagent_id: job_match
+    - id: job_details
+      name: Job Details
+      description: >
+        Describe the job the caller picked and answer any number of questions
+        about it. Every reply ends on the apply question; a yes hands over to
+        apply_confirm.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "ठीक है।"
+      tools: []
+
+      system_prompt: |
+        You are in the **job_details** phase. The caller has picked one job
+        (`selected_job_item_id` in <state>). Talk only about that job, using
+        only its row in the `fetch_jobs` result in <known_facts>.
+
+        ## What to say
+        - On the first turn here, describe the job in one or two short
+          sentences: [role], [company], [location], pay, and the type of work.
+          Do this even if the caller asked to apply while picking it: nothing
+          has been sent yet, and their yes to the question below sends it.
+        - When the caller asks something, answer only that, in one or two
+          sentences.
+        - If the row does not have what they asked, say you do not have that
+          detail and our team will share it. Never guess or invent a detail,
+          never promise an interview or a callback.
+
+        Fields: role, company, location, positions, nature_of_job, pay
+        (salary_spoken, stipend_spoken or task_rate_spoken, whichever is
+        present), work_experience_years, min_educational_institute. A
+        location that looks masked ("B***") is not a location: say you do not
+        have the address.
+
+        ## Every reply ends on the same question
+        End every reply, the description and every answer, with exactly:
+          "कुछ पूछना हो तो पूछिए। क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"
+          ("Ask if you have any questions. Shall I send the application for this job?")
+        Ask nothing else.
+
+        You cannot apply from here, and you must never say an application
+        was sent. When the caller says yes, the next phase sends it.
+
+      pending:
+        - id: submit_confirm
+          expects: "आवेदन भेजूँ? हाँ/नहीं, इस जॉब के बारे में सवाल, या दूसरी job चुनना"
+          options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
+          resolves_to: selected_job_item_id
+
+      routing:
+        - intent: off_track
+          next_subagent_id: job_details
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: job_details }
+        - intent: apply_now
+          conditions:
+            - field: profile_item_id
+              operator: not_eq
+              value: ""
+          next_subagent_id: apply_confirm
+        - intent: apply_now
+          next_subagent_id: profile_setup
+        - intent: job_pick
+          next_subagent_id: job_details
+          clear_tool_exchanges: [apply_job]
+        - intent: job_question
+          next_subagent_id: job_details
+        - intent: explore_more
+          next_subagent_id: job_match
+          session_writes: { selected_job_item_id: "" }
+        - intent: decline
+          next_subagent_id: job_match
+          session_writes: { selected_job_item_id: "" }
+        - intent: services_request
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
+        - intent: "*"
+          next_subagent_id: job_details
+
     - id: profile_setup
       name: Profile Setup
       description: >
@@ -3068,8 +3144,9 @@ agent_workflow:
       system_prompt: |
         You are in the **apply_confirm** phase. Your job is to call
         apply_job with the correct identifiers and announce the result.
-        If a result for this step's tool is already in the conversation, speak from it;
-        do not call the tool again.
+        If an apply_job result for the job in `selected_job_item_id` is already
+        in the conversation, speak from it; do not call the tool again. A
+        different selected job has not been applied for yet: call apply_job.
 
         ## Where each required field comes from (HARD)
         apply_job needs six values. There are only two ways to get
@@ -3111,33 +3188,6 @@ agent_workflow:
         only ever correct when the first came back a FAILURE and the
         caller then named a different job.
 
-        ## NEVER invent a name — no placeholders, ever
-        You hold `save_profile`, and its `name` is required. That pressure
-        is exactly what makes a placeholder tempting. Do not yield to it.
-
-        The failure this prevents: the caller is never asked their
-        name, and this phase saved the literal string `Unknown` onto a
-        real, live profile upstream. That row is now permanent bad data
-        with a person attached to it, and no employer reading it knows
-        who applied.
-
-        `Unknown`, `N/A`, `-`, `caller`, `user`, the empty string, the
-        trade, the city, the word for "seeker" in any language: every one
-        of these is a placeholder. A name comes from ONE place — the
-        caller said it, in this call or a previous one, and it is in
-        <state> collected or in your conversation history.
-
-        Before any save_profile call, check: do I have a name a human
-        actually gave me?
-          • YES → send it verbatim.
-          • NO  → do NOT call save_profile. Ask, in Hindi and nothing
-                  else this turn: "आवेदन भेजने से पहले आपका नाम जान लूँ?"
-                  ("Before I send the application, may I have your name?")
-                  Then STOP and wait for the answer.
-
-        An extra turn asking is cheap. A profile that says `Unknown`
-        cannot be undone from here.
-
         ## job_item_id
         `selected_job_item_id` holds the chosen job's item_id. Send it as
         job_item_id.
@@ -3156,29 +3206,9 @@ agent_workflow:
         caller's behalf, in their name, to a real employer. It happens
         only after they have said yes to being asked for it.
 
-        **Naming a job is not asking you to apply to it.** "पहला वाला"
-        selects — it answers "which one?", not "shall I send it?". A
-        caller who picks the first job to hear more about it has not
-        applied for anything.
-
-        So, on arriving here:
-
-          - If the turn immediately before this one asked whether to send
-            the application and the caller said YES — that is your
-            confirmation. Go straight to apply_job. Do not ask again;
-            asking twice is its own failure.
-
-          - Otherwise — including when the caller reached you by naming a
-            job — ASK FIRST, in Hindi, and send nothing this turn:
-
-              "<कंपनी> में <रोल> के लिए आवेदन भेज दूँ?"
-              ("Shall I send the application to <company> for <role>?")
-
-            Then stop and wait. Apply on the next turn, once they agree.
-
-        A returning caller is the case to watch: they already have their
-        details on file, so nothing stands between picking a job and this
-        phase. That is exactly when an unasked application gets sent.
+        You are reached only after the caller said yes to sending the
+        application for the selected job. That is the confirmation: call
+        apply_job in this turn, and do not ask again.
 
         ## HARD GATE before apply_job — every field must be real
         Before calling apply_job, every field below must be a real
@@ -3416,14 +3446,15 @@ agent_workflow:
         ## If user declines apply or wants a different job
         Route back to job_match. Don't apply.
 
-        ## If user re-picks another listed job ("नहीं, दूसरा वाला")
-        The new pick is already saved. Do NOT apply yet: name the new
-        job (role + company) and ask once more whether to send it.
-
       pending:
         - id: closing_offer
           expects: "और कुछ मदद चाहिए? / कॉल खत्म"
           when: [{ field: applications_submitted, operator: gt, value: 0 }]
+        - id: more_jobs_offer
+          expects: "दूसरी जॉब्स बताऊँ? हाँ/नहीं, या कोई job चुनना"
+          when: [{ field: apply_failed, operator: gt, value: 0 }]
+          options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
+          resolves_to: selected_job_item_id
         - id: submit_confirm
           expects: "आवेदन भेजूँ? हाँ/नहीं, या दूसरी job चुनना"
           # A re-pick ("नहीं, दूसरा वाला") resolves against the same offered list.
@@ -3470,12 +3501,18 @@ agent_workflow:
           session_writes: { services_in_play: "true" }
         - intent: explore_more
           next_subagent_id: job_match
-        # Re-pick at the confirmation: selected_job_item_id is already
-        # updated; stay here and confirm the NEW job before applying.
+          session_writes: { apply_failed: 0, selected_job_item_id: "" }
+          clear_tool_exchanges: [apply_job]
         - intent: job_pick
-          next_subagent_id: apply_confirm
+          next_subagent_id: job_details
+          session_writes: { apply_failed: 0 }
+          clear_tool_exchanges: [apply_job]
         - intent: decline
           next_subagent_id: job_match
+          session_writes: { selected_job_item_id: "" }
+          clear_tool_exchanges: [apply_job]
+        - intent: apply_now
+          next_subagent_id: apply_confirm
         # End the call once an application ACTUALLY EXISTS — not once a turn
         # has been spent here. applications_submitted is written by
         # apply_job's session_mapping from summary.succeeded, so it is 1 only
@@ -3756,6 +3793,7 @@ agent_workflow:
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: opening }], next_subagent_id: opening }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: profile_resolve }], next_subagent_id: profile_resolve }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_details }], next_subagent_id: job_details }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
@@ -3763,6 +3801,7 @@ agent_workflow:
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: opening }], next_subagent_id: opening }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: profile_resolve }], next_subagent_id: profile_resolve }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: job_details }], next_subagent_id: job_details }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
@@ -3813,6 +3852,7 @@ agent_workflow:
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: opening }], next_subagent_id: opening }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: profile_resolve }], next_subagent_id: profile_resolve }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_details }], next_subagent_id: job_details }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
@@ -3820,6 +3860,7 @@ agent_workflow:
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: opening }], next_subagent_id: opening }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: profile_resolve }], next_subagent_id: profile_resolve }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: job_details }], next_subagent_id: job_details }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }

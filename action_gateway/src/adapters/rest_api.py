@@ -251,6 +251,24 @@ def _safe_response_text(response) -> str:
             return ""
 
 
+def _json_body(response) -> dict:
+    """Return the decoded JSON body, or ``{}`` when it is not JSON."""
+    try:
+        return response.json()
+    except Exception:
+        return {}
+
+
+def _session_values(body, mappings: list[dict]) -> dict:
+    """Resolve each mapping's ``source`` in ``body``; unresolved paths are omitted."""
+    values: dict = {}
+    for m in mappings:
+        value = resolve(body, m.get("source", ""))
+        if value is not None:
+            values[m["target"]] = value
+    return values
+
+
 def _collect_template_placeholders(template) -> set[str]:
     """Return the set of placeholder names referenced anywhere in a body template.
 
@@ -772,6 +790,7 @@ class RestApiAdapter(ToolAdapter):
             )
 
         latency_ms = int((time.time() - start) * 1000)
+        session_mapping = self.config.get("response", {}).get("session_mapping") or []
 
         if response.is_error:
             error_msg = f"http_error: {response.status_code}"
@@ -826,6 +845,7 @@ class RestApiAdapter(ToolAdapter):
                     "id_params": _ids,
                 },
             )
+            on_error = [m for m in session_mapping if m.get("on_error")]
             return ToolResult(
                 tool_use_id="",
                 tool_name=tool_name,
@@ -833,12 +853,10 @@ class RestApiAdapter(ToolAdapter):
                 success=False,
                 error=error_msg,
                 result_text=result_text,
+                session_values=_session_values(_json_body(response), on_error) if on_error else {},
             )
 
-        try:
-            result_dict: dict = response.json()
-        except Exception:
-            result_dict = {}
+        result_dict = _json_body(response)
 
         projected = _apply_projection(result_dict, self.config.get("response", {}).get("projection"))
         payload = projected if projected is not None else result_dict
@@ -847,11 +865,7 @@ class RestApiAdapter(ToolAdapter):
         # which is shaped for the LLM and may well drop what routing needs.
         # A path that no longer matches resolves to None and is skipped, so a
         # drifted connector degrades to "absent" rather than breaking the call.
-        session_values: dict = {}
-        for m in (self.config.get("response", {}).get("session_mapping") or []):
-            value = resolve(result_dict, m.get("source", ""))
-            if value is not None:
-                session_values[m["target"]] = value
+        session_values = _session_values(result_dict, session_mapping)
         if session_values:
             logger.info(
                 f"rest_api_session_values tool={tool_name} "
