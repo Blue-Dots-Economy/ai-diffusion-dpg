@@ -121,7 +121,7 @@ def test_blue_dots_journey_routes_end_to_end():
     assert trail[6] == ("off_track", "job_match")
     assert trail[7] == ("job_pick", "job_details")
     assert state["selected_job_item_id"] == "j1"
-    assert trail[8:14] == [("any_input", "job_details")] * 6
+    assert trail[8:14].count(("any_input", "job_details")) == 6
     assert trail[14] == ("job_question", "job_details")
     assert trail[15] == ("apply_now", "profile_setup")
     assert trail[17] == ("any_input", "apply_confirm")
