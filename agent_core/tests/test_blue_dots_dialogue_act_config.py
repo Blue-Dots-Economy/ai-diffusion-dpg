@@ -572,7 +572,7 @@ def test_answer_to_other_jobs_after_a_failed_apply(acts, expected):
         current_subagent=wf.subagents["apply_confirm"], nlu_result=u.nlu_result, session=state)
     assert (u.nlu_result.intent, nxt) == expected
     if nxt == "job_match":
-        assert rule.session_writes == {"apply_failed": 0}
+        assert rule.session_writes == {"apply_failed": 0, "selected_job_item_id": ""}
 
 
 def test_yes_in_job_details_with_a_profile_goes_to_apply_confirm():
@@ -594,3 +594,18 @@ def test_clear_tool_exchanges_must_name_a_connector():
     rule["clear_tool_exchanges"] = ["apply_jobs"]
     with pytest.raises(ValueError, match="unknown tools"):
         MergedConfig.validate_full(cfg)
+
+
+@pytest.mark.parametrize("selected, expected", [("", "job_match"), ("j1", "apply_confirm")])
+def test_yes_in_job_match_applies_only_with_a_selected_job(selected, expected):
+    from src.understanding.models import DialogueActResult
+    from tests.test_stream_turn import _make_agent_core
+
+    state = {"profile_item_id": "p1", "selected_job_item_id": selected, "applications_submitted": 0,
+             "current_question": "इनमें से किसके लिए आवेदन करना चाहेंगे?"}
+    u = _understand_once("job_match", state, DialogueActResult(acts=("affirm",), relation="answers_pending"))
+    _, wf = _load()
+    nxt, _ = _make_agent_core(workflow=wf)._resolve_next_subagent(
+        current_subagent=wf.subagents["job_match"], nlu_result=u.nlu_result, session=state)
+    assert u.nlu_result.intent == "apply_now"
+    assert nxt == expected

@@ -2656,7 +2656,13 @@ agent_workflow:
           next_subagent_id: job_details
           session_writes: { apply_failed: 0 }
           clear_tool_exchanges: [apply_job]
-        # An explicit "apply to this one" from the list skips job_details.
+        # A yes with no job selected stays here so the caller is asked which one.
+        - intent: apply_now
+          conditions:
+            - field: selected_job_item_id
+              operator: eq
+              value: ""
+          next_subagent_id: job_match
         - intent: apply_now
           conditions:
             - field: profile_item_id
@@ -3521,13 +3527,14 @@ agent_workflow:
           session_writes: { services_in_play: "true" }
         - intent: explore_more
           next_subagent_id: job_match
-          session_writes: { apply_failed: 0 }
+          session_writes: { apply_failed: 0, selected_job_item_id: "" }
         - intent: job_pick
           next_subagent_id: job_details
           session_writes: { apply_failed: 0 }
           clear_tool_exchanges: [apply_job]
         - intent: decline
           next_subagent_id: job_match
+          session_writes: { selected_job_item_id: "" }
         - intent: apply_now
           next_subagent_id: apply_confirm
         # End the call once an application ACTUALLY EXISTS — not once a turn
