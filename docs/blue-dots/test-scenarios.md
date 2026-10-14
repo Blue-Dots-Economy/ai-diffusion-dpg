@@ -326,6 +326,28 @@ as if they matched.
 
 ---
 
+### C10 — a job list must not arm the apply confirmation
+
+Caller reaches a job list of two or more rows.
+
+The closing question is "इनमें से किसके बारे में और जानना चाहेंगे?"
+("which of these would you like to know more about?"), never
+"किसके लिए आवेदन करना चाहेंगे?" ("which would you like to apply for?").
+
+The second wording is matched by the `submit_confirm` pending, so it turns
+the caller's next "हाँ" into consent to apply before they have picked a job.
+Check the reply after a bare "हाँ": it must not be
+"क्या मैं आवेदन भेज दूँ?" ("shall I send the application?").
+
+### C11 — every row names its own city
+
+Caller asks for a trade in a city where only some rows match.
+
+Each row read out carries its own city. A single city named once for the
+whole list ("गाज़ियाबाद में दो जॉब्स हैं — पहला …, दूसरा …") is a failure
+whenever one of the rows is somewhere else: it tells the caller a job is in
+their city when it is not.
+
 ## S. Support services
 
 The services path is reached ONLY when the caller asks for help, or answers the
@@ -715,27 +737,4 @@ Outliers up to 22 s have been seen and are provider tail latency, not our code
 | --- | --- | --- |
 | F26 / F24 | #204 short-circuit never fires (`turn_count` never written) | changes when we hang up; needs its own test pass |
 | F20 | minimum-salary filter | a valueless filter is an upstream 400; parked |
-| F23 | wrong-city results | search-layer, raise with that team |
 | G3 / G4 | barge-in socket + interrupted turn | needs a real mid-turn interrupt; harness is sequential |
-
-### C10 — a job list must not arm the apply confirmation
-
-Caller reaches a job list of two or more rows.
-
-The closing question is "इनमें से किसके बारे में और जानना चाहेंगे?"
-("which of these would you like to know more about?"), never
-"किसके लिए आवेदन करना चाहेंगे?" ("which would you like to apply for?").
-
-The second wording is matched by the `submit_confirm` pending, so it turns
-the caller's next "हाँ" into consent to apply before they have picked a job.
-Check the reply after a bare "हाँ": it must not be
-"क्या मैं आवेदन भेज दूँ?" ("shall I send the application?").
-
-### C11 — every row names its own city
-
-Caller asks for a trade in a city where only some rows match.
-
-Each row read out carries its own city. A single city named once for the
-whole list ("गाज़ियाबाद में दो जॉब्स हैं — पहला …, दूसरा …") is a failure
-whenever one of the rows is somewhere else: it tells the caller a job is in
-their city when it is not.
