@@ -796,9 +796,7 @@ preprocessing:
       - { pending: select_job, caller: "इलेक्ट्रीशियन नहीं वेल्डर", out: { acts: [correct], relation: answers_other, slots: { trade: Welder } } }
       - { pending: select_job, caller: "फ्लिपकार्ट वाला", out: { acts: [select], relation: answers_pending, reference: { option: 1, spoken: "फ्लिपकार्ट वाला" } } }
       - { pending: age, caller: "सैलरी कितनी है", out: { acts: [ask], relation: new_topic, topic: salary } }
-      # Declining JOBS is not a goodbye: it leaves the caller on the call with
-      # everything else we offer still unoffered. `close` here routes them
-      # straight out through the termination gate.
+      # Declining jobs is not a goodbye; `close` would end the call.
       - { pending: use_saved_details, caller: "मुझे नौकरी नहीं चाहिए", out: { acts: [deny], relation: new_topic, topic: services } }
       - { pending: trade, caller: "मुझे नौकरी नहीं चाहिए", out: { acts: [deny], relation: new_topic, topic: services } }
       - { pending: location, caller: "नौकरी नहीं ढूंढनी", out: { acts: [deny], relation: new_topic, topic: services } }
@@ -850,9 +848,7 @@ preprocessing:
       - { pending: select_job, caller: "कंपनी में किससे बात करनी होगी?", out: { acts: [ask], relation: new_topic, topic: job_details } }
     act_intents:
       - { acts: [deny], pending: wants_services, relation: answers_pending, intent: services_declined }
-      # Declining JOBS, whatever was being asked at the time. Without this the
-      # turn falls to the catch-all, which for a caller with a profile means
-      # job_match — jobs read out to someone who just refused them.
+      # Declining jobs, whatever was being asked at the time.
       - { acts: [deny], relation: new_topic, topic: services, intent: jobs_declined }
       - { acts: [deny], pending: consent, relation: answers_pending, intent: decline }
       - { acts: [select], pending: select_job, intent: job_pick }
@@ -2396,9 +2392,7 @@ agent_workflow:
            that is only a tool call leaves the caller hearing silence.
 
       pending:
-        # First match wins, so this comes before use_saved_details: that one
-        # is keyed on state alone and is open for a returning caller's first
-        # two turns whatever was actually asked.
+        # Before use_saved_details, which is keyed on state alone.
         - id: wants_services
           when: [{ field: current_question, operator: contains, value: ["जॉब्स के अलावा"] }]
           expects: "ट्रेनिंग या कोई और मदद चाहिए? हाँ/नहीं"
@@ -2435,9 +2429,7 @@ agent_workflow:
               operator: gt
               value: 2
           next_subagent_id: ended
-        # These two must out-rank the "*" rules below: a caller who has a
-        # profile satisfies those conditions on every turn, so leaving the
-        # services answers further down sends them to job_match instead.
+        # Must out-rank the "*" rules below; a profile holder matches those.
         - intent: jobs_declined
           next_subagent_id: profile_resolve
         - intent: services_request
@@ -2817,8 +2809,7 @@ agent_workflow:
           when: [{ field: current_question, operator: contains, value: ["जॉब्स के अलावा"] }]
           expects: "ट्रेनिंग या कोई और मदद चाहिए? हाँ/नहीं"
         - id: offer_other_city
-          # NOT a bare "बताऊँ": "किसके बारे में बताऊँ?" ("which shall I tell
-          # you about?") is a pick question and must reach select_job.
+          # Not a bare "बताऊँ" — a pick question must reach select_job.
           when: [{ field: current_question, operator: contains, value: ["है, बताऊँ", "है, बताऊं", "हैं, बताऊँ", "हैं, बताऊं", "में देखूँ", "में देखूं"] }]
           expects: "दूसरे शहर की नौकरी सुनने की हाँ/नहीं"
         - id: jobs_or_services
@@ -3248,10 +3239,8 @@ agent_workflow:
         unless work_experience is somehow still empty.
       is_start: false
       is_terminal: false
-      # Must be non-empty, and it cannot take placeholders — so it states
-      # rather than asks. A bare "shall I send it?" here is answerable with
-      # "हाँ" before the employer has been said, which is how an application
-      # reached the wrong one. The named question comes from the prompt.
+      # States rather than asks: it cannot name the employer, and a bare
+      # yes/no here submits before the caller has heard which job.
       opening_phrase: "आवेदन भेजने से पहले एक बार पक्का कर लेती हूँ।"
 
       tools:
