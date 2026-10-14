@@ -847,6 +847,7 @@ preprocessing:
       - { pending: select_job, caller: "किसी ने मुझे बताया था", out: { acts: [provide_info], relation: unclear } }
       - { pending: select_job, caller: "कंपनी में किससे बात करनी होगी?", out: { acts: [ask], relation: new_topic, topic: job_details } }
     act_intents:
+      - { acts: [affirm], pending: wants_services, relation: answers_pending, intent: services_request }
       - { acts: [deny], pending: wants_services, relation: answers_pending, intent: services_declined }
       # Declining jobs, whatever was being asked at the time.
       - { acts: [deny], relation: new_topic, topic: services, intent: jobs_declined }
