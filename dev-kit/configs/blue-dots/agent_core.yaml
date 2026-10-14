@@ -850,6 +850,10 @@ preprocessing:
       - { pending: select_job, caller: "कंपनी में किससे बात करनी होगी?", out: { acts: [ask], relation: new_topic, topic: job_details } }
     act_intents:
       - { acts: [deny], pending: wants_services, relation: answers_pending, intent: services_declined }
+      # Declining JOBS, whatever was being asked at the time. Without this the
+      # turn falls to the catch-all, which for a caller with a profile means
+      # job_match — jobs read out to someone who just refused them.
+      - { acts: [deny], relation: new_topic, topic: services, intent: jobs_declined }
       - { acts: [deny], pending: consent, relation: answers_pending, intent: decline }
       - { acts: [select], pending: select_job, intent: job_pick }
       - { acts: [select], pending: submit_confirm, intent: job_pick }
@@ -2434,6 +2438,8 @@ agent_workflow:
         # These two must out-rank the "*" rules below: a caller who has a
         # profile satisfies those conditions on every turn, so leaving the
         # services answers further down sends them to job_match instead.
+        - intent: jobs_declined
+          next_subagent_id: profile_resolve
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
@@ -2811,7 +2817,9 @@ agent_workflow:
           when: [{ field: current_question, operator: contains, value: ["जॉब्स के अलावा"] }]
           expects: "ट्रेनिंग या कोई और मदद चाहिए? हाँ/नहीं"
         - id: offer_other_city
-          when: [{ field: current_question, operator: contains, value: ["बताऊँ", "बताऊं"] }]
+          # NOT a bare "बताऊँ": "किसके बारे में बताऊँ?" ("which shall I tell
+          # you about?") is a pick question and must reach select_job.
+          when: [{ field: current_question, operator: contains, value: ["है, बताऊँ", "है, बताऊं", "हैं, बताऊँ", "हैं, बताऊं", "में देखूँ", "में देखूं"] }]
           expects: "दूसरे शहर की नौकरी सुनने की हाँ/नहीं"
         - id: jobs_or_services
           when: [{ field: current_question, operator: contains, value: ["मदद चाहिए", "ट्रेनिंग जैसी"] }]
@@ -2846,6 +2854,8 @@ agent_workflow:
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
+        - intent: jobs_declined
+          next_subagent_id: job_match
         - intent: services_declined
           next_subagent_id: confirm_close
           session_writes: { close_return_to: job_match }
@@ -3630,6 +3640,9 @@ agent_workflow:
         job (role + company) and ask once more whether to send it.
 
       pending:
+        - id: wants_services
+          when: [{ field: current_question, operator: contains, value: ["जॉब्स के अलावा"] }]
+          expects: "ट्रेनिंग या कोई और मदद चाहिए? हाँ/नहीं"
         - id: closing_offer
           expects: "और कुछ मदद चाहिए? / कॉल खत्म"
           when: [{ field: applications_submitted, operator: gt, value: 0 }]
@@ -3674,6 +3687,11 @@ agent_workflow:
               operator: eq
               value: ""
           next_subagent_id: profile_setup
+        - intent: jobs_declined
+          next_subagent_id: apply_confirm
+        - intent: services_declined
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: apply_confirm }
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
