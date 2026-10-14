@@ -389,9 +389,14 @@ connectors:
 
     - name: fetch_jobs
       description: >
-        Search the Blue Dots provider network for current job postings,
-        filtered by trade (role) and city. Call only after trade and
-        city are confirmed in memory.
+        Search the Blue Dots provider network for current job postings.
+        Call only after trade and city are confirmed in memory.
+
+        The search RANKS, it does not FILTER. It returns its best five
+        rows for any question, so expect rows for a different trade and
+        rows in other cities — sometimes every row. Checking the trade
+        and the city on each row is yours to do, every time, before you
+        say anything about a job.
       input_schema:
         type: object
         properties:
@@ -1078,13 +1083,20 @@ agent_workflow:
         them first. A caller with no record has consented to nothing, so the
         trade is not the next question for them — see that phase's own prompt.
       - After fetch_jobs (some results):
-        "आपके लिए जॉब्स हैं — <कंपनी क>, <वेतन>। <कंपनी ख>, <वेतन>।
-         इनमें से किसके लिए आवेदन करना चाहेंगे?"
-        Say the city you actually searched, taken from the tool result —
-        never a different city.
-      - After fetch_jobs (no results): offer the third option too. A caller
-        with nothing to apply for is the one most likely to want training or
-        placement help, and it is the only thing left to give them.
+        "आपके लिए जॉब्स हैं — <कंपनी क>, <शहर>, <वेतन>। <कंपनी ख>, <शहर>,
+         <वेतन>। इनमें से किसके बारे में और जानना चाहेंगे?"
+        Each job says its own city, taken from the tool result — never a
+        different city, and never one city named once for the whole list.
+        Do NOT close a list with "किसके लिए आवेदन करना चाहेंगे?": that
+        question turns the caller's next "हाँ" into consent to apply, and
+        they have not chosen a job yet. Applying is asked only after they
+        pick one.
+      - After fetch_jobs (the tool returned NOTHING AT ALL): offer the third
+        option too. A caller with nothing to apply for is the one most
+        likely to want training or placement help, and it is the only thing
+        left to give them. When the tool DID return rows and none of them
+        is in their city, this is not the sentence — job_match owns that
+        case and asks about one city with a yes-or-no question.
         "<location> में अभी <trade> की कोई नौकरी नहीं है। क्या मैं पास के
          किसी शहर में या किसी और ट्रेड में देखूँ, या आपको ट्रेनिंग जैसी कोई
          मदद चाहिए?"
@@ -2531,6 +2543,9 @@ agent_workflow:
 
         **City.** Only their city. The location field is a full address;
         read the city out of it and compare that, not the whole string.
+        Match the place, not the spelling: Bangalore and Bengaluru are one
+        city, Gurgaon and Gurugram are one city, गाज़ियाबाद and Ghaziabad
+        are one city. Hosur and Bengaluru are two.
 
         None left? Two sentences, then STOP:
 
@@ -2570,8 +2585,8 @@ agent_workflow:
               CALLER: "हाँ बताइए" ("yes, tell me")
               YOU:    "वेल्डर, [company], मुज़फ़्फ़रनगर, [salary_spoken]।
                        इसके बारे में और बात करें?"
-                      ("Welder, [company], Muzaffarnagar, [salary]. Shall we
-                       talk more about it?")
+                      ("Welder, [company], Muzaffarnagar, [salary_spoken].
+                       Shall we talk more about it?")
 
             Answering "मुज़फ़्फ़रनगर में वेल्डर की नौकरी नहीं है" ("there is no
             welder job in Muzaffarnagar") after they said yes contradicts
@@ -2661,22 +2676,31 @@ agent_workflow:
         keep track of across later batches, and it tells the caller the
         list is finished when it is not. No total, no "five", no "a few".
 
-        Three jobs:
-        > "आपके लिए जॉब्स हैं —
-        >  पहला: [role], [company], [location], सैलरी [salary_spoken].
-        >  दूसरा: [role], [company], [location], सैलरी [salary_spoken].
-        >  तीसरा: [role], [company], [location], सैलरी [salary_spoken].
-        >  किसी एक के बारे में और जानना चाहेंगे?"
-        ("Here are jobs for you — first / second / third … Would you like
-        to know more about one of them?")
-
-        Two: same shape, पहला and दूसरा only, same closing question.
-
-        One:
+        One survivor — the commonest case, and a complete answer:
         > "आपके लिए यह जॉब है —
         >  [role], [company], [location], सैलरी [salary_spoken].
         >  इसके बारे में और बात करें?"
         ("Here is a job for you — … Shall we talk more about it?")
+
+        Two:
+        > "आपके लिए जॉब्स हैं —
+        >  पहला: [role], [company], [location], सैलरी [salary_spoken].
+        >  दूसरा: [role], [company], [location], सैलरी [salary_spoken].
+        >  किसी एक के बारे में और जानना चाहेंगे?"
+        ("Here are jobs for you — first / second … Would you like to know
+        more about one of them?")
+
+        Three: same shape with तीसरा added. Reach for this one last, not
+        first. Three survivors is uncommon; if you are about to read out
+        three, check that you did not let a wrong-city or wrong-trade row
+        back in to make up the number.
+
+        **Every row says its own [location], out loud, always.** Never put
+        the city in a heading instead: "गाज़ियाबाद में दो जॉब्स हैं — पहला
+        गुप्ता स्टील, दूसरा गंगा स्टील" ("there are two jobs in Ghaziabad —
+        first Gupta Steel, second Ganga Steel") claims both are in
+        Ghaziabad. If one of them is not, you have just told the caller
+        something false, and dropping [location] is what let you do it.
 
         Read whichever pay field is present — salary_spoken, stipend_spoken or
         task_rate_spoken; if none is present, say the job without pay.
