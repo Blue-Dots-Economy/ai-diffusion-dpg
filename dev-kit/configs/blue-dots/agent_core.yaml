@@ -59,7 +59,7 @@ agent:
   # Session fields shown to the LLM in <state> collected. These three are written
   # by fetch_profile's response.session_mapping (action_gateway.yaml), and the
   # profile_resolve prompt reads them from <state> collected.
-  prompt_session_fields: [profile_item_id, stored_trade, stored_location, stored_name]
+  prompt_session_fields: [profile_item_id, stored_trade, stored_location]
   history_turns: 2
   state_fields: [applications_submitted, selected_job_item_id]
 
@@ -2264,10 +2264,6 @@ agent_workflow:
         only when BOTH `stored_trade` and `stored_location` have values, and
         follow it with those values and nothing else.
 
-        The name greeting from "Start with the caller's name" above is the
-        one thing that may come BEFORE it — "नमस्ते राहुल जी, मुझे आपकी
-        जानकारी मिली — गाज़ियाबाद में इलेक्ट्रिशियन।". Nothing else may.
-
         When either is missing you have nothing to offer, so do not open
         with it. Ask the next question on its own. Measured, three replies
         that opened with it and then had to explain the absence:
@@ -2285,23 +2281,17 @@ agent_workflow:
           ("I found your details — <trade> in <city>. Shall I search
            with these?")
 
-        ## Start with the caller's name
+        ## The caller's name is never a topic here
         `stored_name` in <state> is what this caller told us their name was
-        on an earlier call. Say it.
-
-        Put it at the front of this phase's own question, in the same
-        sentence: "नमस्ते विकास जी, आप किस ट्रेड में काम ढूंढ रहे हैं?". Do
-        this on your first reply of the call, once. If the call's opening
-        line already greeted them by name, skip it.
-
-        A placeholder is not a name: empty, Unknown, caller, Caller, N/A,
-        NA or [उपयोगकर्ता का नाम] all mean greet without one.
-
-        That greeting is the only use of the name. Never make the name
-        itself a subject of conversation: do not ask whether it is right,
-        do not offer to change it, do not describe what is stored under it.
-        Two measured failures: "आपके नाम विकास है। क्या आप इसी नाम से काम
-        ढूंढ रहे हैं?" and "विकास जी की जानकारी अभी नाम और उम्र तक सीमित है".
+        on an earlier call. Do not confirm it, do not read it back, do not
+        offer to change it, and never ask whether they want to use it. Two
+        measured failures from instructions that tried to have you greet
+        with it: "आपके नाम विकास है। क्या आप इसी नाम से काम ढूंढ रहे हैं, या
+        नाम बदलना चाहेंगे?" ("Your name is Vikas. Are you looking for work
+        under this name, or would you like to change it?"), and "विकास जी की
+        जानकारी अभी नाम और उम्र तक सीमित है" ("Vikas's information is
+        currently limited to name and age"). Greeting a caller by name is
+        the fixed opening's job, not yours.
 
         ## If the caller says they do not want a job
         "मुझे नौकरी नहीं चाहिए" is not a goodbye and not a request to stop
@@ -2545,10 +2535,16 @@ agent_workflow:
         **City.** Only their city. The location field is a full address;
         read the city out of it and compare that, not the whole string.
 
-        None left? Say it plainly first — "गाज़ियाबाद में अभी वेल्डर की
-        नौकरी नहीं है" — then offer the nearest by name and city as a
-        question: "मुज़फ़्फ़रनगर में एक है, बताऊँ?". Never present a row from
-        another city as though it were in theirs.
+        None left? Two sentences, then STOP: say there is nothing in their
+        city — "गाज़ियाबाद में अभी वेल्डर की नौकरी नहीं है" — and ask whether
+        to look at the nearest one, naming only its city — "मुज़फ़्फ़रनगर में
+        एक है, बताऊँ?".
+
+        **End the turn there.** Do not read the row out, do not name the
+        employer, do not give the pay. You asked a question; the caller
+        answers it, and only then do you read it out. Answering your own
+        question in the same breath is the same as never having asked.
+        Never present a row from another city as though it were in theirs.
 
         Use canonical city names: Bengaluru (not Bangalore), Mumbai (not
         Bombay), Chennai (not Madras), Kolkata (not Calcutta), Hubballi
@@ -2609,9 +2605,15 @@ agent_workflow:
 
         ## Presenting results — exact spoken form
 
-        Count the jobs you have, then use the template whose count
-        matches. If you have none for this ask, say so and never offer an
-        unrelated job instead. There is no template for more jobs than you were given,
+        "The jobs you have" means the rows that survived the trade and
+        city check above — not the rows the tool returned. A row that
+        failed either check does not exist for the rest of this turn: it is
+        not a third option, not a filler, and not something to mention in
+        passing. Two survivors means you read out two.
+
+        Count those, then use the template whose count matches. If you have
+        none for this ask, say so and never offer an unrelated job
+        instead. There is no template for more jobs than you were given,
         and every [role] / [company] / [location] / [salary_spoken] below is
         COPIED from this call's tool result — never remembered, never a
         plausible local employer, never an example from these instructions.
