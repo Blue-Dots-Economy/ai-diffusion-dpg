@@ -59,7 +59,7 @@ agent:
   # Session fields shown to the LLM in <state> collected. These three are written
   # by fetch_profile's response.session_mapping (action_gateway.yaml), and the
   # profile_resolve prompt reads them from <state> collected.
-  prompt_session_fields: [profile_item_id, stored_trade, stored_location]
+  prompt_session_fields: [profile_item_id, stored_trade, stored_location, stored_name]
   history_turns: 2
   state_fields: [applications_submitted, selected_job_item_id]
 
@@ -480,6 +480,12 @@ connectors:
       result_shaping:
         drop_when:
           - { field: organisation_name, operator: in, value: [null, "", "na", "NA", "Na"] }
+          # The search ranks but does not filter: it returns its best six for
+          # any question. Measured across the phrasings the model actually
+          # writes, a subject the network holds scores 0.578-0.659 and one it
+          # does not scores 0.498-0.527, so 0.55 separates them. The margin is
+          # about 0.05 — re-measure whenever the service inventory changes.
+          - { field: match_score, operator: lt, value: 0.55 }
         sort:
           - { field: match_score, order: desc }
   # save_profile and apply_job were listed under `read:` though both are
@@ -800,6 +806,7 @@ preprocessing:
       - { pending: wants_services, caller: "हाँ", out: { acts: [affirm], relation: answers_pending, topic: services } }
       - { pending: wants_services, caller: "हाँ, ट्रेनिंग चाहिए", out: { acts: [affirm], relation: answers_pending, topic: services } }
       - { pending: wants_services, caller: "नहीं", out: { acts: [deny], relation: answers_pending } }
+      - { pending: wants_services, caller: "नहीं, कुछ नहीं चाहिए", out: { acts: [deny], relation: answers_pending } }
       - { pending: wants_services, caller: "पता नहीं", out: { acts: [other], relation: unclear } }
       - { pending: jobs_or_services, caller: "हाँ, ट्रेनिंग दिखाइए", out: { acts: [affirm], relation: answers_pending, topic: services } }
       - { pending: jobs_or_services, caller: "मदद वाली बात बताइए", out: { acts: [request_change], relation: answers_pending, topic: services } }
@@ -821,6 +828,7 @@ preprocessing:
       - { pending: select_job, caller: "किसी ने मुझे बताया था", out: { acts: [provide_info], relation: unclear } }
       - { pending: select_job, caller: "कंपनी में किससे बात करनी होगी?", out: { acts: [ask], relation: new_topic, topic: job_details } }
     act_intents:
+      - { acts: [deny], pending: wants_services, relation: answers_pending, intent: services_declined }
       - { acts: [deny], pending: consent, relation: answers_pending, intent: decline }
       - { acts: [select], pending: select_job, intent: job_pick }
       - { acts: [select], pending: submit_confirm, intent: job_pick }
@@ -2256,6 +2264,10 @@ agent_workflow:
         only when BOTH `stored_trade` and `stored_location` have values, and
         follow it with those values and nothing else.
 
+        The name greeting from "Start with the caller's name" above is the
+        one thing that may come BEFORE it — "नमस्ते राहुल जी, मुझे आपकी
+        जानकारी मिली — गाज़ियाबाद में इलेक्ट्रिशियन।". Nothing else may.
+
         When either is missing you have nothing to offer, so do not open
         with it. Ask the next question on its own. Measured, three replies
         that opened with it and then had to explain the absence:
@@ -2273,23 +2285,23 @@ agent_workflow:
           ("I found your details — <trade> in <city>. Shall I search
            with these?")
 
-        ## Greet with the caller's name ONCE, and never discuss it
+        ## Start with the caller's name
         `stored_name` in <state> is what this caller told us their name was
-        on an earlier call.
+        on an earlier call. Say it.
 
-        Open your FIRST reply of the call with it and nothing more —
-        "नमस्ते विकास जी।" — then carry straight on with this phase's own
-        question. Once per call. If the call's opening line already greeted
-        them by name, do not greet again.
+        Put it at the front of this phase's own question, in the same
+        sentence: "नमस्ते विकास जी, आप किस ट्रेड में काम ढूंढ रहे हैं?". Do
+        this on your first reply of the call, once. If the call's opening
+        line already greeted them by name, skip it.
 
         A placeholder is not a name: empty, Unknown, caller, Caller, N/A,
         NA or [उपयोगकर्ता का नाम] all mean greet without one.
 
-        Beyond that greeting the name is not a topic. Do not confirm it,
-        read it back, offer to change it, or ask whether they want to use
-        it. Two measured failures from trying to do more: "आपके नाम विकास
-        है। क्या आप इसी नाम से काम ढूंढ रहे हैं?" and "विकास जी की जानकारी
-        अभी नाम और उम्र तक सीमित है".
+        That greeting is the only use of the name. Never make the name
+        itself a subject of conversation: do not ask whether it is right,
+        do not offer to change it, do not describe what is stored under it.
+        Two measured failures: "आपके नाम विकास है। क्या आप इसी नाम से काम
+        ढूंढ रहे हैं?" and "विकास जी की जानकारी अभी नाम और उम्र तक सीमित है".
 
         ## If the caller says they do not want a job
         "मुझे नौकरी नहीं चाहिए" is not a goodbye and not a request to stop
@@ -2435,6 +2447,12 @@ agent_workflow:
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
+        # They want neither a job nor help. Nothing is left to ask, so close
+        # gracefully rather than falling to the catch-all, which returns here
+        # and makes this phase put the same offer a second time.
+        - intent: services_declined
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: profile_resolve }
         - intent: explore_more
           next_subagent_id: job_match
         # BACKSTOP. Four turns is already one more than this phase should
@@ -3595,7 +3613,21 @@ agent_workflow:
         counselling, travel or accommodation support. The caller picks an
         organisation, and we pass their enquiry to it.
 
+        ## An empty result is a complete answer
+        You have no list until `fetch_services` has run in THIS turn. If it
+        has not, call it and wait. Every organisation and every service you
+        name comes from that result — never from memory, and never from an
+        example in these instructions.
+
+        **Rows that do not answer the caller's question are already
+        removed before you see them.** So an empty result does not mean the
+        search failed; it means the network holds nothing for what they
+        asked. Say so plainly in one sentence, naming what they asked for,
+        and offer to look at jobs instead. Never widen a row to make it fit
+        and never apologise at length.
+
         ## Reading the list out
+        Only the ones that passed that check — never pad the list to three.
         Up to THREE, shortest form that still identifies them. For each:
         the organisation's name, the one thing it offers that best matches
         what the caller asked for, and what it costs.
@@ -3622,19 +3654,6 @@ agent_workflow:
         not in this turn's fetch_services result. If it returned nothing,
         say so and offer to look at jobs instead — do not invent an
         alternative.
-
-        ## Check each one against what they actually asked for
-        The search returns organisations for any question, whether or not
-        they offer the thing asked about. Measured: a caller asking for a
-        computer or mobile repair course was read welding, electrical and
-        fitter training, because that is all the network holds.
-
-        Offer only what matches, judged the same way as a job's trade:
-        different words for the same help are the same help, a different
-        kind of help is not. None matches → say so first —
-        "मोबाइल रिपेयरिंग की ट्रेनिंग अभी हमारे पास नहीं है" — then name what
-        there is, as a question: "वेल्डिंग और इलेक्ट्रिकल की ट्रेनिंग है,
-        बताऊँ?". Never read a course out as though it were the one asked for.
 
         ## Contact details are not yours to give
         The result carries no phone number or email, deliberately. Never
