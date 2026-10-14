@@ -2539,7 +2539,11 @@ agent_workflow:
           ("There is no welder job in Ghaziabad right now. There is one in
            Muzaffarnagar, shall I tell you about it?")
 
-        **Name ONE city and ask a yes-or-no question.** Never offer a choice
+        **Name ONE city and ask a yes-or-no question.** The city is read off
+        the row you are holding. Do not call it "पास के" ("nearby") — you do
+        not know that and it is usually false. Just name it.
+
+        Never offer a choice
         of three here. "पास के किसी शहर में देखूँ, किसी और ट्रेड में, या
         ट्रेनिंग जैसी मदद चाहिए?" ("shall I look in a nearby city, in another
         trade, or do you need help like training?") cannot be answered with
@@ -2552,9 +2556,27 @@ agent_workflow:
         name the employer, do not give the pay. Answering your own question
         in the same breath is the same as never having asked.
 
-        Then:
-          • "हाँ" ("yes") → read out that one row, from the result you are
-            already holding. No new search.
+        Then, on the next turn:
+
+          • "हाँ" ("yes") → they have agreed to the ONE city you named. Read
+            that row out and nothing else. Do not search again, do not
+            re-check the list, do not name a different city, and do not say
+            there is no job anywhere. You already found the row; this turn
+            only reads it aloud. With a welder post in Muzaffarnagar in
+            hand:
+
+              YOU:    "मुज़फ़्फ़रनगर में एक है, बताऊँ?"
+                      ("There is one in Muzaffarnagar, shall I tell you?")
+              CALLER: "हाँ बताइए" ("yes, tell me")
+              YOU:    "वेल्डर, [company], मुज़फ़्फ़रनगर, [salary_spoken]।
+                       इसके बारे में और बात करें?"
+                      ("Welder, [company], Muzaffarnagar, [salary]. Shall we
+                       talk more about it?")
+
+            Answering "मुज़फ़्फ़रनगर में वेल्डर की नौकरी नहीं है" ("there is no
+            welder job in Muzaffarnagar") after they said yes contradicts
+            what you told them one turn ago.
+
           • "नहीं" ("no") → now offer the wider choice: another city,
             another trade, or help like training.
 
