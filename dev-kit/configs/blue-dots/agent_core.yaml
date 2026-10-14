@@ -803,6 +803,10 @@ preprocessing:
       - { pending: trade, caller: "काम सिखाने वाली जगह बताइए", out: { acts: [request_change], relation: new_topic, topic: services } }
       - { pending: location, caller: "पहले काम सीखना है", out: { acts: [provide_info], relation: new_topic, topic: services } }
       - { pending: select_job, caller: "इंटरव्यू की तैयारी में मदद मिलेगी", out: { acts: [ask], relation: new_topic, topic: services } }
+      - { pending: offer_other_city, caller: "हाँ", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: offer_other_city, caller: "हाँ बताइए", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: offer_other_city, caller: "नहीं", out: { acts: [deny], relation: answers_pending } }
+      - { pending: offer_other_city, caller: "दिल्ली में देखिए", out: { acts: [request_change], relation: answers_pending, topic: search, slots: { location: Delhi } } }
       - { pending: wants_services, caller: "हाँ", out: { acts: [affirm], relation: answers_pending, topic: services } }
       - { pending: wants_services, caller: "हाँ, ट्रेनिंग चाहिए", out: { acts: [affirm], relation: answers_pending, topic: services } }
       - { pending: wants_services, caller: "नहीं", out: { acts: [deny], relation: answers_pending } }
@@ -2535,15 +2539,32 @@ agent_workflow:
         **City.** Only their city. The location field is a full address;
         read the city out of it and compare that, not the whole string.
 
-        None left? Two sentences, then STOP: say there is nothing in their
-        city — "गाज़ियाबाद में अभी वेल्डर की नौकरी नहीं है" — and ask whether
-        to look at the nearest one, naming only its city — "मुज़फ़्फ़रनगर में
-        एक है, बताऊँ?".
+        None left? Two sentences, then STOP:
 
-        **End the turn there.** Do not read the row out, do not name the
-        employer, do not give the pay. You asked a question; the caller
-        answers it, and only then do you read it out. Answering your own
-        question in the same breath is the same as never having asked.
+          "गाज़ियाबाद में अभी वेल्डर की नौकरी नहीं है। मुज़फ़्फ़रनगर में एक है,
+           बताऊँ?"
+          ("There is no welder job in Ghaziabad right now. There is one in
+           Muzaffarnagar, shall I tell you about it?")
+
+        **Name ONE city and ask a yes-or-no question.** Never offer a choice
+        of three here. "पास के किसी शहर में देखूँ, किसी और ट्रेड में, या
+        ट्रेनिंग जैसी मदद चाहिए?" ("shall I look in a nearby city, in another
+        trade, or do you need help like training?") cannot be answered with
+        "हाँ" ("yes") — the caller says yes, you have learnt nothing, and
+        you ask the same question again. That three-way question belongs to
+        the case where the search returned NOTHING AT ALL, not to this one,
+        where you are holding a row you simply have not offered yet.
+
+        **End the turn on that question.** Do not read the row out, do not
+        name the employer, do not give the pay. Answering your own question
+        in the same breath is the same as never having asked.
+
+        Then:
+          • "हाँ" ("yes") → read out that one row, from the result you are
+            already holding. No new search.
+          • "नहीं" ("no") → now offer the wider choice: another city,
+            another trade, or help like training.
+
         Never present a row from another city as though it were in theirs.
 
         Use canonical city names: Bengaluru (not Bangalore), Mumbai (not
@@ -2709,6 +2730,13 @@ agent_workflow:
           expects: "इस नौकरी के लिए आवेदन भेजने की हाँ/ना, या कोई दूसरी नौकरी"
           options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
           resolves_to: selected_job_item_id
+        # "<city> में एक है, बताऊँ?" ("there is one in <city>, shall I tell
+        # you?") is a yes/no question, but without a pending of its own the
+        # bare "हाँ" fell to select_job, resolved against nothing, and the
+        # phase asked the same question again.
+        - id: offer_other_city
+          when: [{ field: current_question, operator: contains, value: ["बताऊँ"] }]
+          expects: "दूसरे शहर की नौकरी सुनने की हाँ/नहीं"
         - id: jobs_or_services
           when: [{ field: current_question, operator: contains, value: ["मदद चाहिए", "ट्रेनिंग जैसी"] }]
           expects: "दूसरा शहर, दूसरा ट्रेड, या ट्रेनिंग जैसी मदद"
