@@ -480,11 +480,7 @@ connectors:
       result_shaping:
         drop_when:
           - { field: organisation_name, operator: in, value: [null, "", "na", "NA", "Na"] }
-          # The search ranks but does not filter: it returns its best six for
-          # any question. Measured across the phrasings the model actually
-          # writes, a subject the network holds scores 0.578-0.659 and one it
-          # does not scores 0.498-0.527, so 0.55 separates them. The margin is
-          # about 0.05 — re-measure whenever the service inventory changes.
+          # The search ranks but never filters; below this it is not an answer.
           - { field: match_score, operator: lt, value: 0.55 }
         sort:
           - { field: match_score, order: desc }
@@ -2441,9 +2437,6 @@ agent_workflow:
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
-        # They want neither a job nor help. Nothing is left to ask, so close
-        # gracefully rather than falling to the catch-all, which returns here
-        # and makes this phase put the same offer a second time.
         - intent: services_declined
           next_subagent_id: confirm_close
           session_writes: { close_return_to: profile_resolve }
@@ -2524,10 +2517,10 @@ agent_workflow:
 
         ## Then clean the result before you name a single job
         The search returns five rows for any question, ranked by similarity
-        alone. Measured: "security guard jobs in Ghaziabad" returned a
-        Godown Supervisor and a Stock Assistant, all five in Karnataka.
-        Check every row on BOTH counts, and **never pad to three**. One
-        row passes → offer one. Two → two. None → say so.
+        alone: a different trade, and a city a thousand kilometres away,
+        come back looking exactly like a match. Check every row on BOTH
+        counts, and **never pad to three**. One row passes → offer one.
+        Two → two. None → say so.
 
         **Trade.** The same kind of work, which is your judgement to
         make, not a string match. Different words for one job are one job —
@@ -2730,10 +2723,6 @@ agent_workflow:
           expects: "इस नौकरी के लिए आवेदन भेजने की हाँ/ना, या कोई दूसरी नौकरी"
           options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
           resolves_to: selected_job_item_id
-        # "<city> में एक है, बताऊँ?" ("there is one in <city>, shall I tell
-        # you?") is a yes/no question, but without a pending of its own the
-        # bare "हाँ" fell to select_job, resolved against nothing, and the
-        # phase asked the same question again.
         - id: offer_other_city
           when: [{ field: current_question, operator: contains, value: ["बताऊँ"] }]
           expects: "दूसरे शहर की नौकरी सुनने की हाँ/नहीं"
