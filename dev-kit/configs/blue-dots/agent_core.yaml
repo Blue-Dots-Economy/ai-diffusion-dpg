@@ -2558,8 +2558,7 @@ agent_workflow:
         the row you are holding. Do not call it "पास के" ("nearby") — you do
         not know that and it is usually false. Just name it.
 
-        Never offer a choice
-        of three here. "पास के किसी शहर में देखूँ, किसी और ट्रेड में, या
+        Never offer a choice of three here. "पास के किसी शहर में देखूँ, किसी और ट्रेड में, या
         ट्रेनिंग जैसी मदद चाहिए?" ("shall I look in a nearby city, in another
         trade, or do you need help like training?") cannot be answered with
         "हाँ" ("yes") — the caller says yes, you have learnt nothing, and
