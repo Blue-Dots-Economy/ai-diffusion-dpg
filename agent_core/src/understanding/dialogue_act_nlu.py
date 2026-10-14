@@ -132,13 +132,8 @@ def build_system_prompt_text(cfg: DialogueActConfig) -> str:
         "- A yes to a question other than the pending one is not an answer to the pending one.",
         "- Never infer consent from a yes to anything except the consent question.",
         "- Hindi number words become digits (बाईस → 22).",
-        "- For select, set reference.option to the NUMBER of the offered option the caller means, "
-        "and reference.spoken to their words; otherwise reference is null. Name or role references "
-        "match on the label. Positional ones (\"the first\", \"पहला वाला\") count the options in the "
-        "order the bot read them out in its last <recent> reply, which is often a reordered subset of "
-        "the numbered list and may transliterate the names — find which numbered option the bot named "
-        "in that position and return ITS number, never the caller\'s ordinal as an index. Only when the "
-        "bot\'s last reply named none of the options does the numbered order apply.",
+        "- For select, set reference.option to the number of the offered option the caller means "
+        "(by position, company or role) and reference.spoken to their words; otherwise reference is null.",
         "- extras: other personal details worth keeping, as key/value text pairs; usually empty.",
         "- signals: only from this list, when clearly present: " + (", ".join(cfg.signals) or "none"),
     ]
