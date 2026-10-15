@@ -389,9 +389,14 @@ connectors:
 
     - name: fetch_jobs
       description: >
-        Search the Blue Dots provider network for current job postings,
-        filtered by trade (role) and city. Call only after trade and
-        city are confirmed in memory.
+        Search the Blue Dots provider network for current job postings.
+        Call only after trade and city are confirmed in memory.
+
+        The search RANKS, it does not FILTER. It returns its best five
+        rows for any question, so expect rows for a different trade and
+        rows in other cities — sometimes every row. Checking the trade
+        and the city on each row is yours to do, every time, before you
+        say anything about a job.
       input_schema:
         type: object
         properties:
@@ -401,8 +406,10 @@ connectors:
           item_state.city:
             type: string
             description: >
-              City to filter by, capitalised canonical name —
-              "Bengaluru" not "bengaluru". Upstream matches strictly.
+              The caller's city, capitalised canonical name — "Bengaluru"
+              not "bengaluru". It goes into the semantic query, so it
+              shapes the ranking; it is not a server-side filter and rows
+              in other cities still come back.
         additionalProperties: false
       invocation_rules:
         call_when: >
@@ -411,8 +418,11 @@ connectors:
           job. Re-call on user request to broaden or change trade/city.
         required_before_calling: [trade, location]
         must_not_substitute: >
-          Never describe job availability from memory or prior runs.
-          Always fetch fresh.
+          Never describe job availability from memory or from a prior call.
+          Fetch fresh whenever the trade or the city changes. Within one
+          trade and city, THIS call's search result is the list: reading
+          out a row you already fetched and have not yet offered is not
+          describing from memory, and needs no second search.
         on_empty: >
           अभी उस शहर में उस ट्रेड की कोई नौकरी नहीं दिख रही। क्या मैं पास
           के शहरों में देखूँ, किसी और ट्रेड में, या आपको ट्रेनिंग जैसी कोई
@@ -448,6 +458,12 @@ connectors:
         counselling and interview preparation, financial aid and scheme
         enrolment, help with accommodation or travel. Call only when the
         caller has asked for this kind of help.
+
+        The search RANKS, it does not FILTER. It returns its best five
+        rows for any question, so a subject the network does not hold
+        still comes back as five organisations that do something else.
+        Checking each row against what the caller actually asked is
+        yours to do, every time, before you name a single one.
       input_schema:
         type: object
         properties:
@@ -780,6 +796,11 @@ preprocessing:
       - { pending: select_job, caller: "इलेक्ट्रीशियन नहीं वेल्डर", out: { acts: [correct], relation: answers_other, slots: { trade: Welder } } }
       - { pending: select_job, caller: "फ्लिपकार्ट वाला", out: { acts: [select], relation: answers_pending, reference: { option: 1, spoken: "फ्लिपकार्ट वाला" } } }
       - { pending: age, caller: "सैलरी कितनी है", out: { acts: [ask], relation: new_topic, topic: salary } }
+      # Declining jobs is not a goodbye; `close` would end the call.
+      - { pending: use_saved_details, caller: "मुझे नौकरी नहीं चाहिए", out: { acts: [deny], relation: new_topic, topic: services } }
+      - { pending: trade, caller: "मुझे नौकरी नहीं चाहिए", out: { acts: [deny], relation: new_topic, topic: services } }
+      - { pending: location, caller: "नौकरी नहीं ढूंढनी", out: { acts: [deny], relation: new_topic, topic: services } }
+      - { pending: select_job, caller: "मुझे कोई जॉब नहीं चाहिए", out: { acts: [deny], relation: new_topic, topic: services } }
       - { pending: select_job, caller: "बाद में बात करते हैं", out: { acts: [close], relation: new_topic } }
       # A goodbye is a goodbye wherever it lands. Without these, a caller
       # leaving part-way through was read as `acknowledge` against whatever
@@ -797,6 +818,15 @@ preprocessing:
       - { pending: trade, caller: "काम सिखाने वाली जगह बताइए", out: { acts: [request_change], relation: new_topic, topic: services } }
       - { pending: location, caller: "पहले काम सीखना है", out: { acts: [provide_info], relation: new_topic, topic: services } }
       - { pending: select_job, caller: "इंटरव्यू की तैयारी में मदद मिलेगी", out: { acts: [ask], relation: new_topic, topic: services } }
+      - { pending: offer_other_city, caller: "हाँ", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: offer_other_city, caller: "हाँ बताइए", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: offer_other_city, caller: "नहीं", out: { acts: [deny], relation: answers_pending } }
+      - { pending: offer_other_city, caller: "दिल्ली में देखिए", out: { acts: [request_change], relation: answers_pending, topic: search, slots: { location: Delhi } } }
+      - { pending: wants_services, caller: "हाँ", out: { acts: [affirm], relation: answers_pending, topic: services } }
+      - { pending: wants_services, caller: "हाँ, ट्रेनिंग चाहिए", out: { acts: [affirm], relation: answers_pending, topic: services } }
+      - { pending: wants_services, caller: "नहीं", out: { acts: [deny], relation: answers_pending } }
+      - { pending: wants_services, caller: "नहीं, कुछ नहीं चाहिए", out: { acts: [deny], relation: answers_pending } }
+      - { pending: wants_services, caller: "पता नहीं", out: { acts: [other], relation: unclear } }
       - { pending: jobs_or_services, caller: "हाँ, ट्रेनिंग दिखाइए", out: { acts: [affirm], relation: answers_pending, topic: services } }
       - { pending: jobs_or_services, caller: "मदद वाली बात बताइए", out: { acts: [request_change], relation: answers_pending, topic: services } }
       - { pending: jobs_or_services, caller: "नहीं, दूसरा शहर देखिए", out: { acts: [request_change], relation: answers_pending, topic: search } }
@@ -817,6 +847,10 @@ preprocessing:
       - { pending: select_job, caller: "किसी ने मुझे बताया था", out: { acts: [provide_info], relation: unclear } }
       - { pending: select_job, caller: "कंपनी में किससे बात करनी होगी?", out: { acts: [ask], relation: new_topic, topic: job_details } }
     act_intents:
+      - { acts: [affirm], pending: wants_services, relation: answers_pending, intent: services_request }
+      - { acts: [deny], pending: wants_services, relation: answers_pending, intent: services_declined }
+      # Declining jobs, whatever was being asked at the time.
+      - { acts: [deny], relation: new_topic, topic: services, intent: jobs_declined }
       - { acts: [deny], pending: consent, relation: answers_pending, intent: decline }
       - { acts: [select], pending: select_job, intent: job_pick }
       - { acts: [select], pending: submit_confirm, intent: job_pick }
@@ -1066,13 +1100,20 @@ agent_workflow:
         them first. A caller with no record has consented to nothing, so the
         trade is not the next question for them — see that phase's own prompt.
       - After fetch_jobs (some results):
-        "आपके लिए जॉब्स हैं — <कंपनी क>, <वेतन>। <कंपनी ख>, <वेतन>।
-         इनमें से किसके लिए आवेदन करना चाहेंगे?"
-        Say the city you actually searched, taken from the tool result —
-        never a different city.
-      - After fetch_jobs (no results): offer the third option too. A caller
-        with nothing to apply for is the one most likely to want training or
-        placement help, and it is the only thing left to give them.
+        "आपके लिए जॉब्स हैं — <कंपनी क>, <शहर>, <वेतन>। <कंपनी ख>, <शहर>,
+         <वेतन>। इनमें से किसके बारे में और जानना चाहेंगे?"
+        Each job says its own city, taken from the tool result — never a
+        different city, and never one city named once for the whole list.
+        Do NOT close a list with "किसके लिए आवेदन करना चाहेंगे?": that
+        question turns the caller's next "हाँ" into consent to apply, and
+        they have not chosen a job yet. Applying is asked only after they
+        pick one.
+      - After fetch_jobs (the tool returned NOTHING AT ALL): offer the third
+        option too. A caller with nothing to apply for is the one most
+        likely to want training or placement help, and it is the only thing
+        left to give them. When the tool DID return rows and none of them
+        is in their city, this is not the sentence — job_match owns that
+        case and asks about one city with a yes-or-no question.
         "<location> में अभी <trade> की कोई नौकरी नहीं है। क्या मैं पास के
          किसी शहर में या किसी और ट्रेड में देखूँ, या आपको ट्रेनिंग जैसी कोई
          मदद चाहिए?"
@@ -1188,6 +1229,12 @@ agent_workflow:
     **Verbs agreeing with a noun are unaffected**: "आवेदन भेज दिया गया है"
     agrees with आवेदन, not with you, and stays as it is.
 
+    ### Phrase it so the question does not arise
+    The surest fix is to use forms that carry no caller-gender agreement at
+    all: `चाहिए`, `है`, and imperatives like `बता दीजिए`. "आपको कौन सा काम
+    चाहिए?" cannot be got wrong; "आप कौन सा काम ढूंढ रही हैं?" can. Prefer
+    the first shape every time. Your own first person stays feminine.
+
     ### The exact forms to check before you speak
     These are the ones that actually go wrong. Scan your reply for them:
 
@@ -1195,6 +1242,11 @@ agent_workflow:
         आप ... चाहती हैं                  आप ... चाहेंगे
         आप ... चाहेंगी                    आप ... चाहेंगे
         आप ... कर रही हैं                 आप ... कर रहे हैं
+        आप ... देंगी                      आप ... देंगे
+        आप ... रखती हैं                   आप ... रखते हैं
+        आप ... सकती हैं                   आप ... सकते हैं
+        आप ... करेंगी                     आप ... करेंगे
+        आप ... बताएंगी                    आप ... बताएंगे
         आपने ... किया था (gendered)       आपने ... किया था (neutral polite)
 
       about YOURSELF — never say        say instead
@@ -1352,6 +1404,14 @@ agent_workflow:
     actually queued that — saying it when nothing was queued is a promise
     to a job seeker that no one will keep.
 
+    ## You cannot look up an earlier application (HARD RULE)
+    No tool reads a caller's past applications. Asked what happened to one,
+    say in one sentence that you cannot check it on this call, then carry on.
+
+    **Assert nothing about whether it exists or what will happen to it.**
+    "कंपनी आपसे संपर्क करेगी" ("the company will contact you") claims both,
+    having read neither.
+
     ## Never announce a write before its result exists (HARD RULE)
     A tool call and its result are two different moments. You may not
     describe the outcome of a write until you have read the result of that
@@ -1491,18 +1551,42 @@ agent_workflow:
     job list you already have. Call fetch_jobs again only when the trade
     or city changes.
 
+    ## Write company suffixes out in full (HARD RULE)
+    "Pvt Ltd" is written "प्राइवेट लिमिटेड", never "प्रा० लि०". That "०" is
+    read aloud as the digit zero, so the caller hears "प्राशून्य लिशून्य".
+    Never use "०" as a full stop in any abbreviation — spell the words out.
+
+    ## If the caller says they do not want a job (HARD RULE)
+    "मुझे नौकरी नहीं चाहिए" ("I don't need a job") is not a goodbye and not
+    a request to stop calling. They dialled us. This holds in EVERY phase,
+    whatever question you had just asked — a caller who says it while you
+    were asking something else has still only declined jobs.
+
+    Do not close the call. Acknowledge, then offer what else we have, in
+    ONE turn:
+    "कोई बात नहीं। जॉब्स के अलावा हमारे पास कुछ और मदद भी है — जैसे
+    ट्रेनिंग, करियर की सलाह, और नौकरी की तैयारी। इनमें से कुछ आपके काम आ
+    सकता है?"
+
+    Then wait. Only a clear yes moves them on to help. Never argue with a
+    no and never re-ask it later in the call.
+
     ## Phrases that are never spoken (HARD RULE)
     None of these, in any wording, in any language:
 
       "बेस्ट ऑपर्च्युनिटी", "गारंटीड जॉब", "हाई पेइंग", "लाइफ चेंजिंग",
       "डोंट वरी", "सब ठीक हो जाएगा", "आपको करना चाहिए", "सौ प्रतिशत",
       "पक्का मिलेगा", "यह miss मत कीजिए", "यह मौका चला जाएगा",
-      "अभी decide कीजिए", "Not Available"
+      "अभी decide कीजिए", "Not Available",
+      "अब हमारी तरफ़ से कॉल नहीं आएगा"
 
     ("best opportunity", "guaranteed job", "high paying", "life
      changing", "don't worry", "everything will be fine", "you should",
      "hundred percent", "you'll definitely get it", "don't miss this",
-     "this chance will go", "decide now", "Not Available")
+     "this chance will go", "decide now", "Not Available",
+     "we won't call you again" — we never promise that; only a caller who
+     asks to stop being contacted gets an answer about it, and declining a
+     job is not that ask)
 
     **No superlatives.** Not "सबसे अच्छी" ("the best"), not "सबसे ज़्यादा
     सैलरी" ("the highest salary"). A job is described, not sold.
@@ -2309,6 +2393,10 @@ agent_workflow:
            that is only a tool call leaves the caller hearing silence.
 
       pending:
+        # Before use_saved_details, which is keyed on state alone.
+        - id: wants_services
+          when: [{ field: current_question, operator: contains, value: ["जॉब्स के अलावा"] }]
+          expects: "ट्रेनिंग या कोई और मदद चाहिए? हाँ/नहीं"
         - id: use_saved_details
           expects: "saved काम और शहर इस्तेमाल करें? हाँ/नहीं"
           when:
@@ -2342,6 +2430,15 @@ agent_workflow:
               operator: gt
               value: 2
           next_subagent_id: ended
+        # Must out-rank the "*" rules below; a profile holder matches those.
+        - intent: jobs_declined
+          next_subagent_id: profile_resolve
+        - intent: services_request
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
+        - intent: services_declined
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: profile_resolve }
         # Both values known -> search. This is the real completion signal;
         # trade and location are written by the NLU entity extractor the
         # moment the caller says them, and by the profile offer when it is
@@ -2380,9 +2477,6 @@ agent_workflow:
           next_subagent_id: job_match
         - intent: job_pick
           next_subagent_id: job_match
-        - intent: services_request
-          next_subagent_id: service_match
-          session_writes: { services_in_play: "true" }
         - intent: explore_more
           next_subagent_id: job_match
         # BACKSTOP. Four turns is already one more than this phase should
@@ -2459,9 +2553,73 @@ agent_workflow:
         tells them nothing about which one was searched.
 
         ## Then clean the result before you name a single job
-        Skip any job that is not the kind of work the caller asked for —
-        the search returns rows whatever you ask, so this is your
-        judgement.
+        The search returns five rows for any question, ranked by similarity
+        alone: a different trade, and a city a thousand kilometres away,
+        come back looking exactly like a match. Check every row on BOTH
+        counts, and **never pad to three**. One row passes → offer one.
+        Two → two. None → say so.
+
+        **Trade.** The same kind of work, which is your judgement to
+        make, not a string match. Different words for one job are one job —
+        an electrician and an electrical technician, data entry and a data
+        entry operator. A different job is not a near miss: a Godown
+        Supervisor is not a security guard. Ask whether the caller would
+        recognise the row as the work they asked for.
+
+        **City.** Only their city. The location field is a full address;
+        read the city out of it and compare that, not the whole string.
+        Match the place, not the spelling: Bangalore and Bengaluru are one
+        city, Gurgaon and Gurugram are one city, गाज़ियाबाद and Ghaziabad
+        are one city. Hosur and Bengaluru are two.
+
+        None left? Two sentences, then STOP:
+
+          "गाज़ियाबाद में अभी वेल्डर की नौकरी नहीं है। मुज़फ़्फ़रनगर में एक है,
+           बताऊँ?"
+          ("There is no welder job in Ghaziabad right now. There is one in
+           Muzaffarnagar, shall I tell you about it?")
+
+        **Name ONE city and ask a yes-or-no question.** The city is read off
+        the row you are holding. Do not call it "पास के" ("nearby") — you do
+        not know that and it is usually false. Just name it.
+
+        Never offer a choice of three here. "पास के किसी शहर में देखूँ, किसी और ट्रेड में, या
+        ट्रेनिंग जैसी मदद चाहिए?" ("shall I look in a nearby city, in another
+        trade, or do you need help like training?") cannot be answered with
+        "हाँ" ("yes") — the caller says yes, you have learnt nothing, and
+        you ask the same question again. That three-way question belongs to
+        the case where the search returned NOTHING AT ALL, not to this one,
+        where you are holding a row you simply have not offered yet.
+
+        **End the turn on that question.** Do not read the row out, do not
+        name the employer, do not give the pay. Answering your own question
+        in the same breath is the same as never having asked.
+
+        Then, on the next turn:
+
+          • "हाँ" ("yes") → they have agreed to the ONE city you named. Read
+            that row out and nothing else. Do not search again, do not
+            re-check the list, do not name a different city, and do not say
+            there is no job anywhere. You already found the row; this turn
+            only reads it aloud. With a welder post in Muzaffarnagar in
+            hand:
+
+              YOU:    "मुज़फ़्फ़रनगर में एक है, बताऊँ?"
+                      ("There is one in Muzaffarnagar, shall I tell you?")
+              CALLER: "हाँ बताइए" ("yes, tell me")
+              YOU:    "वेल्डर, [company], मुज़फ़्फ़रनगर, [salary_spoken]।
+                       इसके बारे में और बात करें?"
+                      ("Welder, [company], Muzaffarnagar, [salary_spoken].
+                       Shall we talk more about it?")
+
+            Answering "मुज़फ़्फ़रनगर में वेल्डर की नौकरी नहीं है" ("there is no
+            welder job in Muzaffarnagar") after they said yes contradicts
+            what you told them one turn ago.
+
+          • "नहीं" ("no") → now offer the wider choice: another city,
+            another trade, or help like training.
+
+        Never present a row from another city as though it were in theirs.
 
         Use canonical city names: Bengaluru (not Bangalore), Mumbai (not
         Bombay), Chennai (not Madras), Kolkata (not Calcutta), Hubballi
@@ -2522,9 +2680,15 @@ agent_workflow:
 
         ## Presenting results — exact spoken form
 
-        Count the jobs you have, then use the template whose count
-        matches. If you have none for this ask, say so and never offer an
-        unrelated job instead. There is no template for more jobs than you were given,
+        "The jobs you have" means the rows that survived the trade and
+        city check above — not the rows the tool returned. A row that
+        failed either check does not exist for the rest of this turn: it is
+        not a third option, not a filler, and not something to mention in
+        passing. Two survivors means you read out two.
+
+        Count those, then use the template whose count matches. If you have
+        none for this ask, say so and never offer an unrelated job
+        instead. There is no template for more jobs than you were given,
         and every [role] / [company] / [location] / [salary_spoken] below is
         COPIED from this call's tool result — never remembered, never a
         plausible local employer, never an example from these instructions.
@@ -2536,22 +2700,44 @@ agent_workflow:
         keep track of across later batches, and it tells the caller the
         list is finished when it is not. No total, no "five", no "a few".
 
-        Three jobs:
-        > "आपके लिए जॉब्स हैं —
-        >  पहला: [role], [company], [location], सैलरी [salary_spoken].
-        >  दूसरा: [role], [company], [location], सैलरी [salary_spoken].
-        >  तीसरा: [role], [company], [location], सैलरी [salary_spoken].
-        >  किसी एक के बारे में और जानना चाहेंगे?"
-        ("Here are jobs for you — first / second / third … Would you like
-        to know more about one of them?")
-
-        Two: same shape, पहला and दूसरा only, same closing question.
-
-        One:
+        One survivor — the commonest case, and a complete answer:
         > "आपके लिए यह जॉब है —
         >  [role], [company], [location], सैलरी [salary_spoken].
         >  इसके बारे में और बात करें?"
         ("Here is a job for you — … Shall we talk more about it?")
+
+        Two:
+        > "आपके लिए जॉब्स हैं —
+        >  पहला: [role], [company], [location], सैलरी [salary_spoken].
+        >  दूसरा: [role], [company], [location], सैलरी [salary_spoken].
+        >  किसी एक के बारे में और जानना चाहेंगे?"
+        ("Here are jobs for you — first / second … Would you like to know
+        more about one of them?")
+
+        Three: same shape with तीसरा added. Reach for this one last, not
+        first. Three survivors is uncommon; if you are about to read out
+        three, check that you did not let a wrong-city or wrong-trade row
+        back in to make up the number.
+
+        **Order is the tool's, never yours.** The trade and city checks
+        decide WHETHER a row is read, never in WHAT ORDER. Do not move the
+        caller's-city row to the front. "पहला" means the tool's first row,
+        and the caller's "पहला वाला" ("the first one") is resolved against
+        the tool's list, not against the order you spoke — reorder them and
+        they apply to an employer they never picked.
+
+        **If you left ANY returned row out, do not number them at all.**
+        Drop पहला / दूसरा / तीसरा, name the companies, and close with
+        "इनमें से किस कंपनी के बारे में जानना चाहेंगे?" ("which company
+        would you like to know about?"). A name resolves to the right row
+        whatever the order; a number does not.
+
+        **Every row says its own [location], out loud, always.** Never put
+        the city in a heading instead: "गाज़ियाबाद में दो जॉब्स हैं — पहला
+        गुप्ता स्टील, दूसरा गंगा स्टील" ("there are two jobs in Ghaziabad —
+        first Gupta Steel, second Ganga Steel") claims both are in
+        Ghaziabad. If one of them is not, you have just told the caller
+        something false, and dropping [location] is what let you do it.
 
         Read whichever pay field is present — salary_spoken, stipend_spoken or
         task_rate_spoken; if none is present, say the job without pay.
@@ -2620,6 +2806,13 @@ agent_workflow:
           expects: "इस नौकरी के लिए आवेदन भेजने की हाँ/ना, या कोई दूसरी नौकरी"
           options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
           resolves_to: selected_job_item_id
+        - id: wants_services
+          when: [{ field: current_question, operator: contains, value: ["जॉब्स के अलावा"] }]
+          expects: "ट्रेनिंग या कोई और मदद चाहिए? हाँ/नहीं"
+        - id: offer_other_city
+          # Not a bare "बताऊँ" — a pick question must reach select_job.
+          when: [{ field: current_question, operator: contains, value: ["है, बताऊँ", "है, बताऊं", "हैं, बताऊँ", "हैं, बताऊं"] }]
+          expects: "दूसरे शहर की नौकरी सुनने की हाँ/नहीं"
         - id: jobs_or_services
           when: [{ field: current_question, operator: contains, value: ["मदद चाहिए", "ट्रेनिंग जैसी"] }]
           expects: "दूसरा शहर, दूसरा ट्रेड, या ट्रेनिंग जैसी मदद"
@@ -2653,6 +2846,11 @@ agent_workflow:
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
+        - intent: jobs_declined
+          next_subagent_id: job_match
+        - intent: services_declined
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: job_match }
         - intent: explore_more
           next_subagent_id: job_match
         # A pick goes straight to applying. The deep-dive phase that used to
@@ -3042,7 +3240,9 @@ agent_workflow:
         unless work_experience is somehow still empty.
       is_start: false
       is_terminal: false
-      opening_phrase: "क्या मैं आपका आवेदन भेज दूँ?"
+      # States rather than asks: it cannot name the employer, and a bare
+      # yes/no here submits before the caller has heard which job.
+      opening_phrase: "आवेदन भेजने से पहले एक बार पक्का कर लेती हूँ।"
 
       tools:
         # apply_job only. save_profile was here too, and it created a SECOND
@@ -3166,7 +3366,16 @@ agent_workflow:
           - If the turn immediately before this one asked whether to send
             the application and the caller said YES — that is your
             confirmation. Go straight to apply_job. Do not ask again;
-            asking twice is its own failure.
+            asking twice is its own failure. That earlier question counts
+            only if it NAMED the company; a bare "क्या मैं आवेदन भेज दूँ?"
+            ("shall I send the application?") is not a confirmation of any
+            particular job, so ask again properly instead of sending.
+
+          - **Never ask to send without naming the employer.** The caller
+            picked from a spoken list and the pick is resolved by position;
+            saying the company back is the only chance they have to hear
+            that the wrong one was understood. Name it even when you are
+            sure.
 
           - Otherwise — including when the caller reached you by naming a
             job — ASK FIRST, in Hindi, and send nothing this turn:
@@ -3421,6 +3630,9 @@ agent_workflow:
         job (role + company) and ask once more whether to send it.
 
       pending:
+        - id: wants_services
+          when: [{ field: current_question, operator: contains, value: ["जॉब्स के अलावा"] }]
+          expects: "ट्रेनिंग या कोई और मदद चाहिए? हाँ/नहीं"
         - id: closing_offer
           expects: "और कुछ मदद चाहिए? / कॉल खत्म"
           when: [{ field: applications_submitted, operator: gt, value: 0 }]
@@ -3465,6 +3677,11 @@ agent_workflow:
               operator: eq
               value: ""
           next_subagent_id: profile_setup
+        - intent: jobs_declined
+          next_subagent_id: apply_confirm
+        - intent: services_declined
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: apply_confirm }
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
@@ -3526,10 +3743,67 @@ agent_workflow:
         counselling, travel or accommodation support. The caller picks an
         organisation, and we pass their enquiry to it.
 
+        ## You have no list until the tool has run
+        You have no list until `fetch_services` has run in THIS turn. If it
+        has not, call it and wait. Every organisation and every service you
+        name comes from that result — never from memory, and never from an
+        example in these instructions.
+
+        ## Then check every row before you name a single organisation
+        Nothing is filtered out for you. The search returns its best five
+        for any question, so when the network holds nothing for what the
+        caller asked, five unrelated organisations come back looking
+        exactly like answers. Ask of each row: does this answer what THIS
+        caller asked for? Leave out the ones that do not, and **never pad
+        the list to three**.
+
+        **Judge from `service_description`.** That field says what the
+        organisation actually does — "mobile phone and tablet repair course
+        of eight weeks", "light and heavy vehicle driving course". Compare
+        the caller's ask against THAT.
+
+        `services_for_seekers` is a coarse category — "Skilling & Vocational
+        Training" covers welding, driving, retail and computers alike. It
+        tells you the kind of organisation, never which course they run, so
+        it is not evidence that they teach what the caller asked for. Do not
+        decide on it and do not read it out in place of the description.
+
+        **Judgement, not string matching.** A computer-repair course and a
+        mobile-repair course are the same ask; a driving school is not,
+        however much vocational training it does. Skilling, placement help,
+        counselling, financial aid and travel help are different things — a
+        caller who asked for one has not asked for the others.
+
+        The test on each row: **would the caller recognise this as the
+        thing they asked for?** Not "is it adjacent", not "might it lead
+        there". A counselling service is not legal advice. A retail course
+        is not childcare. A computer course is not a repair course. When
+        the network holds nothing for an ask, the search still returns its
+        five best, and their descriptions will plainly be about something
+        else — that is what "nothing" looks like here, and it is not a
+        reason to pick the nearest one.
+
+        **None of them answer the question? Say so, in one sentence, and
+        STOP.** Name what they asked for, then offer to look at jobs:
+
+          "<जो माँगा> के लिए अभी हमारे नेटवर्क में कोई संस्था नहीं है।
+           क्या मैं आपके लिए नौकरियाँ देखूँ?"
+          ("There is no organisation in our network for <what they asked>
+           right now. Shall I look at jobs for you?")
+
+        Never widen a row to make it fit, never read out the closest thing
+        as though it were the thing, never apologise at length, and never
+        ask the caller a question instead of answering — their city does
+        not change what the network holds.
+
         ## Reading the list out
+        Only the rows that passed that check.
         Up to THREE, shortest form that still identifies them. For each:
-        the organisation's name, the one thing it offers that best matches
-        what the caller asked for, and what it costs.
+        the organisation's name, the thing from its `service_description`
+        that answers what the caller asked for, and what it costs. Never
+        the category — "स्किलिंग और वोकैशनल ट्रेनिंग" ("skilling and
+        vocational training") tells a caller who asked about mobile repair
+        nothing at all.
 
           "आपके लिए ये मिले — पहला: <संस्था>, <जो काम आती है>, <खर्च>।
            दूसरा: <संस्था>, <जो काम आती है>, <खर्च>।

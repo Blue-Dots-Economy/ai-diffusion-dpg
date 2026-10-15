@@ -277,7 +277,76 @@ returns `act=select`, `pending=select_job` correctly.
 **Guards:** **F53**. Measured: `job_pick` 0 → 4 and applications 0 → 3 on an
 identical build by setting that one variable.
 
+### C7 — only the caller's own city is offered
+> ... / वेल्डर / गाज़ियाबाद
+
+`fetch_jobs` ranks but never filters: it returns its best five for any query.
+Measured, "welder in Ghaziabad" came back with one Ghaziabad row and four from
+Muzaffarnagar, Kanpur and Lucknow.
+
+**Expect:** only the rows actually in the caller's city are read out. One
+match means one job is offered, not three. Rows from elsewhere are not
+mentioned in this turn at all.
+**Check:** compare each company named against the caller's city.
+**Known failure mode:** the list is padded back to three with other cities,
+which is how "आपके लिए गाज़ियाबाद में डेटा एंट्री की नौकरियाँ हैं" came to be
+said over two Muzaffarnagar rows and one Lucknow row.
+**Guards:** 11 Oct P0-3.
+
 ---
+
+### C8 — no job in their city: one alternative, and the answer resolves
+> ... / सिक्योरिटी गार्ड / गाज़ियाबाद / हाँ बताइए
+
+**Expect:** two sentences and a stop — there is nothing in their city, and a
+yes/no question naming ONE other city taken from the rows already held
+("बेंगलुरु में एक है, बताऊँ?" — "there is one in Bengaluru, shall I tell you?").
+The turn ends on the question. "हाँ" then reads that row out with no new
+search; "नहीं, दिल्ली में देखिए" searches Delhi instead.
+**Check:** the bot does not read the row out in the same turn as the question,
+and a bare "हाँ" does not make it repeat the question.
+**Known failure mode:** offering a three-way choice (another city, another
+trade, or training) instead. A bare "हाँ" answers none of the three, routing
+has nothing to act on, and the phase asks the identical question again.
+**Guards:** needs the `offer_other_city` pending; without it the answer falls
+to `select_job`, resolves against nothing, and loops.
+
+---
+
+### C9 — a trade the network does not hold
+> ... / पायलट / गाज़ियाबाद
+
+**Expect:** said plainly that there is no such work, then the kinds of work we
+DO hold are named and offered as a question. No row is presented as though it
+were the trade they asked for.
+**Check:** the reply names the other roles explicitly rather than listing them
+as if they matched.
+
+---
+
+---
+
+### C10 — a job list must not arm the apply confirmation
+
+Caller reaches a job list of two or more rows.
+
+The closing question is "इनमें से किसके बारे में और जानना चाहेंगे?"
+("which of these would you like to know more about?"), never
+"किसके लिए आवेदन करना चाहेंगे?" ("which would you like to apply for?").
+
+The second wording is matched by the `submit_confirm` pending, so it turns
+the caller's next "हाँ" into consent to apply before they have picked a job.
+Check the reply after a bare "हाँ": it must not be
+"क्या मैं आवेदन भेज दूँ?" ("shall I send the application?").
+
+### C11 — every row names its own city
+
+Caller asks for a trade in a city where only some rows match.
+
+Each row read out carries its own city. A single city named once for the
+whole list ("गाज़ियाबाद में दो जॉब्स हैं — पहला …, दूसरा …") is a failure
+whenever one of the rows is somewhere else: it tells the caller a job is in
+their city when it is not.
 
 ## S. Support services
 
@@ -352,6 +421,37 @@ to die.
 they choose the third.
 **Note:** semantic search rarely returns zero today, so this fires mainly once
 the wrong-city filtering lands. The answer is resolved either way.
+
+### S10 — a service the network does not hold
+> ... / मुझे मोबाइल रिपेयरिंग का कोर्स चाहिए
+
+The whole inventory is a handful of organisations. A request it does not cover
+still returns the top rows, because the search ranks and does not filter.
+
+**Expect:** said in one sentence that we have nothing for what they asked for,
+then what we do have offered as a question. Welding training is never read out
+as though it answered a question about mobile repair.
+**Check:** `fetch_services` ran, and the organisations named exist in the
+result. A reply that names plausible-sounding organisations without the tool
+having run is an invention, not a match.
+**Guards:** rows below the `match_score` threshold in `result_shaping` are
+dropped before the model sees them. If the inventory changes, re-measure that
+threshold — a real match scored 0.578-0.659 and a non-match 0.498-0.527.
+
+---
+
+### S11 — "I don't want a job" opens the help offer
+> ... / मुझे नौकरी नहीं चाहिए
+
+**Expect:** not treated as a goodbye and not as an opt-out from being called.
+The caller is told what else we have — training, career advice, interview
+preparation — and asked whether any of it is useful. A yes routes to
+`service_match`; a no closes the call cleanly and the offer is never repeated.
+**Check:** "नहीं" does not produce the same question a second time.
+**Known failure mode:** closing with "अब हमारी तरफ़ से कॉल नहीं आएगा" ("we won't
+call you again") to a caller who dialled us.
+
+---
 
 ---
 
@@ -472,6 +572,19 @@ transliteration is fine — pronunciation is identical). Not translated into
 Hindi words.
 **Guards:** F13 — ruled NOT a defect; this scenario prevents an over-correction.
 
+### E5 — company suffixes are spoken in full
+> ... / सिक्योरिटी गार्ड / बेंगलुरु
+
+Employer names arrive as "Pvt Ltd". Rendered in Devanagari as "प्रा० लि०", the
+"०" is a full stop, not a zero — but the spoken-output guard translates
+Devanagari digits to ASCII and the number-to-words step then says it.
+
+**Expect:** "प्राइवेट लिमिटेड".
+**Known failure mode:** "प्राशून्य लिशून्य" — literally "pra-zero li-zero".
+**Guards:** 11 Oct P2.
+
+---
+
 ---
 
 ## G. Truthfulness
@@ -585,6 +698,20 @@ Point `HITL_WEBHOOK_URL` at a URL that 404s.
 `delivered:false, reason:http_404`.
 **Guards:** F2 (nothing claimed before its result).
 
+### F8t — an earlier application is never described
+> ... *(bot lists jobs)* / पिछली बार जो अप्लाई किया था उसका क्या हुआ
+
+No tool reads a caller's past applications.
+
+**Expect:** said in one sentence that it cannot be checked on this call, then
+the conversation carries on.
+**Known failure mode:** "कंपनी आपसे संपर्क करेगी" ("the company will contact
+you") — which asserts both that an application exists and that someone will
+act on it, having read neither. Being ignored outright is the other failure.
+**Guards:** 11 Oct P1-7.
+
+---
+
 ---
 
 ## H. Performance (record, do not gate on)
@@ -610,5 +737,4 @@ Outliers up to 22 s have been seen and are provider tail latency, not our code
 | --- | --- | --- |
 | F26 / F24 | #204 short-circuit never fires (`turn_count` never written) | changes when we hang up; needs its own test pass |
 | F20 | minimum-salary filter | a valueless filter is an upstream 400; parked |
-| F23 | wrong-city results | search-layer, raise with that team |
 | G3 / G4 | barge-in socket + interrupted turn | needs a real mid-turn interrupt; harness is sequential |
