@@ -2811,7 +2811,7 @@ agent_workflow:
           expects: "ट्रेनिंग या कोई और मदद चाहिए? हाँ/नहीं"
         - id: offer_other_city
           # Not a bare "बताऊँ" — a pick question must reach select_job.
-          when: [{ field: current_question, operator: contains, value: ["है, बताऊँ", "है, बताऊं", "हैं, बताऊँ", "हैं, बताऊं", "में देखूँ", "में देखूं"] }]
+          when: [{ field: current_question, operator: contains, value: ["है, बताऊँ", "है, बताऊं", "हैं, बताऊँ", "हैं, बताऊं"] }]
           expects: "दूसरे शहर की नौकरी सुनने की हाँ/नहीं"
         - id: jobs_or_services
           when: [{ field: current_question, operator: contains, value: ["मदद चाहिए", "ट्रेनिंग जैसी"] }]
