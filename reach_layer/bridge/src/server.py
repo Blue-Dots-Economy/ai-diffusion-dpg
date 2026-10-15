@@ -35,6 +35,8 @@ from src.translate import (
 
 logger = logging.getLogger(__name__)
 
+_STREAM_OPERATION = "server.stream"
+
 def _error_response(status: int, message: str, err_type: str,
                      param: str | None = None) -> JSONResponse:
     """Build a JSON response carrying the OpenAI error envelope.
@@ -278,7 +280,7 @@ class _TurnTiming:
     def log(self) -> None:
         """Emit the turn's timing record, leaving out marks that never happened."""
         fields = {
-            "operation": "server.stream",
+            "operation": _STREAM_OPERATION,
             "status": "success" if self.outcome in ("completed", "disconnected") else "failure",
             "outcome": self.outcome,
             "call_id": self._call_id,
@@ -341,7 +343,7 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
                 if event.get("error_type"):
                     logger.error(
                         "bridge.stream_turn_error",
-                        extra={"operation": "server.stream", "status": "failure",
+                        extra={"operation": _STREAM_OPERATION, "status": "failure",
                                "error": str(event.get("error_type"))},
                     )
                 timing.outcome = "failed" if event.get("error_type") else "completed"
@@ -364,7 +366,7 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
         # truncation.
         logger.warning(
             "bridge.stream_ended_without_done",
-            extra={"operation": "server.stream", "status": "failure",
+            extra={"operation": _STREAM_OPERATION, "status": "failure",
                    "latency_ms": int((time.time() - received) * 1000)},
         )
         timing.outcome = "ended_without_done"
@@ -378,7 +380,7 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
         # [DONE] rather than truncating it mid-event.
         logger.error(
             "bridge.stream_failed",
-            extra={"operation": "server.stream", "status": "failure",
+            extra={"operation": _STREAM_OPERATION, "status": "failure",
                    "error": exc.kind,
                    "latency_ms": int((time.time() - received) * 1000)},
         )
