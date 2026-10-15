@@ -12,6 +12,9 @@ from pathlib import Path
 
 import uvicorn
 from dotenv import load_dotenv
+from dpg_telemetry import init_otel
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 from reach_layer_base import load_reach_config
 
@@ -106,6 +109,8 @@ def _load_config() -> dict:
 def main() -> None:
     """Load config and run the bridge service."""
     reach_config = _load_config()
+    init_otel("reach_layer.bridge", reach_config)
+    HTTPXClientInstrumentor().instrument()
     bridge = reach_config.get("reach_layer", {}).get("channels", {}).get("bridge", {})
     server = bridge.get("server", {})
 
@@ -120,7 +125,9 @@ def main() -> None:
 
     logger.info("bridge.startup",
                 extra={"operation": "main.startup", "status": "success"})
-    uvicorn.run(create_app(config),
+    app = create_app(config)
+    FastAPIInstrumentor.instrument_app(app, excluded_urls="/health")
+    uvicorn.run(app,
                 host=server.get("host", "0.0.0.0"),
                 port=int(server.get("port", 8008)))
 

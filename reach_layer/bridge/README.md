@@ -104,6 +104,27 @@ important because an unobserved turn that was mid-way through submitting a
 profile or a job application would otherwise act on a sentence the caller
 never finished.
 
+## Per-turn timing log
+
+Every streamed turn ends with one `bridge.turn_timing` log, sent to Loki with
+the other blocks' logs (service `reach_layer.bridge`). It shares a trace id
+with Agent Core's logs for the same turn. All times are milliseconds from the
+request reaching the bridge.
+
+| Field | Meaning |
+|---|---|
+| `call_id` | The client's `metadata.call_id`, when sent |
+| `turn_id` | Agent Core's turn id |
+| `outcome` | `completed`, `disconnected` (client closed the stream), `failed`, `ended_without_done` |
+| `first_reply_kind` | `tool_status` or `sentence`: what the caller heard first |
+| `first_reply_ms` | First reply chunk sent |
+| `first_sentence_ms` | First Agent Core sentence sent: the AI Diffusion DPG response time |
+| `sentences` | Agent Core sentences sent |
+| `latency_ms` | Stream ended |
+
+Marks that never happened are left out. The caller's phone number is never
+logged.
+
 ## No authentication
 
 There is no API key, bearer token, or any other credential check on this

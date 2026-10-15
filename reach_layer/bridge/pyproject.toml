@@ -15,6 +15,9 @@ dependencies = [
     "pydantic>=2.9.0",
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0",
+    "observability-layer",
+    "opentelemetry-instrumentation-fastapi>=0.61b0",
+    "opentelemetry-instrumentation-httpx>=0.61b0",
 ]
 
 [project.optional-dependencies]
@@ -36,3 +39,4 @@ asyncio_mode = "auto"
 
 [tool.uv.sources]
 reach-layer-base = { path = "../base", editable = true }
+observability-layer = { path = "../../observability_layer" }

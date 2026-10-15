@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -312,3 +313,177 @@ def test_agent_core_timeout_mid_stream_closes_cleanly(client):
         p["choices"] and p["choices"][0].get("finish_reason") == "stop"
         for p in payloads
     )
+
+
+# --- per-turn timing log ---------------------------------------------------
+
+CALL_ID = "0b748be7-ee2d-4fb5-8267-33aade8b1bfc"
+
+
+def _timing_record(caplog):
+    records = [r for r in caplog.records if r.getMessage() == "bridge.turn_timing"]
+    assert len(records) == 1
+    return records[0]
+
+
+def _timed_body(**over):
+    return _body(stream=True, metadata={"caller_phone": PHONE, "call_id": CALL_ID}, **over)
+
+
+def test_turn_timing_logs_a_completed_turn(client, caplog):
+    events = [
+        {"type": "signal", "stage": "nlu", "status": "start", "turn_id": "t-1"},
+        {"type": "sentence", "text": "I found 2 jobs.", "sentence_index": 0, "turn_id": "t-1"},
+        {"type": "sentence", "text": "Which one?", "sentence_index": 1, "turn_id": "t-1"},
+        {"type": "done", "session_ended": False, "error_type": None, "turn_id": "t-1"},
+    ]
+    with caplog.at_level("INFO"), \
+            patch("src.server.AgentCoreClient.stream_turn", _fake_stream(events)):
+        client.post("/v1/chat/completions", json=_timed_body())
+
+    rec = _timing_record(caplog)
+    assert rec.status == "success"
+    assert rec.outcome == "completed"
+    assert rec.call_id == CALL_ID
+    assert rec.turn_id == "t-1"
+    assert rec.first_reply_kind == "sentence"
+    assert rec.sentences == 2
+    assert 0 <= rec.first_reply_ms <= rec.first_sentence_ms <= rec.latency_ms
+
+
+def test_turn_timing_never_carries_the_phone_number(client, caplog):
+    events = [
+        {"type": "sentence", "text": "Hello.", "sentence_index": 0},
+        {"type": "done", "session_ended": False, "error_type": None},
+    ]
+    with caplog.at_level("INFO"), \
+            patch("src.server.AgentCoreClient.stream_turn", _fake_stream(events)):
+        client.post("/v1/chat/completions", json=_timed_body())
+
+    rec = _timing_record(caplog)
+    assert PHONE not in json.dumps({k: str(v) for k, v in vars(rec).items()})
+
+
+def test_turn_timing_marks_a_status_line_sent_before_the_answer(caplog):
+    app = create_app({**CONFIG, "tool_status_phrases": {"fetch_jobs": "Let me check."}})
+    events = [
+        {"type": "signal", "stage": "tool_start", "tools": ["fetch_jobs"]},
+        {"type": "sentence", "text": "I found 2 jobs.", "sentence_index": 0},
+        {"type": "done", "session_ended": False, "error_type": None},
+    ]
+    with caplog.at_level("INFO"), \
+            patch("src.server.AgentCoreClient.stream_turn", _fake_stream(events)):
+        TestClient(app).post("/v1/chat/completions", json=_timed_body())
+
+    rec = _timing_record(caplog)
+    assert rec.first_reply_kind == "tool_status"
+    assert rec.sentences == 1
+    assert rec.first_reply_ms <= rec.first_sentence_ms
+
+
+def test_turn_timing_without_any_reply_has_no_reply_times(client, caplog):
+    events = [{"type": "done", "session_ended": False, "error_type": None}]
+    with caplog.at_level("INFO"), \
+            patch("src.server.AgentCoreClient.stream_turn", _fake_stream(events)):
+        client.post("/v1/chat/completions", json=_timed_body())
+
+    rec = _timing_record(caplog)
+    assert rec.outcome == "completed"
+    assert rec.sentences == 0
+    for absent in ("first_reply_ms", "first_reply_kind", "first_sentence_ms"):
+        assert not hasattr(rec, absent)
+
+
+def test_turn_timing_without_a_call_id_omits_it(client, caplog):
+    events = [
+        {"type": "sentence", "text": "Hello.", "sentence_index": 0},
+        {"type": "done", "session_ended": False, "error_type": None},
+    ]
+    with caplog.at_level("INFO"), \
+            patch("src.server.AgentCoreClient.stream_turn", _fake_stream(events)):
+        client.post("/v1/chat/completions", json=_body(stream=True))
+
+    rec = _timing_record(caplog)
+    assert rec.outcome == "completed"
+    assert not hasattr(rec, "call_id")
+
+
+def test_turn_timing_marks_a_done_event_carrying_an_error_as_failed(client, caplog):
+    events = [{"type": "done", "session_ended": False, "error_type": "llm_error"}]
+    with caplog.at_level("INFO"), \
+            patch("src.server.AgentCoreClient.stream_turn", _fake_stream(events)):
+        client.post("/v1/chat/completions", json=_timed_body())
+
+    rec = _timing_record(caplog)
+    assert rec.status == "failure"
+    assert rec.outcome == "failed"
+
+
+def test_turn_timing_marks_an_agent_core_failure_as_failed(client, caplog):
+    async def _gen(self, payload):
+        yield {"type": "sentence", "text": "hi", "sentence_index": 0}
+        raise AgentCoreError("down", "connect")
+
+    with caplog.at_level("INFO"), patch("src.server.AgentCoreClient.stream_turn", _gen):
+        client.post("/v1/chat/completions", json=_timed_body())
+
+    rec = _timing_record(caplog)
+    assert rec.outcome == "failed"
+    assert rec.sentences == 1
+
+
+def test_turn_timing_marks_a_stream_without_done_as_incomplete(client, caplog):
+    events = [{"type": "sentence", "text": "Hello.", "sentence_index": 0}]
+    with caplog.at_level("INFO"), \
+            patch("src.server.AgentCoreClient.stream_turn", _fake_stream(events)):
+        client.post("/v1/chat/completions", json=_timed_body())
+
+    rec = _timing_record(caplog)
+    assert rec.status == "failure"
+    assert rec.outcome == "ended_without_done"
+
+
+class _SlowClient:
+    """Agent Core stand-in whose stream sends one sentence, then stalls."""
+
+    async def stream_turn(self, payload):
+        yield {"type": "sentence", "text": "Hello.", "sentence_index": 0, "turn_id": "t-9"}
+        await asyncio.sleep(60)
+
+
+def _open_stream():
+    import time
+    return _stream(_SlowClient(), {}, MODEL, "", False,
+                   call_id=CALL_ID, received=time.time())
+
+
+async def test_turn_timing_logs_a_stream_closed_by_the_client(caplog):
+    gen = _open_stream()
+    with caplog.at_level("INFO"):
+        await gen.__anext__()
+        await gen.__anext__()
+        await gen.aclose()
+
+    rec = _timing_record(caplog)
+    assert rec.status == "success"
+    assert rec.outcome == "disconnected"
+    assert rec.turn_id == "t-9"
+    assert rec.sentences == 1
+
+
+async def test_turn_timing_logs_a_stream_cancelled_mid_turn(caplog):
+    gen = _open_stream()
+
+    async def _drain():
+        async for _ in gen:
+            pass
+
+    with caplog.at_level("INFO"):
+        task = asyncio.create_task(_drain())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    rec = _timing_record(caplog)
+    assert rec.outcome == "disconnected"
