@@ -130,7 +130,7 @@ def _instrument_app(app) -> None:
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-        _instrument_app(app)
+        FastAPIInstrumentor.instrument_app(app, excluded_urls="/health")
     except Exception as exc:
         logger.warning("bridge.telemetry_disabled",
                        extra={"operation": "main.instrument_app", "status": "failure",

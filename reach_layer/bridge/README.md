@@ -115,7 +115,7 @@ request reaching the bridge, on a steady clock.
 |---|---|
 | `call_id` | The client's `metadata.call_id`, when sent |
 | `turn_id` | Agent Core's turn id |
-| `outcome` | `completed`, `disconnected_before_reply` (client closed the stream before anything was sent; `status` failure), `disconnected_after_reply` (client closed it after the reply started), `failed`, `ended_without_done` |
+| `outcome` | `completed`, `disconnected_before_reply` (client closed the stream before Agent Core's answer started, even if a "please wait" line was sent; `status` failure), `disconnected_after_reply` (client closed it after the answer started), `failed`, `ended_without_done` |
 | `first_reply_kind` | `tool_status`, `sentence` or `closing` (the terminal word): what the caller heard first; only pieces with text count |
 | `first_reply_ms` | First reply chunk sent |
 | `first_sentence_ms` | First Agent Core sentence sent: the AI Diffusion DPG response time |

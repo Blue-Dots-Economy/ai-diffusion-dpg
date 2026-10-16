@@ -582,3 +582,58 @@ async def test_stream_dropped_while_sending_is_logged_before_the_response_return
         rec = _timing_record(caplog)
 
     assert rec.outcome.startswith("disconnected")
+
+
+def test_turn_timing_survives_a_null_sentence_text(client, caplog):
+    events = [
+        {"type": "sentence", "text": None, "sentence_index": 0},
+        {"type": "sentence", "text": "Hello.", "sentence_index": 1},
+        {"type": "done", "session_ended": False, "error_type": None},
+    ]
+    with caplog.at_level("INFO"), \
+            patch("src.server.AgentCoreClient.stream_turn", _fake_stream(events)):
+        r = client.post("/v1/chat/completions", json=_timed_body())
+
+    assert r.status_code == 200
+    rec = _timing_record(caplog)
+    assert rec.outcome == "completed"
+    assert rec.sentences == 1
+
+
+class _ToolThenStallClient:
+    """Agent Core stand-in that starts a tool, then never answers."""
+
+    async def stream_turn(self, payload):
+        yield {"type": "signal", "stage": "tool_start", "tools": ["fetch_jobs"]}
+        await asyncio.sleep(60)
+
+
+async def test_turn_timing_a_drop_after_only_the_status_line_is_before_the_answer(caplog):
+    gen = _stream(_ToolThenStallClient(), {}, MODEL, "", False, None, {"fetch_jobs": "One minute."},
+                  call_id=CALL_ID, received=time.monotonic())
+    with caplog.at_level("INFO"):
+        await gen.__anext__()
+        await gen.__anext__()
+        await gen.aclose()
+
+    rec = _timing_record(caplog)
+    assert rec.first_reply_kind == "tool_status"
+    assert rec.outcome == "disconnected_before_reply"
+    assert rec.status == "failure"
+
+
+class _AnswerThenDoneClient:
+    async def stream_turn(self, payload):
+        yield {"type": "sentence", "text": "Hello.", "sentence_index": 0}
+        yield {"type": "done", "session_ended": False, "error_type": None}
+
+
+async def test_turn_timing_keeps_completed_when_the_drop_lands_while_closing(caplog):
+    gen = _open_stream(_AnswerThenDoneClient())
+    with caplog.at_level("INFO"):
+        await gen.__anext__()
+        await gen.__anext__()
+        await gen.__anext__()
+        await gen.aclose()
+
+    assert _timing_record(caplog).outcome == "completed"

@@ -7,8 +7,7 @@
 # Both stages are Docker Hardened Images from dhi.io, which refuses anonymous
 # pulls — building needs `docker login dhi.io`.
 #
-# Must be built from the repo root so ../base and observability_layer are in the
-# build context.
+# Must be built from the repo root so ../base and observability_layer are in context.
 #
 #   docker build -f reach_layer/bridge/Dockerfile -t reach_layer_bridge .
 # =============================================================================

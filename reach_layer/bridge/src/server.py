@@ -291,9 +291,9 @@ class _TurnTiming:
                 self._first_sentence_ms = self._elapsed_ms()
 
     @property
-    def replied(self) -> bool:
-        """True once any reply chunk with text has been handed to the client."""
-        return self._first_reply_ms is not None
+    def answered(self) -> bool:
+        """True once a sentence of Agent Core's answer has been handed to the client."""
+        return self._first_sentence_ms is not None
 
     def log(self) -> None:
         """Emit the turn's timing record, leaving out marks that never happened."""
@@ -356,7 +356,7 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
             if kind == "sentence":
                 text = event.get("text", "")
                 chunk = translator.sentence(text)
-                if text.strip():
+                if isinstance(text, str) and text.strip():
                     timing.reply_sent("sentence")
                 yield sse(chunk)
             elif kind == "done":
@@ -367,9 +367,10 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
                                "error": str(event.get("error_type"))},
                     )
                 timing.outcome = "failed" if event.get("error_type") else "completed"
-                if event.get("session_ended") and terminal_word:
+                closing = translator.finish(event, include_usage=include_usage)
+                if translator.closing_spoken:
                     timing.reply_sent("closing")
-                for chunk in translator.finish(event, include_usage=include_usage):
+                for chunk in closing:
                     yield sse(chunk)
                 yield SSE_DONE
                 return
@@ -410,7 +411,8 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
             yield sse(chunk)
         yield SSE_DONE
     except (GeneratorExit, asyncio.CancelledError):
-        timing.outcome = "disconnected_after_reply" if timing.replied else "disconnected_before_reply"
+        if timing.outcome == "error":
+            timing.outcome = "disconnected_after_reply" if timing.answered else "disconnected_before_reply"
         raise
     finally:
         timing.log()

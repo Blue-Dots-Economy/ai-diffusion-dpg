@@ -334,6 +334,7 @@ class StreamTranslator:
         self._id = new_completion_id()
         self._created = int(time.time())
         self._emitted_content = False
+        self.closing_spoken = False
 
     def _chunk(self, **kwargs) -> dict:
         return build_chunk(self._id, self._created, self._model, **kwargs)
@@ -410,6 +411,7 @@ class StreamTranslator:
         ended = bool(done.get("session_ended"))
         if ended and self._terminal_word:
             out.append(self.sentence(self._terminal_word))
+            self.closing_spoken = True
         if ended and not self._hangup_tool:
             # Agent Core ended the session but nothing will hang the call
             # up: either the domain configured no hangup tool, or the
