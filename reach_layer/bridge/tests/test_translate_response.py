@@ -172,3 +172,17 @@ def test_terminal_word_is_spaced_off_the_preceding_sentence():
         if c["choices"]
     )
     assert spoken == " Thank you"
+
+
+def test_finish_records_whether_the_closing_word_was_spoken():
+    spoken = StreamTranslator("m", terminal_word="Thank you")
+    spoken.finish({"session_ended": True}, include_usage=False)
+    assert spoken.closing_spoken is True
+
+    silent = StreamTranslator("m", terminal_word="Thank you")
+    silent.finish({"session_ended": False}, include_usage=False)
+    assert silent.closing_spoken is False
+
+    unset = StreamTranslator("m")
+    unset.finish({"session_ended": True}, include_usage=False)
+    assert unset.closing_spoken is False
