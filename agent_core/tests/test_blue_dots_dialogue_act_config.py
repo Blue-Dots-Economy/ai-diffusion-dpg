@@ -57,6 +57,13 @@ def test_blue_dots_config_loads():
                                              "इनमें से कुछ आपके काम आ सकता है?",
                          "profile_item_id": "p1",
                          "subagent_entry_count": {"profile_resolve": 1}}, "wants_services"),
+    ("profile_update", {}, None),
+    ("profile_update", {"current_question": "शहर गाज़ियाबाद — प्रोफ़ाइल में अपडेट कर दूँ?"},
+     "confirm_update"),
+    ("profile_update", {"current_question": "काम डेटा एंट्री — प्रोफ़ाइल में अपडेट कर दूं?"},
+     "confirm_update"),
+    ("profile_update", {"current_question": "क्या इन्हीं से नौकरियाँ ढूंढूँ?"}, "what_to_change"),
+    ("profile_update", {"current_question": "क्या बदलना है — काम या शहर?"}, None),
     ("apply_confirm", {"applications_submitted": 0}, "submit_confirm"),
     ("apply_confirm", {"applications_submitted": 1}, "closing_offer"),
 ])
