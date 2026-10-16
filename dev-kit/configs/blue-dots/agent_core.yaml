@@ -3290,16 +3290,15 @@ agent_workflow:
       is_start: false
       is_terminal: false
       opening_phrase: "ठीक है।"
-      tools: [update_profile]
+      # Spoken verbatim, so it cannot be reworded, doubled, or guess the
+      # caller's gender. Skipped when their turn already named a trade or
+      # city — they go straight to the confirm instead.
+      fixed_opening: "क्या बदलना है — काम या शहर?"
+      fixed_opening_requires: [profile_item_id]
+      tools: []
       pending:
-        - id: confirm_update
-          when: [{ field: current_question, operator: contains, value: ["अपडेट कर दूँ", "अपडेट कर दूं"] }]
-          expects: "प्रोफ़ाइल अपडेट करने की हाँ/नहीं"
-        # Gated on the question having been asked: left ungated it stays
-        # pending after the caller names a value, and <state> telling the
-        # model it is still waiting makes it ask a second time.
         - id: what_to_change
-          when: [{ field: current_question, operator: contains, value: ["इन्हीं से"] }]
+          when: [{ field: current_question, operator: contains, value: ["इन्हीं से", "क्या बदलना है"] }]
           expects: "काम या शहर — क्या बदलना है"
       system_prompt: |
         ## Which turn you are on
@@ -3346,22 +3345,10 @@ agent_workflow:
         "कुछ नहीं", "रहने दीजिए" — say "ठीक है" and nothing more. The
         search carries on with what is already saved.
 
-        ## Confirm before you write
-        ONE question, and nothing before it. They have already said they
-        want a change, so do not ask whether they want to change it — ask
-        only whether to save it. "क्या आप शहर बदलना चाहती हैं?" is both a
-        second question and a guess at the caller's gender.
-
-        Name only what is changing, and ask:
-          "शहर गाज़ियाबाद — प्रोफ़ाइल में अपडेट कर दूँ?"
-          ("City Ghaziabad — shall I update your profile?")
-          "काम डेटा एंट्री और शहर गाज़ियाबाद — प्रोफ़ाइल में अपडेट कर दूँ?"
-          ("Trade Data Entry and city Ghaziabad — shall I update your
-           profile?")
-
-        Do not read their whole profile back. Do not mention fields that
-        are staying the same. Say "प्रोफ़ाइल", not "जानकारी".
-        **End the turn on that question, with nothing after it.**
+        ## You never ask whether to save
+        The next phase asks that, word for word. Once you know what is
+        changing, end the turn — say nothing about saving and nothing
+        about having saved.
 
         ## On their answer
         A yes calls `update_profile` with the changed fields only.
@@ -3397,12 +3384,11 @@ agent_workflow:
         # Stays here so THIS phase composes the turn and its tool can run:
         # routing picks who writes the reply, and only this phase holds
         # update_profile.
-        - intent: profile_update_confirmed
-          next_subagent_id: profile_update
-          session_writes: { update_stage: written }
-        - intent: profile_update_declined
-          next_subagent_id: profile_update
-          session_writes: { update_stage: skipped }
+        # Once anything is named, the phase that asks about saving it takes
+        # over. Two rules because conditions are AND-ed and a caller may
+        # change only one of the two.
+        - { intent: "*", conditions: [{ field: trade, operator: not_eq, value: "" }, { field: update_stage, operator: in, value: [null, ""] }], next_subagent_id: profile_update_confirm }
+        - { intent: "*", conditions: [{ field: location, operator: not_eq, value: "" }, { field: update_stage, operator: in, value: [null, ""] }], next_subagent_id: profile_update_confirm }
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
@@ -3414,6 +3400,78 @@ agent_workflow:
         - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }], next_subagent_id: job_match }
         - intent: "*"
           next_subagent_id: profile_update
+
+    # ─────────────────────────────────────────────────────────────
+    # 4c. profile_update_confirm — asks to save, then writes.
+    # ─────────────────────────────────────────────────────────────
+    - id: profile_update_confirm
+      name: Profile Update Confirm
+      description: >
+        Asks the one question that authorises the write, then performs it.
+        The question is spoken verbatim so it cannot be reworded, asked
+        twice, gendered, or replaced by a claim that the write already
+        happened.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "ठीक है।"
+      fixed_opening: "काम {trade|stored_trade} और शहर {location|stored_location} — प्रोफ़ाइल में अपडेट कर दूँ?"
+      fixed_opening_requires: ["trade|stored_trade", "location|stored_location"]
+      # This phase is always entered on the turn the caller named the
+      # change, so the default entity gate would silence it every time.
+      fixed_opening_when_told: true
+      tools: [update_profile]
+      pending:
+        - id: confirm_update
+          expects: "प्रोफ़ाइल अपडेट करने की हाँ/नहीं"
+      system_prompt: |
+        ## The question is already asked
+        The caller has been asked, word for word, whether to update their
+        profile. You never ask it again and never rephrase it. Your only
+        job is to act on their answer.
+
+        ## On a yes
+        Call `update_profile` with the fields that differ from their
+        stored profile and nothing else. Never send their age.
+
+        Then, and only after reading a successful result, say once:
+          "आपकी प्रोफ़ाइल अपडेट हो गई है। अब नौकरियाँ देखूँ?"
+          ("Your profile has been updated. Shall I look for jobs now?")
+
+        Once. Not again on the next turn — they heard it.
+
+        On a failure, say you cannot update it right now and offer the
+        search anyway. What they told you is still what gets searched.
+
+        ## On a no
+        Write nothing. A no refuses the saving, not the search — they
+        asked for that trade or city a turn ago and still want it looked
+        up. Acknowledge briefly and offer the search.
+
+        ## Never
+        Say the profile was updated before you have read a successful
+        result. No turn in this phase makes that sentence true earlier.
+      routing:
+        - intent: off_track
+          next_subagent_id: profile_update_confirm
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: profile_update_confirm }
+        - intent: profile_update_confirmed
+          next_subagent_id: profile_update_confirm
+          session_writes: { update_stage: written }
+        - intent: profile_update_declined
+          next_subagent_id: profile_update_confirm
+          session_writes: { update_stage: skipped }
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }, { field: update_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }, { field: update_return_to, operator: eq, value: service_match }], next_subagent_id: service_match }
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }], next_subagent_id: job_match }
+        - intent: "*"
+          next_subagent_id: profile_update_confirm
 
     - id: apply_confirm
       name: Apply & Confirm

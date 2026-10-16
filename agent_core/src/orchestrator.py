@@ -99,6 +99,23 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 logger = logging.getLogger(__name__)
 
+
+def _first_present(session: dict, name: str) -> str:
+    """First non-empty session value among a ``a|b`` fallback placeholder name.
+
+    Args:
+        session: Session state.
+        name: A placeholder name, optionally ``primary|fallback|...``.
+
+    Returns:
+        The first non-empty value as a stripped string, or ``""``.
+    """
+    for key in str(name).split("|"):
+        value = str((session or {}).get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
 # Session key: tool → args_hash of the stored result the caller last heard
 # (NLU dialogue-acts spec §5.2).
 SERVED_TOOL_RESULTS_KEY = "served_tool_results"
@@ -5213,9 +5230,7 @@ class AgentCore(AgentCoreBase):
                 _first_entry = int(
                     (_counts or {}).get(next_subagent_id, 0) or 0
                 ) <= 1
-                _vals = {
-                    k: str(bundle.session.get(k) or "").strip() for k in _requires
-                }
+                _vals = {k: _first_present(bundle.session, k) for k in _requires}
                 _have_all = bool(_requires) and all(_vals.values())
                 # A fragment, not a template slot: an empty slot leaves its
                 # punctuation behind and a missing key drops the whole line.
@@ -5243,7 +5258,11 @@ class AgentCore(AgentCoreBase):
                                    "subagent_id": next_subagent_id},
                         )
                 _caller_said_something = bool(nlu_result.entities or {})
-                if _first_entry and _have_all and not _caller_said_something:
+                # A phase whose whole job is to ask about what the caller just
+                # said is entered on a turn that always carries an entity, so
+                # the entity gate would silence it every time.
+                _even_told = bool(getattr(_sa, "fixed_opening_when_told", False))
+                if _first_entry and _have_all and (_even_told or not _caller_said_something):
                     try:
                         _line = (_prefix + _tmpl.format(**_vals)).strip()
                     except (KeyError, IndexError):

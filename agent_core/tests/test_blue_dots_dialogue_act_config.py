@@ -58,12 +58,9 @@ def test_blue_dots_config_loads():
                          "profile_item_id": "p1",
                          "subagent_entry_count": {"profile_resolve": 1}}, "wants_services"),
     ("profile_update", {}, None),
-    ("profile_update", {"current_question": "शहर गाज़ियाबाद — प्रोफ़ाइल में अपडेट कर दूँ?"},
-     "confirm_update"),
-    ("profile_update", {"current_question": "काम डेटा एंट्री — प्रोफ़ाइल में अपडेट कर दूं?"},
-     "confirm_update"),
     ("profile_update", {"current_question": "क्या इन्हीं से नौकरियाँ ढूंढूँ?"}, "what_to_change"),
-    ("profile_update", {"current_question": "क्या बदलना है — काम या शहर?"}, None),
+    ("profile_update", {"current_question": "क्या बदलना है — काम या शहर?"}, "what_to_change"),
+    ("profile_update_confirm", {}, "confirm_update"),
     ("apply_confirm", {"applications_submitted": 0}, "submit_confirm"),
     ("apply_confirm", {"applications_submitted": 1}, "closing_offer"),
 ])
@@ -569,3 +566,24 @@ def test_shipped_identity_is_rendered_into_the_prompt():
 def test_handoff_system_prompt_does_not_ask_to_end_the_call():
     _, wf = _load(True)
     assert "ख़त्म करूँ" not in wf.subagents["handoff"].system_prompt
+
+
+def test_first_present_picks_the_first_non_empty_fallback():
+    """`a|b` placeholder names fall back in order (#514)."""
+    from src.orchestrator import _first_present
+    session = {"trade": "", "stored_trade": "Plumber", "location": "Ghaziabad"}
+    assert _first_present(session, "trade|stored_trade") == "Plumber"
+    assert _first_present(session, "location|stored_location") == "Ghaziabad"
+    assert _first_present(session, "trade") == ""
+    assert _first_present(session, "missing|also_missing") == ""
+    assert _first_present({}, "anything") == ""
+
+
+def test_fixed_opening_when_told_defaults_off_and_loads():
+    """The flag is opt-in and reaches the loaded subagent (#514)."""
+    _, wf = _load()
+    pu = wf.subagents["profile_update"]
+    assert pu.fixed_opening_when_told is False
+    pc = wf.subagents["profile_update_confirm"]
+    assert pc.fixed_opening_when_told is True
+    assert pc.fixed_opening_requires == ["trade|stored_trade", "location|stored_location"]
