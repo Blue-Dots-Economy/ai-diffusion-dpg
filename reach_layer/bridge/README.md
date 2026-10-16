@@ -109,14 +109,14 @@ never finished.
 Every streamed turn ends with one `bridge.turn_timing` log, sent to Loki with
 the other blocks' logs (service `reach_layer.bridge`). It shares a trace id
 with Agent Core's logs for the same turn. All times are milliseconds from the
-request reaching the bridge.
+request reaching the bridge, on a steady clock.
 
 | Field | Meaning |
 |---|---|
 | `call_id` | The client's `metadata.call_id`, when sent |
 | `turn_id` | Agent Core's turn id |
-| `outcome` | `completed`, `disconnected` (client closed the stream), `failed`, `ended_without_done` |
-| `first_reply_kind` | `tool_status` or `sentence`: what the caller heard first |
+| `outcome` | `completed`, `disconnected_before_reply` (client closed the stream before anything was sent; `status` failure), `disconnected_after_reply` (client closed it after the reply started), `failed`, `ended_without_done` |
+| `first_reply_kind` | `tool_status`, `sentence` or `closing` (the terminal word): what the caller heard first; only pieces with text count |
 | `first_reply_ms` | First reply chunk sent |
 | `first_sentence_ms` | First Agent Core sentence sent: the AI Diffusion DPG response time |
 | `sentences` | Agent Core sentences sent |

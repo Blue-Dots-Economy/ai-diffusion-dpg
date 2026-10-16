@@ -12,9 +12,6 @@ from pathlib import Path
 
 import uvicorn
 from dotenv import load_dotenv
-from dpg_telemetry import init_otel
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 from reach_layer_base import load_reach_config
 
@@ -106,11 +103,44 @@ def _load_config() -> dict:
     )
 
 
+def _init_telemetry(reach_config: dict) -> None:
+    """Send logs, traces and metrics to the collector; never stop startup if that fails.
+
+    Args:
+        reach_config: The loaded Reach Layer config, which holds the collector endpoint.
+    """
+    try:
+        from dpg_telemetry import init_otel
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+        init_otel("reach_layer.bridge", reach_config)
+        HTTPXClientInstrumentor().instrument()
+    except Exception as exc:
+        logger.warning("bridge.telemetry_disabled",
+                       extra={"operation": "main.init_telemetry", "status": "failure",
+                              "error": f"{type(exc).__name__}: {exc}"})
+
+
+def _instrument_app(app) -> None:
+    """Trace each request to the app, except health checks; never stop startup if that fails.
+
+    Args:
+        app: The bridge FastAPI application.
+    """
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        _instrument_app(app)
+    except Exception as exc:
+        logger.warning("bridge.telemetry_disabled",
+                       extra={"operation": "main.instrument_app", "status": "failure",
+                              "error": f"{type(exc).__name__}: {exc}"})
+
+
 def main() -> None:
     """Load config and run the bridge service."""
     reach_config = _load_config()
-    init_otel("reach_layer.bridge", reach_config)
-    HTTPXClientInstrumentor().instrument()
+    _init_telemetry(reach_config)
     bridge = reach_config.get("reach_layer", {}).get("channels", {}).get("bridge", {})
     server = bridge.get("server", {})
 
@@ -126,7 +156,7 @@ def main() -> None:
     logger.info("bridge.startup",
                 extra={"operation": "main.startup", "status": "success"})
     app = create_app(config)
-    FastAPIInstrumentor.instrument_app(app, excluded_urls="/health")
+    _instrument_app(app)
     uvicorn.run(app,
                 host=server.get("host", "0.0.0.0"),
                 port=int(server.get("port", 8008)))

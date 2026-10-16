@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -451,10 +452,9 @@ class _SlowClient:
         await asyncio.sleep(60)
 
 
-def _open_stream():
-    import time
-    return _stream(_SlowClient(), {}, MODEL, "", False,
-                   call_id=CALL_ID, received=time.time())
+def _open_stream(client=None):
+    return _stream(client or _SlowClient(), {}, MODEL, "", False,
+                   call_id=CALL_ID, received=time.monotonic())
 
 
 async def test_turn_timing_logs_a_stream_closed_by_the_client(caplog):
@@ -466,7 +466,7 @@ async def test_turn_timing_logs_a_stream_closed_by_the_client(caplog):
 
     rec = _timing_record(caplog)
     assert rec.status == "success"
-    assert rec.outcome == "disconnected"
+    assert rec.outcome == "disconnected_after_reply"
     assert rec.turn_id == "t-9"
     assert rec.sentences == 1
 
@@ -486,4 +486,99 @@ async def test_turn_timing_logs_a_stream_cancelled_mid_turn(caplog):
             await task
 
     rec = _timing_record(caplog)
-    assert rec.outcome == "disconnected"
+    assert rec.outcome == "disconnected_after_reply"
+
+
+class _SilentClient:
+    """Agent Core stand-in that sends nothing before stalling."""
+
+    async def stream_turn(self, payload):
+        await asyncio.sleep(60)
+        yield {}
+
+
+async def test_turn_timing_marks_a_drop_before_any_reply_as_a_failure(caplog):
+    gen = _open_stream(_SilentClient())
+
+    async def _drain():
+        async for _ in gen:
+            pass
+
+    with caplog.at_level("INFO"):
+        task = asyncio.create_task(_drain())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    rec = _timing_record(caplog)
+    assert rec.status == "failure"
+    assert rec.outcome == "disconnected_before_reply"
+    assert not hasattr(rec, "first_reply_ms")
+
+
+def test_turn_timing_ignores_an_empty_sentence(client, caplog):
+    events = [
+        {"type": "sentence", "text": "", "sentence_index": 0},
+        {"type": "sentence", "text": "Hello.", "sentence_index": 1},
+        {"type": "done", "session_ended": False, "error_type": None},
+    ]
+    with caplog.at_level("INFO"), \
+            patch("src.server.AgentCoreClient.stream_turn", _fake_stream(events)):
+        client.post("/v1/chat/completions", json=_timed_body())
+
+    rec = _timing_record(caplog)
+    assert rec.sentences == 1
+    assert rec.first_reply_kind == "sentence"
+
+
+def test_turn_timing_counts_a_closing_word_spoken_alone(client, caplog):
+    events = [{"type": "done", "session_ended": True, "error_type": None}]
+    with caplog.at_level("INFO"), \
+            patch("src.server.AgentCoreClient.stream_turn", _fake_stream(events)):
+        client.post("/v1/chat/completions", json=_timed_body())
+
+    rec = _timing_record(caplog)
+    assert rec.first_reply_kind == "closing"
+    assert rec.sentences == 0
+    assert not hasattr(rec, "first_sentence_ms")
+
+
+def test_failure_lines_leave_the_time_to_the_timing_record(client, caplog):
+    async def _gen(self, payload):
+        yield {"type": "sentence", "text": "hi", "sentence_index": 0}
+        raise AgentCoreError("down", "connect")
+
+    with caplog.at_level("INFO"), patch("src.server.AgentCoreClient.stream_turn", _gen):
+        client.post("/v1/chat/completions", json=_timed_body())
+
+    failed = [r for r in caplog.records if r.getMessage() == "bridge.stream_failed"]
+    assert len(failed) == 1
+    assert not hasattr(failed[0], "latency_ms")
+    assert hasattr(_timing_record(caplog), "latency_ms")
+
+
+async def test_stream_dropped_while_sending_is_logged_before_the_response_returns(caplog):
+    """A disconnect that lands during a write must still close the stream at once."""
+    from src.server import _ClosingStreamingResponse
+
+    written = asyncio.Event()
+    sent_after_close = []
+
+    async def receive():
+        await written.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message.get("type") == "http.response.body" and message.get("body"):
+            written.set()
+            await asyncio.sleep(60)
+        sent_after_close.append(message)
+
+    response = _ClosingStreamingResponse(_open_stream(), media_type="text/event-stream")
+    scope = {"type": "http", "asgi": {"spec_version": "2.3"}}
+    with caplog.at_level("INFO"):
+        await asyncio.wait_for(response(scope, receive, send), timeout=5)
+        rec = _timing_record(caplog)
+
+    assert rec.outcome.startswith("disconnected")
