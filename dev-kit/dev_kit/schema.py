@@ -611,6 +611,10 @@ class SubAgentSchema(BaseModel):
         default_factory=list,
         description="Values that count as absent, so a stored placeholder is never spoken.",
     )
+    fixed_opening_when_told: bool = Field(
+        default=False,
+        description="Speak the fixed opening even on a turn where the caller named something.",
+    )
     special_handler: Literal["hitl", "whatsapp_handoff"] | None = Field(
         default=None,
         description="Optional framework-level handler. "
