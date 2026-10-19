@@ -853,8 +853,6 @@ class SubAgent(BaseModel):
     # Values that count as absent, so a stored placeholder is never spoken.
     fixed_opening_prefix_unless: list[str] = Field(default_factory=list)
     # Speak the fixed opening even on a turn where the caller named something.
-    # A phase that exists to ask about what they just said is always entered
-    # on such a turn, so the default gate would silence it permanently.
     fixed_opening_when_told: bool = False
     routing: list[RoutingRule] = Field(default_factory=list)
     pending: list[PendingQuestionConfig] = Field(default_factory=list)
