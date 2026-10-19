@@ -477,9 +477,6 @@ tools:
           items: items
 
   # ────────────────────────────────────────────────────────────────────
-  # WRITE — Submit the application linking caller profile to the job.
-  # ────────────────────────────────────────────────────────────────────
-  # ────────────────────────────────────────────────────────────────────
   # WRITE — Update an existing seeker profile. item_id makes it an update.
   # ────────────────────────────────────────────────────────────────────
   - id: update_profile
@@ -580,6 +577,9 @@ tools:
           user_id: user_id
           items: items
 
+  # ────────────────────────────────────────────────────────────────────
+  # WRITE — Submit the application linking caller profile to the job.
+  # ────────────────────────────────────────────────────────────────────
   - id: apply_job
     type: rest_api
     category: write
