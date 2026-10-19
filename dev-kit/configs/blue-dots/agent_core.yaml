@@ -620,6 +620,13 @@ connectors:
         changing — the upstream merges them and leaves the rest alone. This
         is never a create: without a live profile there is nothing to
         update.
+
+        Write the canonical ENGLISH value, never the caller's Hindi words:
+        "Ghaziabad" not "गाज़ियाबाद", "Data Entry Operator" not
+        "डेटा एंट्री". The job search matches on these, so a Hindi value
+        saved here stops the caller's own profile finding them work.
+        Canonical city names are the same ones job_match uses — Bengaluru,
+        Mumbai, Chennai, Kolkata, Gurugram.
       input_schema:
         type: object
         properties:
@@ -3464,8 +3471,10 @@ agent_workflow:
         - intent: profile_update_confirmed
           next_subagent_id: profile_update_confirm
           session_writes: { update_stage: written }
+        # Straight out, not back here: given another turn in this phase the
+        # model says the profile was updated when nothing was written.
         - intent: profile_update_declined
-          next_subagent_id: profile_update_confirm
+          next_subagent_id: job_match
           session_writes: { update_stage: skipped }
         - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }, { field: update_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
         - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }, { field: update_return_to, operator: eq, value: service_match }], next_subagent_id: service_match }
