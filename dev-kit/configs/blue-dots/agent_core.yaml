@@ -67,7 +67,7 @@ agent:
 # the LLM, so a returning caller's consent/age flags and live profile are in
 # session state when turn 1 is routed (session-bootstrap spec). Read connector only.
 session_bootstrap:
-  timeout_ms: 1500
+  timeout_ms: 2000
   steps:
     - type: tool
       tool: fetch_profile
