@@ -5258,7 +5258,6 @@ class AgentCore(AgentCoreBase):
                                    "subagent_id": next_subagent_id},
                         )
                 _caller_said_something = bool(nlu_result.entities or {})
-                # Such a phase is always entered on a turn carrying an entity.
                 _even_told = bool(getattr(_sa, "fixed_opening_when_told", False))
                 if _first_entry and _have_all and (_even_told or not _caller_said_something):
                     try:

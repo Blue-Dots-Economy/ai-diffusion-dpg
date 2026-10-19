@@ -525,7 +525,6 @@ tools:
           network: "blue_dot"
           domain: "seeker"
           item_type: "profile_1.0"
-          # Required here. Its absence is what would turn this into a create.
           item_id: "{profile_item_id}"
           item_state:
             location: "{location}"

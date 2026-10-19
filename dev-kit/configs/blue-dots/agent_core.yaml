@@ -3297,7 +3297,6 @@ agent_workflow:
       is_start: false
       is_terminal: false
       opening_phrase: "ठीक है।"
-      # Verbatim; skipped when their turn already named a trade or city.
       fixed_opening: "क्या बदलना है — काम या शहर?"
       fixed_opening_requires: [profile_item_id]
       tools: []
@@ -3415,7 +3414,6 @@ agent_workflow:
       opening_phrase: "ठीक है।"
       fixed_opening: "काम {trade|stored_trade} और शहर {location|stored_location} — प्रोफ़ाइल में अपडेट कर दूँ?"
       fixed_opening_requires: ["trade|stored_trade", "location|stored_location"]
-      # Always entered on a turn that names something; the gate would silence it.
       fixed_opening_when_told: true
       tools: [update_profile]
       pending:
