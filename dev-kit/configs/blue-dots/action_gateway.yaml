@@ -480,8 +480,7 @@ tools:
   # WRITE — Submit the application linking caller profile to the job.
   # ────────────────────────────────────────────────────────────────────
   # ────────────────────────────────────────────────────────────────────
-  # WRITE — Update an existing seeker profile. Same endpoint as
-  # save_profile; item_id is what makes it an update.
+  # WRITE — Update an existing seeker profile. item_id makes it an update.
   # ────────────────────────────────────────────────────────────────────
   - id: update_profile
     type: rest_api
@@ -508,9 +507,7 @@ tools:
         method: POST
         path: /api/v1/admin/participant
         body_template:
-          # stored_name, not name: on an update the caller already has a
-          # profile and their name came back on it. Top-level name is
-          # required by the upstream even when item_state omits it.
+          # stored_name: the upstream requires a top-level name on an update.
           name: "{stored_name}"
           phone_number: "+{user_id}"
           age: "{age}"

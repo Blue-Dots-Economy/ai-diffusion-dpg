@@ -3297,9 +3297,7 @@ agent_workflow:
       is_start: false
       is_terminal: false
       opening_phrase: "ठीक है।"
-      # Spoken verbatim, so it cannot be reworded, doubled, or guess the
-      # caller's gender. Skipped when their turn already named a trade or
-      # city — they go straight to the confirm instead.
+      # Verbatim; skipped when their turn already named a trade or city.
       fixed_opening: "क्या बदलना है — काम या शहर?"
       fixed_opening_requires: [profile_item_id]
       tools: []
@@ -3388,20 +3386,14 @@ agent_workflow:
           session_writes: { close_return_to: profile_update }
         - intent: jobs_declined
           next_subagent_id: profile_update
-        # Stays here so THIS phase composes the turn and its tool can run:
-        # routing picks who writes the reply, and only this phase holds
-        # update_profile.
-        # Once anything is named, the phase that asks about saving it takes
-        # over. Two rules because conditions are AND-ed and a caller may
-        # change only one of the two.
+        # Stays here: only this phase holds update_profile.
+        # Two rules: conditions are AND-ed and only one field may change.
         - { intent: "*", conditions: [{ field: trade, operator: not_eq, value: "" }, { field: update_stage, operator: in, value: [null, ""] }], next_subagent_id: profile_update_confirm }
         - { intent: "*", conditions: [{ field: location, operator: not_eq, value: "" }, { field: update_stage, operator: in, value: [null, ""] }], next_subagent_id: profile_update_confirm }
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
-        # Only leave once the write has been settled one way or the other.
-        # Without the update_stage gate, giving the new city satisfies
-        # trade+location and the confirmation is never asked.
+        # Only leave once the write is settled, or the confirm is skipped.
         - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }, { field: update_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
         - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }, { field: update_return_to, operator: eq, value: service_match }], next_subagent_id: service_match }
         - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }], next_subagent_id: job_match }
@@ -3423,8 +3415,7 @@ agent_workflow:
       opening_phrase: "ठीक है।"
       fixed_opening: "काम {trade|stored_trade} और शहर {location|stored_location} — प्रोफ़ाइल में अपडेट कर दूँ?"
       fixed_opening_requires: ["trade|stored_trade", "location|stored_location"]
-      # This phase is always entered on the turn the caller named the
-      # change, so the default entity gate would silence it every time.
+      # Always entered on a turn that names something; the gate would silence it.
       fixed_opening_when_told: true
       tools: [update_profile]
       pending:
@@ -3471,8 +3462,7 @@ agent_workflow:
         - intent: profile_update_confirmed
           next_subagent_id: profile_update_confirm
           session_writes: { update_stage: written }
-        # Straight out, not back here: given another turn in this phase the
-        # model says the profile was updated when nothing was written.
+        # Straight out: another turn here and the model claims a write.
         - intent: profile_update_declined
           next_subagent_id: job_match
           session_writes: { update_stage: skipped }
