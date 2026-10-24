@@ -445,6 +445,16 @@ def test_routing_rule_session_writes_scalars_ok():
     assert r.session_writes["key1"] == "string_val"
 
 
+def test_routing_rule_clear_tool_exchanges():
+    r = RoutingRule(intent="x", next_subagent_id="y", clear_tool_exchanges=["apply_job"])
+    assert r.clear_tool_exchanges == ["apply_job"]
+
+
+def test_routing_rule_clear_tool_exchanges_rejects_a_string():
+    with pytest.raises(ValidationError):
+        RoutingRule(intent="x", next_subagent_id="y", clear_tool_exchanges="apply_job")
+
+
 def test_routing_rule_session_writes_rejects_dict():
     with pytest.raises(ValidationError, match="scalar"):
         RoutingRule(

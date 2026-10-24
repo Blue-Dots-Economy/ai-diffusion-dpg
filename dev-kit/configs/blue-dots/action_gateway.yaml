@@ -609,6 +609,10 @@ tools:
           target: applications_submitted
         - source: "results[status=success].action_id"
           target: last_application_id
+        # on_error: a failed apply arrives as HTTP 422; succeeded stays off it so a later failure cannot reset it.
+        - source: "summary.failed"
+          target: apply_failed
+          on_error: true
       # Bulk envelope (Signals-DPG PR #55): { results: [ ... ], summary }.
       # apply_job sends one element, so `results` has one item; list_key
       # projects it into a single-element list the LLM reads.

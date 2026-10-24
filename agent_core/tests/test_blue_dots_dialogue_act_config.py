@@ -59,6 +59,12 @@ def test_blue_dots_config_loads():
                          "subagent_entry_count": {"profile_resolve": 1}}, "wants_services"),
     ("apply_confirm", {"applications_submitted": 0}, "submit_confirm"),
     ("apply_confirm", {"applications_submitted": 1}, "closing_offer"),
+    ("apply_confirm", {"applications_submitted": 0, "apply_failed": 1}, "more_jobs_offer"),
+    # A failed apply AFTER an earlier success. more_jobs_offer must still win:
+    # applications_submitted stays 1, so closing_offer declared first would
+    # answer the "shall I show other jobs?" question and end the call (#501).
+    ("apply_confirm", {"applications_submitted": 1, "apply_failed": 1}, "more_jobs_offer"),
+    ("job_details", {}, "submit_confirm"),
 ])
 def test_pending_resolution(step, state, expected):
     _, wf = _load()
@@ -107,10 +113,11 @@ def test_blue_dots_journey_routes_end_to_end():
         ("job_match", R("other", relation="unrelated"), {}),
         ("job_match", R("other", relation="unclear"), {}),                       # 3rd → off_track
         ("job_match", R("select", option=1), {}),
+        *[("job_details", R("ask", relation="new_topic"), {})] * 6,               # any number of questions
+        ("job_details", R("affirm", "ask"), {}),                                  # a yes with a question
+        ("job_details", R("affirm"), {}),
         ("profile_setup", R("provide_info", name="Arun"), {"profile_item_id": "p1"}),  # save_profile mapping
-        ("profile_setup", R("affirm", relation="answers_other"), {}),
-        ("apply_confirm", R("acknowledge", relation="unclear"), {}),             # thank-you before submit
-        ("apply_confirm", R("affirm"), {"applications_submitted": 1}),           # apply_job mapping
+        ("profile_setup", R("affirm", relation="answers_other"), {"applications_submitted": 1}),  # apply_job
         ("apply_confirm", R("acknowledge"), {}),
     ]
     cfg, wf = _load()
@@ -129,11 +136,13 @@ def test_blue_dots_journey_routes_end_to_end():
         state.update(tool_effects)
         trail.append((u.nlu_result.intent, nxt))
         sid = nxt
-    intents = [i for i, _ in trail]
     assert trail[6] == ("off_track", "job_match")
-    assert intents[7] == "job_pick" and state["selected_job_item_id"] == "j1"
-    assert trail[10] == ("any_input", "apply_confirm")        # no apply, no hang-up on a thank-you
-    assert intents[11] == "apply_now"
+    assert trail[7] == ("job_pick", "job_details")
+    assert state["selected_job_item_id"] == "j1"
+    assert trail[8:14].count(("any_input", "job_details")) == 6
+    assert trail[14] == ("job_question", "job_details")
+    assert trail[15] == ("apply_now", "profile_setup")
+    assert trail[17] == ("any_input", "apply_confirm")
     assert sid == "ended"
     assert (state["trade"], state["location"], state["name"], state["consent_response"]) == (
         "Welder", "Bengaluru", "Arun", "granted")
@@ -562,3 +571,68 @@ def test_shipped_identity_is_rendered_into_the_prompt():
 def test_handoff_system_prompt_does_not_ask_to_end_the_call():
     _, wf = _load(True)
     assert "ख़त्म करूँ" not in wf.subagents["handoff"].system_prompt
+
+
+@pytest.mark.parametrize("acts, expected", [
+    (("affirm", "request_change"), ("explore_more", "job_match")),
+    (("affirm",), ("explore_more", "job_match")),
+    (("deny",), ("termination_blocked", "confirm_close")),
+])
+def test_answer_to_other_jobs_after_a_failed_apply(acts, expected):
+    from src.understanding.models import DialogueActResult
+    from tests.test_stream_turn import _make_agent_core
+
+    state = {"profile_item_id": "p1", "applications_submitted": 0, "apply_failed": 1,
+             "subagent_entry_count": {"apply_confirm": 5}}
+    u = _understand_once("apply_confirm", state, DialogueActResult(acts=acts, relation="answers_pending"))
+    _, wf = _load()
+    nxt, rule = _make_agent_core(workflow=wf)._resolve_next_subagent(
+        current_subagent=wf.subagents["apply_confirm"], nlu_result=u.nlu_result, session=state)
+    actual = (u.nlu_result.intent, nxt)
+    assert actual == expected
+    if nxt == "job_match":
+        assert rule.session_writes == {"apply_failed": 0, "selected_job_item_id": ""}
+
+
+def test_yes_in_job_details_with_a_profile_goes_to_apply_confirm():
+    from src.understanding.models import DialogueActResult
+    from tests.test_stream_turn import _make_agent_core
+
+    state = {"profile_item_id": "p1", "applications_submitted": 0}
+    u = _understand_once("job_details", state, DialogueActResult(acts=("affirm",), relation="answers_pending"))
+    _, wf = _load()
+    nxt, _ = _make_agent_core(workflow=wf)._resolve_next_subagent(
+        current_subagent=wf.subagents["job_details"], nlu_result=u.nlu_result, session=state)
+    assert (u.nlu_result.intent, nxt) == ("apply_now", "apply_confirm")
+
+
+def test_leaving_a_job_in_job_details_clears_the_failed_apply():
+    """A stale apply_failed would offer "other jobs?" on arrival at the next apply."""
+    _, wf = _load()
+    rules = {r.intent: r for r in wf.subagents["job_details"].routing}
+    for intent in ("job_pick", "explore_more", "decline"):
+        assert rules[intent].session_writes.get("apply_failed") == 0, intent
+
+
+def test_clear_tool_exchanges_must_name_a_connector():
+    cfg = load_merged_config(BLUE_DOTS)
+    sub = next(s for s in cfg["agent_workflow"]["subagents"] if s["id"] == "job_details")
+    rule = next(r for r in sub["routing"] if r["intent"] == "job_pick")
+    rule["clear_tool_exchanges"] = ["apply_jobs"]
+    with pytest.raises(ValueError, match="unknown tools"):
+        MergedConfig.validate_full(cfg)
+
+
+@pytest.mark.parametrize("selected, expected", [("", "job_match"), ("j1", "apply_confirm")])
+def test_yes_in_job_match_applies_only_with_a_selected_job(selected, expected):
+    from src.understanding.models import DialogueActResult
+    from tests.test_stream_turn import _make_agent_core
+
+    state = {"profile_item_id": "p1", "selected_job_item_id": selected, "applications_submitted": 0,
+             "current_question": "इनमें से किसके लिए आवेदन करना चाहेंगे?"}
+    u = _understand_once("job_match", state, DialogueActResult(acts=("affirm",), relation="answers_pending"))
+    _, wf = _load()
+    nxt, _ = _make_agent_core(workflow=wf)._resolve_next_subagent(
+        current_subagent=wf.subagents["job_match"], nlu_result=u.nlu_result, session=state)
+    assert u.nlu_result.intent == "apply_now"
+    assert nxt == expected

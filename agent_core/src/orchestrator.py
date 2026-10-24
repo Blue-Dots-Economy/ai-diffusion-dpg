@@ -1793,6 +1793,11 @@ class AgentCore(AgentCoreBase):
             for field_name, field_val in matched_rule.session_writes.items():
                 self._write_memory_sync(session_id, user_id, "session", field_name, field_val)
                 bundle.session[field_name] = field_val
+        if matched_rule and matched_rule.clear_tool_exchanges:
+            kept = self._drop_tool_exchanges(bundle.session.get("recent_tool_exchanges"),
+                                             matched_rule.clear_tool_exchanges)
+            self._write_memory_sync(session_id, user_id, "session", "recent_tool_exchanges", kept)
+            bundle.session["recent_tool_exchanges"] = kept
 
         # Increment subagent_entry_count for the destination subagent.
         raw_counts = bundle.session.get("subagent_entry_count")
@@ -2888,15 +2893,7 @@ class AgentCore(AgentCoreBase):
         for ex in exchanges:
             if not isinstance(ex, dict):
                 continue
-            uses = ex.get("tool_uses") or []
-            results = ex.get("tool_results") or []
-            if skip_tools:
-                names = {u.get("id", ""): u.get("name", "") for u in uses if isinstance(u, dict)}
-                uses = [u for u in uses if not (isinstance(u, dict) and u.get("name") in skip_tools)]
-                results = [
-                    r for r in results
-                    if not (isinstance(r, dict) and names.get(r.get("tool_use_id", "")) in skip_tools)
-                ]
+            uses, results = AgentCore._exchange_without(ex, skip_tools)
             if not uses or not results:
                 continue
             use_blocks: list[ToolUseBlock] = []
@@ -2928,6 +2925,33 @@ class AgentCore(AgentCoreBase):
             out.append(Message(role="assistant", content=use_blocks))
             out.append(Message(role="user", content=result_blocks))
         return out
+
+    @staticmethod
+    def _exchange_without(ex: dict, tools: frozenset | set) -> tuple[list, list]:
+        """Return an exchange's tool uses and results with ``tools`` dropped pairwise."""
+        uses = ex.get("tool_uses") or []
+        results = ex.get("tool_results") or []
+        if not tools:
+            return uses, results
+        names = {u.get("id", ""): u.get("name", "") for u in uses if isinstance(u, dict)}
+        uses = [u for u in uses if not (isinstance(u, dict) and u.get("name") in tools)]
+        results = [
+            r for r in results
+            if not (isinstance(r, dict) and names.get(r.get("tool_use_id", "")) in tools)
+        ]
+        return uses, results
+
+    @staticmethod
+    def _drop_tool_exchanges(exchanges, tools: list[str]) -> list[dict]:
+        """Return the stored exchanges with every use and result of ``tools`` removed."""
+        kept = []
+        for ex in exchanges if isinstance(exchanges, list) else []:
+            if not isinstance(ex, dict):
+                continue
+            uses, results = AgentCore._exchange_without(ex, set(tools))
+            if uses and results:
+                kept.append({**ex, "tool_uses": uses, "tool_results": results})
+        return kept
 
     @staticmethod
     def _truncate_tool_result_content(content: str, max_chars: int) -> str:
@@ -5144,6 +5168,13 @@ class AgentCore(AgentCoreBase):
                         )
                     )
                     bundle.session[field_name] = field_val
+            if matched_rule and matched_rule.clear_tool_exchanges:
+                kept = self._drop_tool_exchanges(bundle.session.get("recent_tool_exchanges"),
+                                                 matched_rule.clear_tool_exchanges)
+                routing_writes.append(
+                    self._async_memory.write(session_id, user_id, "session", "recent_tool_exchanges", kept)
+                )
+                bundle.session["recent_tool_exchanges"] = kept
 
             raw_counts = bundle.session.get("subagent_entry_count")
             subagent_entry_count = dict(raw_counts) if isinstance(raw_counts, dict) else {}
