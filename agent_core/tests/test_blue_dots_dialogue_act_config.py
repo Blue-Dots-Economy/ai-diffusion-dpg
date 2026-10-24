@@ -43,6 +43,20 @@ def test_blue_dots_config_loads():
     ("profile_resolve", {"profile_item_id": "p1", "subagent_entry_count": {"profile_resolve": 2}}, "trade"),
     ("profile_resolve", {"profile_item_id": "", "subagent_entry_count": {"profile_resolve": 1}}, "trade"),
     ("job_match", {}, "select_job"),
+    # The questions job_match can be waiting on. Declaration order decides,
+    # so a needle shared by two of these silently kills the later one.
+    ("job_match", {"current_question": "मुज़फ़्फ़रनगर में एक है, बताऊँ?"}, "offer_other_city"),
+    ("job_match", {"current_question": "बेंगलुरु में कुछ हैं, बताऊं?"}, "offer_other_city"),
+    ("job_match", {"current_question": "क्या मैं पास के किसी शहर में देखूँ, किसी और ट्रेड में, "
+                                       "या आपको ट्रेनिंग जैसी कोई मदद चाहिए?"}, "jobs_or_services"),
+    ("job_match", {"current_question": "क्या मैं बेंगलुरु में देखूँ, या किसी और ट्रेड में, "
+                                       "या ट्रेनिंग जैसी मदद चाहिए?"}, "jobs_or_services"),
+    ("job_match", {"current_question": "आप किस शहर में देखूँ?"}, "select_job"),
+    ("job_match", {"current_question": "इनमें से किसके बारे में और जानना चाहेंगे?"}, "select_job"),
+    ("profile_resolve", {"current_question": "जॉब्स के अलावा हमारे पास कुछ और मदद भी है — "
+                                             "इनमें से कुछ आपके काम आ सकता है?",
+                         "profile_item_id": "p1",
+                         "subagent_entry_count": {"profile_resolve": 1}}, "wants_services"),
     ("apply_confirm", {"applications_submitted": 0}, "submit_confirm"),
     ("apply_confirm", {"applications_submitted": 1}, "closing_offer"),
 ])
