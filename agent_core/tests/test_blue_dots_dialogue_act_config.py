@@ -60,6 +60,10 @@ def test_blue_dots_config_loads():
     ("apply_confirm", {"applications_submitted": 0}, "submit_confirm"),
     ("apply_confirm", {"applications_submitted": 1}, "closing_offer"),
     ("apply_confirm", {"applications_submitted": 0, "apply_failed": 1}, "more_jobs_offer"),
+    # A failed apply AFTER an earlier success. more_jobs_offer must still win:
+    # applications_submitted stays 1, so closing_offer declared first would
+    # answer the "shall I show other jobs?" question and end the call (#501).
+    ("apply_confirm", {"applications_submitted": 1, "apply_failed": 1}, "more_jobs_offer"),
     ("job_details", {}, "submit_confirm"),
 ])
 def test_pending_resolution(step, state, expected):

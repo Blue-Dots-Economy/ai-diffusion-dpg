@@ -2797,6 +2797,11 @@ agent_workflow:
         # and never applies — apply_confirm submits on entry, irreversibly.
         # Both ँ and ं spellings occur in replies; the list covered all 30 apply
         # questions job_match asked across the M2/M3/D-fix voice-bench runs.
+        # A BACKSTOP, not a live path: #522 stopped job_match closing a list with
+        # "किसके लिए आवेदन करना चाहेंगे?", so this phase no longer asks any of
+        # these. Kept — with the apply_now rules below — in case a prompt edit
+        # reintroduces an apply question here; without them a bare "हाँ" would
+        # fall to the catch-all. Delete both together or neither.
         - id: submit_confirm
           when: [{ field: current_question, operator: contains, value: ["आवेदन भेज दूँ", "आवेदन कर दूँ", "आवेदन करूँ", "आवेदन भेजूँ", "अप्लाई कर दूँ", "अप्लाई करूँ",
                                                                      "आवेदन भेज दूं", "आवेदन कर दूं", "आवेदन करूं", "आवेदन भेजूं", "अप्लाई कर दूं", "अप्लाई करूं",
@@ -3656,14 +3661,20 @@ agent_workflow:
         - id: wants_services
           when: [{ field: current_question, operator: contains, value: ["जॉब्स के अलावा"] }]
           expects: "ट्रेनिंग या कोई और मदद चाहिए? हाँ/नहीं"
-        - id: closing_offer
-          expects: "और कुछ मदद चाहिए? / कॉल खत्म"
-          when: [{ field: applications_submitted, operator: gt, value: 0 }]
+        # ABOVE closing_offer, not below. applications_submitted stays 1 after a
+        # success, so a LATER failed apply would otherwise resolve to
+        # closing_offer and the caller's "हाँ" to "shall I show other jobs?"
+        # would end the call — issue #501 again, one application in.
+        # apply_failed is only ever 1 when the last apply failed: the success
+        # path writes summary.failed -> 0 through the same session_mapping.
         - id: more_jobs_offer
           expects: "दूसरी जॉब्स बताऊँ? हाँ/नहीं, या कोई job चुनना"
           when: [{ field: apply_failed, operator: gt, value: 0 }]
           options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
           resolves_to: selected_job_item_id
+        - id: closing_offer
+          expects: "और कुछ मदद चाहिए? / कॉल खत्म"
+          when: [{ field: applications_submitted, operator: gt, value: 0 }]
         - id: submit_confirm
           expects: "आवेदन भेजूँ? हाँ/नहीं, या दूसरी job चुनना"
           # A re-pick ("नहीं, दूसरा वाला") resolves against the same offered list.
