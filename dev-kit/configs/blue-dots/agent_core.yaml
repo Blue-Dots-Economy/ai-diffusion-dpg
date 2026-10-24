@@ -2948,15 +2948,16 @@ agent_workflow:
           next_subagent_id: profile_setup
         - intent: job_pick
           next_subagent_id: job_details
+          session_writes: { apply_failed: 0 }
           clear_tool_exchanges: [apply_job]
         - intent: job_question
           next_subagent_id: job_details
         - intent: explore_more
           next_subagent_id: job_match
-          session_writes: { selected_job_item_id: "" }
+          session_writes: { apply_failed: 0, selected_job_item_id: "" }
         - intent: decline
           next_subagent_id: job_match
-          session_writes: { selected_job_item_id: "" }
+          session_writes: { apply_failed: 0, selected_job_item_id: "" }
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
@@ -3016,11 +3017,12 @@ agent_workflow:
 
         ## A question from the caller does not postpone the save
 
-        You arrive here on the turn the caller picks a job, and the job list
-        ends with "किसी एक के बारे में और जानना चाहेंगे?" — so their pick is
-        often ALSO a request for detail. Answer it, briefly, from the job list
-        you already hold. Then still do this phase's job in the SAME turn: if
-        you have the name, call save_profile now; if you do not, ask for it.
+        You arrive here on the turn the caller COMMITS — a yes to sending the
+        application, or a pick on the services path — so that turn often
+        carries something else with it: a question, a correction, a detail.
+        Answer it, briefly, from what you already hold. Then still do this
+        phase's job in the SAME turn: if you have the name, call save_profile
+        now; if you do not, ask for it.
 
         Measured end to end on the VM: the detail answer was given, the turn
         ended by offering to apply, save_profile was never called, the next

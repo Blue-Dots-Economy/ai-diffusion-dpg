@@ -151,7 +151,7 @@ It is one sentence at the end of the answer, not a separate turn, and the caller
 | --- | --- | --- |
 | Pending | `submit_confirm`, with no `when`, so it is always open here, with `options_from: fetch_jobs` | "yes" had no question to answer |
 | Job data | The `fetch_jobs` result, already in `<known_facts>` for every step (session cache, 30 min TTL) | No tools, empty replies |
-| Tools | None of its own. `end_session` is added to every step by the orchestrator | Applying can only happen through routing, never from this step |
+| Tools | **None at all.** `session_end_eval.subagents` allowlists `end_session` to the closing phases only, so this step gets no tool. A goodbye still ends the call: `termination_intent` routes to `ended` from any phase | Applying can only happen through routing, never from this step |
 | `opening_phrase` | A short neutral bridge, like `job_match`'s "ठीक है।" ("Okay.") | Empty opening phrase |
 | Turn counter | None. The caller can ask any number of questions; nothing here ends or moves on by count | Routed away on turn count |
 
@@ -179,7 +179,7 @@ Routing in `job_details`, in order. Every exit is driven by the caller's intent,
 
 #### 7. `job_match` and `apply_confirm` changes
 
-- `job_match`: `job_pick` goes to `job_details`, whether or not a profile exists. `apply_now` from `job_match` ("apply to the second one") keeps going straight to `apply_confirm` / `profile_setup`. The caller has already said what they want, so they don't go through `job_details`.
+- `job_match`: `job_pick` goes to `job_details`, whether or not a profile exists. The `apply_now` rules stay for a turn that answers an apply question asked here, and gain a guard — a yes with `selected_job_item_id` empty stays in `job_match` so the caller is asked which job. Note that after #522 `job_match` no longer closes a list with "किसके लिए आवेदन करना चाहेंगे?", so its `submit_confirm` pending no longer resolves and those rules are a backstop rather than a live path.
 - `apply_confirm` is now entered only after a yes. Its prompt drops the "if the caller reached you by naming a job, ASK FIRST" branch: on arrival it calls `apply_job` in the same turn, without asking again. Routing runs first, then `apply_confirm`'s prompt and its `apply_job` call, all in the turn where the caller said yes.
 - `apply_confirm`: `job_pick` (a re-pick after a failed apply) goes to `job_details` instead of staying, and its re-pick prompt section goes. Add `apply_now → apply_confirm` ahead of the catch-alls.
 - The turn counter in `apply_confirm` stays. Questions no longer count against it, because they are asked in `job_details`.
@@ -196,7 +196,7 @@ Each one is a scripted voice-bench run, with the step and intent checked in the 
 | pick → "yes, but what is the salary?" | stays in `job_details`, answers, nothing applied |
 | pick → "no" | back to `job_match` |
 | pick → another job → "yes" | applies to the second job only |
-| "apply to the second one" from the list | straight to `apply_confirm`, applies |
+| "apply to the second one" from the list | `job_pick` -> `job_details`: naming a job is a pick, not a confirmation, so the job is described and the apply question asked once. One turn more than applying straight away, and the only reading that cannot send an application the caller did not confirm |
 | new caller: pick → "yes" | `profile_setup` asks the name → `apply_confirm` applies |
 | already-applied job → "yes, other jobs" | `job_match` (case 1) |
 | any step → goodbye | ends as today |

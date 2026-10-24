@@ -606,6 +606,14 @@ def test_yes_in_job_details_with_a_profile_goes_to_apply_confirm():
     assert (u.nlu_result.intent, nxt) == ("apply_now", "apply_confirm")
 
 
+def test_leaving_a_job_in_job_details_clears_the_failed_apply():
+    """A stale apply_failed would offer "other jobs?" on arrival at the next apply."""
+    _, wf = _load()
+    rules = {r.intent: r for r in wf.subagents["job_details"].routing}
+    for intent in ("job_pick", "explore_more", "decline"):
+        assert rules[intent].session_writes.get("apply_failed") == 0, intent
+
+
 def test_clear_tool_exchanges_must_name_a_connector():
     cfg = load_merged_config(BLUE_DOTS)
     sub = next(s for s in cfg["agent_workflow"]["subagents"] if s["id"] == "job_details")
