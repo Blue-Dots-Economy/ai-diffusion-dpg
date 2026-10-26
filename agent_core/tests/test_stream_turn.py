@@ -1462,6 +1462,25 @@ class TestRecentToolExchangesHelpers:
         assert len(msgs) == 2                                  # second exchange dropped entirely
         assert [b.tool_use_id for b in msgs[1].content] == ["b"]
 
+    def test_drop_tool_exchanges_removes_only_the_listed_tools(self):
+        agent = _make_agent_core()
+        ex = [{"tool_uses": [{"type": "tool_use", "id": "a", "name": "apply_job", "input": {}},
+                             {"type": "tool_use", "id": "b", "name": "fetch_jobs", "input": {}}],
+               "tool_results": [{"type": "tool_result", "tool_use_id": "a", "content": "422"},
+                                {"type": "tool_result", "tool_use_id": "b", "content": "J"}],
+               "delivered": True},
+              {"tool_uses": [{"type": "tool_use", "id": "c", "name": "apply_job", "input": {}}],
+               "tool_results": [{"type": "tool_result", "tool_use_id": "c", "content": "422"}]}]
+        kept = agent._drop_tool_exchanges(ex, ["apply_job"])
+        assert len(kept) == 1
+        assert [u["id"] for u in kept[0]["tool_uses"]] == ["b"]
+        assert [r["tool_use_id"] for r in kept[0]["tool_results"]] == ["b"]
+        assert kept[0]["delivered"] is True
+
+    @pytest.mark.parametrize("stored", [None, "x", [], [None, {}]])
+    def test_drop_tool_exchanges_tolerates_missing_or_malformed_state(self, stored):
+        assert _make_agent_core()._drop_tool_exchanges(stored, ["apply_job"]) == []
+
     def test_truncate_tool_result_content(self):
         agent = _make_agent_core()
         assert agent._truncate_tool_result_content("hello", 0) == "hello"

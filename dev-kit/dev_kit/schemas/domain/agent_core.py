@@ -727,6 +727,7 @@ class RoutingRule(BaseModel):
     next_subagent_id: str = Field(..., min_length=1)
     conditions: list[RoutingCondition] = Field(default_factory=list)
     session_writes: dict[str, Any] = Field(default_factory=dict)
+    clear_tool_exchanges: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def session_writes_must_be_scalars(self) -> "RoutingRule":

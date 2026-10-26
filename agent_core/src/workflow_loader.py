@@ -69,6 +69,8 @@ class RoutingRule:
         session_writes:   Optional dict of session field/value pairs written to session when
                           this rule fires. Allows domain.yaml routing rules to update session
                           state without any domain-specific logic in orchestrator code.
+        clear_tool_exchanges: Tool names whose stored exchanges are dropped when this rule
+                          fires, so the model no longer sees their earlier results.
     """
 
     intent: str
@@ -76,6 +78,7 @@ class RoutingRule:
     condition: RoutingCondition | None = None
     conditions: list[RoutingCondition] = field(default_factory=list)
     session_writes: dict[str, Any] = field(default_factory=dict)
+    clear_tool_exchanges: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -477,6 +480,7 @@ class AgentWorkflowLoader:
             condition=condition,
             conditions=conditions,
             session_writes=session_writes,
+            clear_tool_exchanges=[str(t) for t in raw.get("clear_tool_exchanges") or []],
         )
 
     def _parse_subagent(self, raw: dict) -> SubAgent:
