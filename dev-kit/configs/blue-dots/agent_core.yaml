@@ -3364,12 +3364,6 @@ agent_workflow:
         - intent: "*"
           next_subagent_id: profile_setup
 
-    # ─────────────────────────────────────────────────────────────
-    # 6. apply_confirm — final apply + confirmation.
-    # ─────────────────────────────────────────────────────────────
-    # ─────────────────────────────────────────────────────────────
-    # 4b. profile_update — change the stored trade or city, on request.
-    # ─────────────────────────────────────────────────────────────
     - id: profile_update
       name: Profile Update
       description: >
@@ -3482,9 +3476,6 @@ agent_workflow:
         - intent: "*"
           next_subagent_id: profile_update
 
-    # ─────────────────────────────────────────────────────────────
-    # 4c. profile_update_confirm — asks to save, then writes.
-    # ─────────────────────────────────────────────────────────────
     - id: profile_update_confirm
       name: Profile Update Confirm
       description: >
@@ -3553,6 +3544,9 @@ agent_workflow:
         - intent: "*"
           next_subagent_id: profile_update_confirm
 
+    # ─────────────────────────────────────────────────────────────
+    # 6. apply_confirm — final apply + confirmation.
+    # ─────────────────────────────────────────────────────────────
     - id: apply_confirm
       name: Apply & Confirm
       description: >
