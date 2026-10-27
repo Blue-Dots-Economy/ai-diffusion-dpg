@@ -112,6 +112,12 @@ tools:
           target: user_terms
         - source: "compliance[key=user_privacy].value"
           target: user_privacy
+        # Item-level, so it is reported per item and never in `compliance`.
+        - source: "items[lifecycle_status=live].profile_consent_accepted"
+          target: profile_consent
+        - source: "error"
+          target: fetch_error
+          on_error: true
         - source: "items[lifecycle_status=live].item_id"
           target: profile_item_id
         - source: "user_id"
