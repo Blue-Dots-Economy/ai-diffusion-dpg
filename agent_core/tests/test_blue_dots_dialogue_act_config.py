@@ -31,13 +31,11 @@ def test_blue_dots_config_loads():
 
 
 @pytest.mark.parametrize("step, state, expected", [
-    ("opening", {}, "consent"),
-    ("opening", {"consent_response": "granted"}, "age"),
-    ("opening", {"consent_given": True, "has_age": True}, None),
+    ("opening", {}, None),
+    ("consent", {"current_question": "आपकी जानकारी सेव करने की अनुमति चाहिए। ठीक है?"}, "consent"),
     # Live shape: Memory Layer seeds int age and has returned it as "0".
-    ("opening", {"opening_phrase_emitted": True, "consent_response": "granted", "consent_given": True,
-                 "has_age": "false", "age": "0"}, "age"),
-    ("opening", {"consent_response": "granted", "consent_given": True, "age": 0}, "age"),
+    ("consent", {"current_question": "आपकी उम्र क्या है?", "has_age": "false", "age": "0"}, "age"),
+    ("consent", {"current_question": "आपकी उम्र क्या है?", "has_age": True}, None),
     ("profile_resolve", {"profile_item_id": "p1", "subagent_entry_count": {"profile_resolve": 1}},
      "use_saved_details"),
     ("profile_resolve", {"profile_item_id": "p1", "subagent_entry_count": {"profile_resolve": 2}}, "trade"),
@@ -105,8 +103,7 @@ def test_blue_dots_journey_routes_end_to_end():
             {"item_id": "j2", "role": "Welder", "company": "Titan"}]
     # (subagent the turn starts in, scripted NLU result, tool effects landing after routing)
     script = [
-        ("opening", R("affirm", consent_response="granted"), {}),
-        ("opening", R("provide_info", age=25), {}),
+        ("opening", R("other", relation="unrelated"), {}),
         ("profile_resolve", R("provide_info", trade="welder"), {}),
         ("profile_resolve", R("provide_info", location="bengaluru"), {}),
         ("job_match", R("other", relation="unrelated"), {}),
@@ -115,7 +112,10 @@ def test_blue_dots_journey_routes_end_to_end():
         ("job_match", R("select", option=1), {}),
         *[("job_details", R("ask", relation="new_topic"), {})] * 6,               # any number of questions
         ("job_details", R("affirm", "ask"), {}),                                  # a yes with a question
-        ("job_details", R("affirm"), {}),
+        ("job_details", R("affirm"), {"current_question": "सेव करने की अनुमति चाहिए?"}),
+        # No profile and nothing on file: the write needs permission first.
+        ("consent", R("affirm", consent_response="granted"), {"current_question": "आपकी उम्र क्या है?"}),
+        ("consent", R("provide_info", age=25), {}),
         ("profile_setup", R("provide_info", name="Arun"), {"profile_item_id": "p1"}),  # save_profile mapping
         ("profile_setup", R("affirm", relation="answers_other"), {"applications_submitted": 1}),  # apply_job
         ("apply_confirm", R("acknowledge"), {}),
@@ -136,16 +136,19 @@ def test_blue_dots_journey_routes_end_to_end():
         state.update(tool_effects)
         trail.append((u.nlu_result.intent, nxt))
         sid = nxt
-    assert trail[6] == ("off_track", "job_match")
-    assert trail[7] == ("job_pick", "job_details")
+    assert trail[5] == ("off_track", "job_match")
+    assert trail[6] == ("job_pick", "job_details")
     assert state["selected_job_item_id"] == "j1"
-    assert trail[8:14].count(("any_input", "job_details")) == 6
-    assert trail[14] == ("job_question", "job_details")
-    assert trail[15] == ("apply_now", "profile_setup")
-    assert trail[17] == ("any_input", "apply_confirm")
+    assert trail[7:13].count(("any_input", "job_details")) == 6
+    assert trail[13] == ("job_question", "job_details")
+    assert trail[14] == ("apply_now", "consent")
+    assert trail[16] == ("any_input", "profile_setup")
+    assert trail[18] == ("any_input", "apply_confirm")
     assert sid == "ended"
-    assert (state["trade"], state["location"], state["name"], state["consent_response"]) == (
-        "Welder", "Bengaluru", "Arun", "granted")
+    assert (state["trade"], state["location"], state["name"]) == ("Welder", "Bengaluru", "Arun")
+    # consent_response is cleared once recorded; the durable flags are what the write sends.
+    assert (state["user_terms"], state["user_privacy"], state["profile_consent"]) == (
+        True, True, True)
 
 
 
@@ -166,7 +169,7 @@ def _understand_once(step, state, result, handoff=False):
 def test_age_given_with_consent_is_accepted():
     """F4: 'हाँ, मेरी उम्र 25 है' while consent is pending keeps both slots."""
     from src.understanding.models import DialogueActResult
-    u = _understand_once("opening", {}, DialogueActResult(
+    u = _understand_once("consent", {"current_question": "सेव करने की अनुमति चाहिए?"}, DialogueActResult(
         acts=("affirm", "provide_info"), relation="answers_pending",
         slots={"consent_response": "granted", "age": 25}))
     assert u.pending_id == "consent"
@@ -420,9 +423,18 @@ def test_job_match_apply_question_pends_submit_confirm(question):
     assert PendingResolver(wf).resolve("job_match", {**_JOB_CALL, "current_question": question}).id == "submit_confirm"
 
 
-@pytest.mark.parametrize("profile, expected_next", [("p1", "apply_confirm"), ("", "profile_setup")])
-def test_yes_to_job_match_apply_question_applies(profile, expected_next):
-    state = {**_JOB_CALL, "profile_item_id": profile, "current_question": _JOB_APPLY_Q[0]}
+_CONSENTED = {"user_terms": True, "user_privacy": True, "profile_consent": True, "has_age": True}
+
+
+@pytest.mark.parametrize("profile, consent, expected_next", [
+    ("p1", {}, "apply_confirm"),
+    ("", _CONSENTED, "profile_setup"),
+    # No profile and nothing on file: the write needs consent first.
+    ("", {}, "consent"),
+])
+def test_yes_to_job_match_apply_question_applies(profile, consent, expected_next):
+    state = {**_JOB_CALL, **consent, "profile_item_id": profile,
+             "current_question": _JOB_APPLY_Q[0]}
     u = _understand_once("job_match", state, _act("affirm"))
     assert u.pending_id == "submit_confirm"
     intent, nxt, _, _ = _route("job_match", state, _act("affirm"))

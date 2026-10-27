@@ -177,7 +177,7 @@ def _profile_setup_entries(wf):
             yield sid, i, sub.routing
 
 
-_CONSENT_FLAGS = {"user_terms", "user_privacy", "profile_consent", "has_age"}
+_CONSENT_FLAGS = {"user_terms", "user_privacy", "profile_consent"}
 
 
 def test_every_entry_into_profile_setup_requires_every_consent_flag():
@@ -186,8 +186,11 @@ def test_every_entry_into_profile_setup_requires_every_consent_flag():
     assert {sid for sid, _, _ in seen} == {
         "job_match", "job_details", "apply_confirm", "service_match", "consent"}
     for sid, i, routing in seen:
-        missing = _CONSENT_FLAGS - {c.field for c in routing[i].conditions}
+        fields = {c.field for c in routing[i].conditions}
+        missing = _CONSENT_FLAGS - fields
         assert not missing, f"{sid} rule {i} enters profile_setup without checking {missing}"
+        # An age on file or one the caller just stated; either satisfies the upstream.
+        assert fields & {"has_age", "age"}, f"{sid} rule {i} enters profile_setup unaged"
 
 
 def test_every_subagent_that_enters_profile_setup_can_also_reach_consent():
@@ -263,3 +266,24 @@ def test_the_second_refusal_ends_the_call():
 
 def test_declines_are_counted_separately_from_visits():
     assert ML["state"]["session"]["schema"]["consent_declines"] == {"type": "int", "default": 0}
+
+
+def test_the_opening_asks_nothing_about_consent_or_age():
+    _, wf = _load()
+    assert [p.id for p in wf.subagents["opening"].pending] == []
+
+
+def test_the_opening_routes_a_caller_onward_without_consent():
+    assert _route("opening", {"profile_item_id": "p1"})[0] == "profile_resolve"
+
+
+def test_a_volunteered_consent_before_any_question_is_not_recorded():
+    _, wf = _load()
+    assert PendingResolver(wf).resolve("opening", {"current_question": ""}) is None
+
+
+def test_an_age_the_caller_states_is_enough_to_leave_consent():
+    """has_age only ever comes from the upstream fetch; a spoken age must also satisfy the gate."""
+    state = {"user_terms": True, "user_privacy": True, "profile_consent": True,
+             "age": 25, "consent_return_to": "profile_setup"}
+    assert _route("consent", state)[0] == "profile_setup"
