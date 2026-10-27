@@ -2215,6 +2215,17 @@ agent_workflow:
           next_subagent_id: consent
         - intent: termination_intent
           next_subagent_id: ended
+        - intent: "*"
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
+            - { field: consent_return_to, operator: eq, value: profile_setup }
+          next_subagent_id: profile_setup
+          session_writes: { consent_return_to: "" }
+        - intent: "*"
+          next_subagent_id: consent
 
     # ─────────────────────────────────────────────────────────────
     # 1b. consent_declined — terminal. No consent, no journey.
@@ -2944,8 +2955,16 @@ agent_workflow:
           next_subagent_id: apply_confirm
           session_writes: { apply_failed: 0 }
         - intent: apply_now
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_setup
           session_writes: { apply_failed: 0 }
+        - intent: apply_now
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_setup, apply_failed: 0 }
         - intent: "*"
           next_subagent_id: job_match
     - id: job_details
@@ -3014,7 +3033,15 @@ agent_workflow:
               value: ""
           next_subagent_id: apply_confirm
         - intent: apply_now
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_setup
+        - intent: apply_now
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_setup }
         - intent: job_pick
           next_subagent_id: job_details
           session_writes: { apply_failed: 0 }
@@ -3783,10 +3810,17 @@ agent_workflow:
         # applied. profile_setup saves and routes straight back.
         - intent: "*"
           conditions:
-            - field: profile_item_id
-              operator: eq
-              value: ""
+            - { field: profile_item_id, operator: eq, value: "" }
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_setup
+        - intent: "*"
+          conditions:
+            - { field: profile_item_id, operator: eq, value: "" }
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_setup }
         - intent: jobs_declined
           next_subagent_id: apply_confirm
         - intent: services_declined
@@ -3984,7 +4018,15 @@ agent_workflow:
               value: ""
           next_subagent_id: connect_confirm
         - intent: service_pick
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_setup
+        - intent: service_pick
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_setup }
         - intent: "*"
           next_subagent_id: service_match
 

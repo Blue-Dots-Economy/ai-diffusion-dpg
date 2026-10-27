@@ -158,3 +158,81 @@ def test_age_is_not_asked_when_it_arrived_with_the_consent():
     state = {"current_question": _ASKED_CONSENT, "consent_response": "granted",
              "has_age": "false", "age": 25}
     assert PendingResolver(wf).resolve("consent", state).id == "consent"
+
+
+def _profile_setup_entries(wf):
+    """Rules that ENTER profile_setup from elsewhere.
+
+    Self-routes and `close_return_to` returns are re-entries: the caller only
+    reaches those having already passed the gate, so they are not entry points.
+    """
+    for sid, sub in wf.subagents.items():
+        if sid == "profile_setup":
+            continue
+        for i, rule in enumerate(sub.routing):
+            if rule.next_subagent_id != "profile_setup":
+                continue
+            if any(c.field == "close_return_to" for c in rule.conditions):
+                continue
+            yield sid, i, sub.routing
+
+
+_CONSENT_FLAGS = {"user_terms", "user_privacy", "profile_consent", "has_age"}
+
+
+def test_every_entry_into_profile_setup_requires_every_consent_flag():
+    _, wf = _load()
+    seen = list(_profile_setup_entries(wf))
+    assert {sid for sid, _, _ in seen} == {
+        "job_match", "job_details", "apply_confirm", "service_match", "consent"}
+    for sid, i, routing in seen:
+        missing = _CONSENT_FLAGS - {c.field for c in routing[i].conditions}
+        assert not missing, f"{sid} rule {i} enters profile_setup without checking {missing}"
+
+
+def test_every_subagent_that_enters_profile_setup_can_also_reach_consent():
+    _, wf = _load()
+    for sid, _, routing in _profile_setup_entries(wf):
+        targets = [r.next_subagent_id for r in routing]
+        assert "consent" in targets, f"{sid} can enter profile_setup but never consent"
+
+
+import pytest  # noqa: E402
+
+from src.models import NLUResult  # noqa: E402
+from tests.test_stream_turn import _make_agent_core  # noqa: E402
+
+# profile_item_id "" is the create path; absent would read as not_eq "" and route to apply.
+_ALL_GIVEN = {"user_terms": True, "user_privacy": True, "profile_consent": True,
+              "has_age": True, "profile_item_id": ""}
+
+
+def _route(sid, state, intent="*"):
+    _, wf = _load()
+    return _make_agent_core(workflow=wf)._resolve_next_subagent(
+        current_subagent=wf.subagents[sid],
+        nlu_result=NLUResult(intent=intent, entities={}, confidence=1.0),
+        session=state)
+
+
+@pytest.mark.parametrize("missing", ["user_terms", "user_privacy", "profile_consent", "has_age"])
+def test_a_missing_flag_diverts_to_consent(missing):
+    state = {**_ALL_GIVEN, missing: False}
+    nxt, rule = _route("job_match", state, intent="apply_now")
+    assert nxt == "consent"
+    assert rule.session_writes["consent_return_to"] == "profile_setup"
+
+
+def test_every_flag_given_reaches_profile_setup_directly():
+    assert _route("job_match", dict(_ALL_GIVEN), intent="apply_now")[0] == "profile_setup"
+
+
+def test_consent_returns_to_the_phase_that_sent_it():
+    state = {**_ALL_GIVEN, "consent_return_to": "profile_setup"}
+    assert _route("consent", state)[0] == "profile_setup"
+
+
+def test_a_brand_new_caller_is_sent_to_consent():
+    state = {"user_terms": False, "user_privacy": False, "profile_consent": False,
+             "has_age": False, "profile_item_id": ""}
+    assert _route("job_match", state, intent="apply_now")[0] == "consent"
