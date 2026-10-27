@@ -1524,3 +1524,20 @@ def test_a_populated_sibling_still_survives_an_omitted_array():
 def test_non_empty_literal_lists_are_untouched():
     out = _render_body_template({"compliance": ["user_terms", "user_privacy"]}, {})
     assert out == {"compliance": ["user_terms", "user_privacy"]}
+
+
+def test_session_enum_renders_as_a_json_boolean_in_compliance():
+    from src.adapters.rest_api import _coerce_to_declared_type, _render_body_template
+
+    template = {"compliance": [{"key": "user_terms", "value": "{user_terms}"}]}
+    values = {"user_terms": _coerce_to_declared_type("true", "boolean")}
+    assert _render_body_template(template, values) == {
+        "compliance": [{"key": "user_terms", "value": True}]
+    }
+
+
+def test_a_missing_consent_flag_drops_its_value_rather_than_sending_false():
+    from src.adapters.rest_api import _render_body_template
+
+    template = {"compliance": [{"key": "user_terms", "value": "{user_terms}"}]}
+    assert _render_body_template(template, {}) == {"compliance": [{"key": "user_terms"}]}

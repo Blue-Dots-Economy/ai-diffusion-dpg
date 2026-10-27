@@ -84,3 +84,34 @@ def test_an_unknown_caller_yields_no_item_and_no_consent():
 def test_an_older_upstream_without_the_field_reads_as_absent():
     body = {"items": [{"item_id": "a", "lifecycle_status": "live"}]}
     assert resolve(body, _seeker_mappings()["profile_consent"]["source"]) is None
+
+
+def _save_profile():
+    for t in AG["tools"]:
+        for ep in t.get("endpoints") or []:
+            if ep["name"] == "save_profile":
+                return ep
+    raise AssertionError("save_profile not found")
+
+
+def test_compliance_values_come_from_session():
+    body = _save_profile()["body_template"]
+    assert body["compliance"] == [
+        {"key": "user_terms", "value": "{user_terms}"},
+        {"key": "user_privacy", "value": "{user_privacy}"},
+        {"key": "profile_creation", "value": "{profile_consent}"},
+    ]
+
+
+def test_the_dead_consent_fields_are_gone():
+    body = _save_profile()["body_template"]
+    assert "terms_accepted" not in body
+    assert "privacy_accepted" not in body
+
+
+def test_consent_params_are_session_sourced_booleans():
+    params = {p["name"]: p for p in _save_profile()["params"]}
+    for name in ("user_terms", "user_privacy", "profile_consent"):
+        assert params[name]["source"] == "session", name
+        assert params[name]["type"] == "boolean", name
+        assert params[name].get("required") is False, name
