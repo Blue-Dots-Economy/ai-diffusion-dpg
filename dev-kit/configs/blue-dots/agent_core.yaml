@@ -1752,7 +1752,7 @@ agent_workflow:
 
 
       routing:
-        # The participant fetch refuses a caller already on file as under 19.
+        # Above off_track: a caller the upstream refused must be told, not left circling.
         - intent: "*"
           conditions: [{ field: fetch_error, operator: eq, value: "U18_NOT_ALLOWED" }]
           next_subagent_id: u18_blocked
@@ -1781,9 +1781,6 @@ agent_workflow:
         - intent: "*"
           next_subagent_id: profile_resolve
 
-    # ─────────────────────────────────────────────────────────────
-    # 1a. consent — collect what the upstream needs before a write.
-    # ─────────────────────────────────────────────────────────────
     - id: consent
       name: Consent
       description: >
@@ -2142,7 +2139,6 @@ agent_workflow:
            that is only a tool call leaves the caller hearing silence.
 
       pending:
-        # Before use_saved_details, which is keyed on state alone.
         - id: wants_services
           when: [{ field: current_question, operator: contains, value: ["जॉब्स के अलावा"] }]
           expects: "ट्रेनिंग या कोई और मदद चाहिए? हाँ/नहीं"
@@ -2151,7 +2147,7 @@ agent_workflow:
           when:
             - { field: profile_item_id, operator: not_eq, value: "" }
             - { field: profile_item_id, operator: not_eq, value: null }
-            - { field: subagent_entry_count.profile_resolve, operator: lt, value: 2 }
+            - { field: current_question, operator: contains, value: ["इन्हीं से"] }
         - id: trade
           expects: "कौन सा काम"
           when: [{ field: trade, operator: in, value: [null, ""] }]

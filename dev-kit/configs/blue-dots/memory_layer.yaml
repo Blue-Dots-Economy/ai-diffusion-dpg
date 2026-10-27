@@ -33,7 +33,6 @@ state:
       has_age:                 { type: enum,   values: ["true", "false"], default: "false" }
       user_terms:              { type: enum,   values: ["true", "false"], default: "false" }
       user_privacy:            { type: enum,   values: ["true", "false"], default: "false" }
-      # Item-level consent, read off the live profile rather than `compliance`.
       profile_consent:         { type: enum,   values: ["true", "false"], default: "false" }
       fetch_error:             { type: string, default: "" }
       consent_return_to:       { type: string, default: "" }

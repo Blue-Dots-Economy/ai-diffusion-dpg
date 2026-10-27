@@ -36,9 +36,11 @@ def test_blue_dots_config_loads():
     # Live shape: Memory Layer seeds int age and has returned it as "0".
     ("consent", {"current_question": "आपकी उम्र क्या है?", "has_age": "false", "age": "0"}, "age"),
     ("consent", {"current_question": "आपकी उम्र क्या है?", "has_age": True}, None),
-    ("profile_resolve", {"profile_item_id": "p1", "subagent_entry_count": {"profile_resolve": 1}},
-     "use_saved_details"),
-    ("profile_resolve", {"profile_item_id": "p1", "subagent_entry_count": {"profile_resolve": 2}}, "trade"),
+    ("profile_resolve", {"profile_item_id": "p1",
+                         "current_question": "मुझे आपकी जानकारी मिली — वेल्डर, बेंगलुरु। "
+                                             "क्या इन्हीं से नौकरियाँ ढूंढूँ?"}, "use_saved_details"),
+    ("profile_resolve", {"profile_item_id": "p1", "current_question": "कौन सा काम?"}, "trade"),
+    ("profile_resolve", {"profile_item_id": "p1", "current_question": ""}, "trade"),
     ("profile_resolve", {"profile_item_id": "", "subagent_entry_count": {"profile_resolve": 1}}, "trade"),
     ("job_match", {}, "select_job"),
     # The questions job_match can be waiting on. Declaration order decides,
