@@ -186,8 +186,11 @@ def test_every_entry_into_profile_setup_requires_every_consent_flag():
     assert {sid for sid, _, _ in seen} == {
         "job_match", "job_details", "apply_confirm", "service_match", "consent"}
     for sid, i, routing in seen:
-        fields = {c.field for c in routing[i].conditions}
-        missing = _CONSENT_FLAGS - fields
+        rule = routing[i]
+        fields = {c.field for c in rule.conditions}
+        # A rule either checks the flags, or IS the grant and writes them all true.
+        granted = all(rule.session_writes.get(f) is True for f in _CONSENT_FLAGS)
+        missing = set() if granted else _CONSENT_FLAGS - fields
         assert not missing, f"{sid} rule {i} enters profile_setup without checking {missing}"
         # An age on file or one the caller just stated; either satisfies the upstream.
         assert fields & {"has_age", "age"}, f"{sid} rule {i} enters profile_setup unaged"
@@ -308,3 +311,87 @@ def test_the_under_19_line_says_where_the_age_came_from():
     assert "जानकारी के अनुसार" in line
     assert "उन्नीस" in line
     assert "पोर्टल" in line
+
+
+# ── Fix pass: findings from the whole-branch review ──────────────────────────
+
+def test_bootstrap_keeps_session_values_from_a_failed_fetch():
+    """C1: the U18 rejection arrives as a 400; its body is the only place the code lives."""
+    from src.models import ToolResult
+    from src.session_bootstrap import SessionBootstrap
+
+    cfg = {"session_bootstrap": {"timeout_ms": 2000, "steps": [{"type": "tool", "tool": "fetch_profile"}]}}
+    boot = SessionBootstrap.from_config(cfg, policies={})
+
+    class _Bundle:
+        session = {}
+        tool_results = []
+
+    bundle = _Bundle()
+    boot.run_sync(
+        bundle,
+        execute=lambda call: ToolResult(tool_use_id="", tool_name="fetch_profile", result={},
+                                        success=False, error="U18_NOT_ALLOWED",
+                                        session_values={"fetch_error": "U18_NOT_ALLOWED"}),
+        check_consent=lambda tool: True,
+        write_session=lambda k, v: None,
+        apply_tool_results=lambda batch: None,
+    )
+    assert bundle.session.get("fetch_error") == "U18_NOT_ALLOWED"
+
+
+def test_granting_with_an_age_on_file_leaves_consent_at_once():
+    """C2a: the grant rule must not sit above the return rules for an already-aged caller."""
+    state = {"current_question": _ASKED_CONSENT, "consent_response": "granted",
+             "has_age": True, "consent_return_to": "profile_setup"}
+    assert _route("consent", state)[0] == "profile_setup"
+
+
+def test_the_consent_pending_shuts_once_consent_is_held():
+    """C2b: current_question still holds the consent question on the turn after the grant."""
+    _, wf = _load()
+    state = {"current_question": _ASKED_CONSENT, "user_terms": True,
+             "user_privacy": True, "profile_consent": True}
+    assert PendingResolver(wf).resolve("consent", state) is None
+
+
+def test_a_caller_can_end_the_call_from_the_consent_phase():
+    """I1: termination_blocked is what a goodbye derives to here, and it had nowhere to go."""
+    assert _route("consent", {}, intent="termination_blocked")[0] == "confirm_close"
+    assert _route("consent", {"subagent_entry_count": {"confirm_close": 1}},
+                  intent="termination_blocked")[0] == "ended"
+
+
+def test_the_saved_details_anchor_matches_the_line_actually_spoken():
+    """I2: the anchor must appear in fixed_opening, which short-circuits the model entirely."""
+    _, wf = _load()
+    spoken = wf.subagents["profile_resolve"].fixed_opening.format(
+        stored_trade="Welder", stored_location="Bengaluru")
+    pending = next(p for p in wf.subagents["profile_resolve"].pending if p.id == "use_saved_details")
+    needles = next(c.value for c in pending.when if c.field == "current_question")
+    assert any(n in spoken for n in needles), f"{needles} not in {spoken!r}"
+
+
+def test_the_consent_flags_are_visible_to_the_prompt():
+    """I3: the two phrasings branch on flags the model cannot otherwise see."""
+    cfg, _ = _load()
+    visible = set(cfg["agent"]["prompt_session_fields"])
+    assert {"user_terms", "user_privacy", "profile_consent", "has_age"} <= visible
+
+
+def test_consent_is_a_destination_in_the_close_return_tables():
+    """I5: otherwise a handoff from consent resumes at `opening` and restarts the journey."""
+    _, wf = _load()
+    for sid in ("confirm_close", "handoff"):
+        targets = {r.next_subagent_id for r in wf.subagents[sid].routing}
+        assert "consent" in targets, sid
+
+
+def test_a_refusal_does_not_follow_the_caller_into_the_next_call():
+    """I6: session adoption carries state over; a prior refusal must not count against a new call."""
+    spec = importlib.util.spec_from_file_location(
+        "_ml", Path(__file__).resolve().parents[2] / "memory_layer" / "src" / "memory_layer.py")
+    src = spec.origin and Path(spec.origin).read_text(encoding="utf-8")
+    block = src[src.index("_SESSION_LIFECYCLE_FIELDS"):src.index("})", src.index("_SESSION_LIFECYCLE_FIELDS"))]
+    for field in ("consent_declines", "fetch_error"):
+        assert f'"{field}"' in block, field

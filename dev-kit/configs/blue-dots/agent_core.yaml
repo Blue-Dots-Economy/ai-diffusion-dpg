@@ -59,7 +59,8 @@ agent:
   # Session fields shown to the LLM in <state> collected. These three are written
   # by fetch_profile's response.session_mapping (action_gateway.yaml), and the
   # profile_resolve prompt reads them from <state> collected.
-  prompt_session_fields: [profile_item_id, stored_trade, stored_location]
+  prompt_session_fields: [profile_item_id, stored_trade, stored_location,
+                          user_terms, user_privacy, profile_consent, has_age]
   history_turns: 2
   state_fields: [applications_submitted, selected_job_item_id]
 
@@ -1797,6 +1798,8 @@ agent_workflow:
         - id: consent
           expects: "हाँ/नहीं — details save करने की अनुमति"
           when:
+            # current_question still holds the consent question a turn later.
+            - { field: profile_consent, operator: not_eq, value: true }
             - { field: current_question, operator: contains, value: ["अनुमति", "रिकॉर्ड", "सेव"] }
         - id: age
           expects: "उम्र, साल में"
@@ -1842,15 +1845,22 @@ agent_workflow:
 
         Never call a tool in this phase.
       routing:
-        - intent: off_track
-          next_subagent_id: consent
-        - intent: termination_intent
-          next_subagent_id: ended
+        # Above off_track: an under-19 caller must be told, not left circling.
         - intent: "*"
           conditions:
             - { field: age, operator: gt, value: 0 }
             - { field: age, operator: lt, value: 19 }
           next_subagent_id: u18_blocked
+        - intent: off_track
+          next_subagent_id: consent
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: consent }
         - intent: "*"
           conditions:
             - { field: consent_response, operator: eq, value: "declined" }
@@ -1861,6 +1871,33 @@ agent_workflow:
           conditions: [{ field: consent_response, operator: eq, value: "declined" }]
           next_subagent_id: consent
           session_writes: { consent_declines: 1, consent_response: "" }
+        # Granted with an age already satisfied: leave now, do not spend a turn.
+        - intent: "*"
+          conditions:
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: has_age, operator: eq, value: true }
+          next_subagent_id: profile_setup
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
+        - intent: "*"
+          conditions:
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: age, operator: gt, value: 18 }
+          next_subagent_id: profile_setup
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
         - intent: "*"
           conditions: [{ field: consent_response, operator: eq, value: "granted" }]
           next_subagent_id: consent
@@ -2147,7 +2184,7 @@ agent_workflow:
           when:
             - { field: profile_item_id, operator: not_eq, value: "" }
             - { field: profile_item_id, operator: not_eq, value: null }
-            - { field: current_question, operator: contains, value: ["इन्हीं से"] }
+            - { field: current_question, operator: contains, value: ["सेव किए गए शहर", "जानकारी मिली"] }
         - id: trade
           expects: "कौन सा काम"
           when: [{ field: trade, operator: in, value: [null, ""] }]
@@ -3860,6 +3897,7 @@ agent_workflow:
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_details }], next_subagent_id: job_details }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: consent }], next_subagent_id: consent }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
         # Any other answer ("नहीं", a question, a detail): back to where the caller was.
@@ -3868,6 +3906,7 @@ agent_workflow:
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: job_details }], next_subagent_id: job_details }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: consent }], next_subagent_id: consent }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
         - intent: "*"
@@ -3919,6 +3958,7 @@ agent_workflow:
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_details }], next_subagent_id: job_details }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: consent }], next_subagent_id: consent }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
         # Any other answer ("नहीं", a question, a detail): back to where the caller was.
@@ -3927,6 +3967,7 @@ agent_workflow:
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: job_details }], next_subagent_id: job_details }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: consent }], next_subagent_id: consent }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
         - intent: "*"

@@ -183,7 +183,14 @@ the caller were new. A `session_mapping` entry with `on_error: true`
 (`action_gateway/src/adapters/rest_api.py:848`,
 `action_gateway/src/schema/config.py:256`) lifts the error code out of the 400
 body into session, and routing sends the caller to `u18_blocked` before any
-question is asked. Config only.
+question is asked.
+
+This is NOT config only, as an earlier draft of this spec claimed.
+`SessionBootstrap._apply` returned before applying `session_values` whenever a
+step failed (`agent_core/src/session_bootstrap.py`), so a mapping marked
+`on_error` could never reach session state and the rule above was dead config.
+Session values are now applied on the failure path too; only the tool-result
+cache entry is still withheld, so the model never sees a failed result.
 
 **At the age question.** An unknown caller who states an age under 19 routes to
 `u18_blocked`.
@@ -329,10 +336,15 @@ scope here.
 
 **Storage mode stays `saved`.** `user_data_persistence.default_mode` is
 per-domain configurable (`memory_layer/src/memory_layer.py:116`, set for Blue
-Dots at `memory_layer.yaml:173`). It stays `saved`: Blue Dots takes no
-ai-diffusion-level consent, only the upstream's, so there is no refusal that
-should trigger a graph delete. A consequence is that nothing writes
-`user_storage_mode: anonymous` any more.
+Dots at `memory_layer.yaml:173`). It stays `saved` as the default: Blue Dots
+takes no ai-diffusion-level consent, only the upstream's.
+
+A second refusal in the `consent` phase does still write
+`user_storage_mode: anonymous`, carried over from the rule it replaced, and
+Memory Layer deletes the user graph at flush. That is deliberate and kept: a
+caller who refused twice has consented to nothing, so holding their graph is
+the wrong default. An earlier draft of this spec said nothing writes
+`anonymous` any more; that was wrong.
 
 ## Out of scope
 
