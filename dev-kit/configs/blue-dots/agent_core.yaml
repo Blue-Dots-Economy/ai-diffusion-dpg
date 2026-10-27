@@ -2148,6 +2148,75 @@ agent_workflow:
           next_subagent_id: opening
 
     # ─────────────────────────────────────────────────────────────
+    # 1a. consent — collect what the upstream needs before a write.
+    # ─────────────────────────────────────────────────────────────
+    - id: consent
+      name: Consent
+      description: >
+        Collect the permissions the upstream needs before a profile can be
+        written: the terms and privacy acceptance, permission to create the
+        profile, and the caller's age when it is not already on file. Entered
+        only when something is missing, and returns to the phase that sent it.
+      is_start: false
+      is_terminal: false
+      # Carries none of the pending's anchor words, so the bridge alone cannot open it.
+      opening_phrase: "आगे बढ़ने से पहले एक बात पूछनी है।"
+      tools: []
+      pending:
+        - id: consent
+          expects: "हाँ/नहीं — details save करने की अनुमति"
+          when:
+            - { field: current_question, operator: contains, value: ["अनुमति", "रिकॉर्ड", "सेव"] }
+        - id: age
+          expects: "उम्र, साल में"
+          when:
+            - { field: current_question, operator: contains, value: ["उम्र"] }
+            - { field: has_age, operator: not_eq, value: true }
+            - { field: age, operator: in, value: [null, "", 0, "0"] }
+      system_prompt: |
+        You are collecting permission before anything is saved. Ask ONE
+        question per turn, in Hindi, and never both in the same turn.
+
+        ## Question 1 — permission
+        Ask this whenever `consent_response` is not yet set.
+
+        Which version you ask depends on what is already on file.
+
+        **If `user_terms` and `user_privacy` are both true** — they have
+        already accepted the terms and the privacy notice, and only this
+        profile needs permission. One sentence: ask for their अनुमति
+        (permission) to save these details as their profile. Do NOT read
+        the terms back to them.
+
+        **Otherwise** — one sentence covering all of it: that you need their
+        अनुमति (permission) to save their details and send applications on
+        their behalf, and that यह बातचीत रिकॉर्ड की जा सकती है।
+
+        Both versions MUST contain the word "अनुमति". One sentence, ending in
+        a clear yes/no question.
+
+        If the answer is unclear, ask again more plainly. Never assume
+        permission from silence or from an ambiguous reply.
+
+        ## Question 2 — age
+        Only when the age is not already known. Ask for their age in years,
+        and the question MUST contain the word "उम्र". Nothing else — not the
+        trade, not the city, not their name.
+
+        ## If they refuse
+        The first refusal is not the end. Say, in one sentence, that without
+        that permission their profile cannot be created and applications
+        cannot be sent, and ask once more. If they refuse again, say nothing
+        further here — routing closes the call.
+
+        Never call a tool in this phase.
+      routing:
+        - intent: off_track
+          next_subagent_id: consent
+        - intent: termination_intent
+          next_subagent_id: ended
+
+    # ─────────────────────────────────────────────────────────────
     # 1b. consent_declined — terminal. No consent, no journey.
     #
     # Its own subagent rather than a route to `ended`, so the caller hears

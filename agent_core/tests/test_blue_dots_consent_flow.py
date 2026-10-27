@@ -1,11 +1,21 @@
 """The Blue Dots consent flow: what the fetch lifts, and what the write sends."""
-import sys
+import importlib.util
 from pathlib import Path
 
 import yaml
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "action_gateway"))
-from src.adapters.response_path import resolve  # noqa: E402
+
+def _load_response_path():
+    """Load Action Gateway's path resolver by file, so `src` keeps meaning agent_core's."""
+    path = (Path(__file__).resolve().parents[2]
+            / "action_gateway" / "src" / "adapters" / "response_path.py")
+    spec = importlib.util.spec_from_file_location("_ag_response_path", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.resolve
+
+
+resolve = _load_response_path()
 
 BD = Path(__file__).resolve().parents[2] / "dev-kit" / "configs" / "blue-dots"
 AG = yaml.safe_load((BD / "action_gateway.yaml").read_text(encoding="utf-8"))
@@ -115,3 +125,36 @@ def test_consent_params_are_session_sourced_booleans():
         assert params[name]["source"] == "session", name
         assert params[name]["type"] == "boolean", name
         assert params[name].get("required") is False, name
+
+
+from src.understanding.pending import PendingResolver  # noqa: E402
+from tests.test_blue_dots_dialogue_act_config import _load  # noqa: E402
+
+_ASKED_CONSENT = "आपकी जानकारी सेव करने की अनुमति चाहिए; यह बातचीत रिकॉर्ड की जा सकती है। ठीक है?"
+_ASKED_AGE = "आपकी उम्र क्या है?"
+
+
+def test_consent_subagent_exists_and_is_not_terminal():
+    _, wf = _load()
+    sub = wf.subagents["consent"]
+    assert sub.is_terminal is False
+    assert sub.tools == []
+
+
+def test_consent_pending_needs_the_consent_question_to_have_been_asked():
+    _, wf = _load()
+    r = PendingResolver(wf)
+    assert r.resolve("consent", {"current_question": _ASKED_CONSENT}).id == "consent"
+    assert r.resolve("consent", {"current_question": _ASKED_AGE, "has_age": "false"}).id == "age"
+
+
+def test_nothing_is_pending_before_the_bot_has_asked_anything():
+    _, wf = _load()
+    assert PendingResolver(wf).resolve("consent", {"current_question": ""}) is None
+
+
+def test_age_is_not_asked_when_it_arrived_with_the_consent():
+    _, wf = _load()
+    state = {"current_question": _ASKED_CONSENT, "consent_response": "granted",
+             "has_age": "false", "age": 25}
+    assert PendingResolver(wf).resolve("consent", state).id == "consent"
