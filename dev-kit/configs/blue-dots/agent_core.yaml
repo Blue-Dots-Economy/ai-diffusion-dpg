@@ -2217,6 +2217,26 @@ agent_workflow:
           next_subagent_id: ended
         - intent: "*"
           conditions:
+            - { field: consent_response, operator: eq, value: "declined" }
+            - { field: consent_declines, operator: gt, value: 0 }
+          next_subagent_id: consent_declined
+          session_writes: { user_storage_mode: "anonymous", consent_given: false }
+        - intent: "*"
+          conditions: [{ field: consent_response, operator: eq, value: "declined" }]
+          next_subagent_id: consent
+          session_writes: { consent_declines: 1, consent_response: "" }
+        - intent: "*"
+          conditions: [{ field: consent_response, operator: eq, value: "granted" }]
+          next_subagent_id: consent
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+        - intent: "*"
+          conditions:
             - { field: user_terms,      operator: eq, value: true }
             - { field: user_privacy,    operator: eq, value: true }
             - { field: profile_consent, operator: eq, value: true }

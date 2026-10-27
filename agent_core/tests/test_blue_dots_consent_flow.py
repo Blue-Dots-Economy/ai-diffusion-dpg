@@ -236,3 +236,30 @@ def test_a_brand_new_caller_is_sent_to_consent():
     state = {"user_terms": False, "user_privacy": False, "profile_consent": False,
              "has_age": False, "profile_item_id": ""}
     assert _route("job_match", state, intent="apply_now")[0] == "consent"
+
+
+def test_granting_writes_every_flag_the_write_needs():
+    state = {"current_question": _ASKED_CONSENT, "consent_response": "granted",
+             "has_age": True, "consent_return_to": "profile_setup"}
+    _, rule = _route("consent", state)
+    assert rule.session_writes["user_terms"] is True
+    assert rule.session_writes["user_privacy"] is True
+    assert rule.session_writes["profile_consent"] is True
+
+
+def test_the_first_refusal_asks_again():
+    state = {"consent_response": "declined", "consent_declines": 0,
+             "consent_return_to": "profile_setup"}
+    nxt, rule = _route("consent", state)
+    assert nxt == "consent"
+    assert rule.session_writes["consent_declines"] == 1
+
+
+def test_the_second_refusal_ends_the_call():
+    state = {"consent_response": "declined", "consent_declines": 1,
+             "consent_return_to": "profile_setup"}
+    assert _route("consent", state)[0] == "consent_declined"
+
+
+def test_declines_are_counted_separately_from_visits():
+    assert ML["state"]["session"]["schema"]["consent_declines"] == {"type": "int", "default": 0}
