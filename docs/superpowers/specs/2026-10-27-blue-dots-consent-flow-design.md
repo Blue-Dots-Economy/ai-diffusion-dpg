@@ -165,6 +165,23 @@ question is asked. Config only.
 **At the age question.** An unknown caller who states an age under 19 routes to
 `u18_blocked`.
 
+**Neither gate ends the call silently.** A terminal subagent reached by routing
+speaks its `opening_phrase` through `_stream_termination_short_circuit`
+(`agent_core/src/orchestrator.py:5318-5346`), so `u18_blocked` already says its
+line before closing — no code is needed for that.
+
+Its copy does need a change. Today it states the rule but never says where the
+age came from, which is confusing at turn 1 when the caller has not mentioned
+their age at all. The line must acknowledge what we know before giving the
+reason: that their details show them as under nineteen, that an application
+cannot be completed by phone at that age, and that they should register on the
+portal with a parent or guardian.
+
+One line covers both gates — "according to your details" is true whether the
+age came from the participant record or from what the caller just said — so
+`u18_blocked` stays a single terminal phase with one `opening_phrase`. The
+exact Hindi needs the same copy-owner review as the consent phrasings.
+
 A minor is `age <= 18` in Signals
 (`Signals-DPG/apps/api/src/services/minor.ts`, `isMinor`): age is derived from
 the birth year alone, so the whole boundary year is treated as under-age,
@@ -320,6 +337,7 @@ should trigger a graph delete. A consequence is that nothing writes
 
 ## Open questions
 
-None blocking. The wording of both consent phrasings needs review by whoever
-owns the consent copy before implementation, since "अनुमति" becomes a
-load-bearing token rather than a stylistic choice.
+None blocking. Two pieces of copy need review by whoever owns it: the two
+consent phrasings, where "अनुमति" becomes a load-bearing token rather than a
+stylistic choice, and the reworded `u18_blocked` line. Both are prompt and
+`opening_phrase` config, changeable later without code.
