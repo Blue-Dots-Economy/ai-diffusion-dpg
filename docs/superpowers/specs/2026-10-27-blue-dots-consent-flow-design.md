@@ -336,10 +336,11 @@ should trigger a graph delete. A consequence is that nothing writes
 
 ## Out of scope
 
-- The update path. `update_profile` and the `profile_update` /
+- The update path, conditionally. `update_profile` and the `profile_update` /
   `profile_update_confirm` subagents arrive with PR #527 and do not exist on
-  `develop`. Gating them, and removing the second copy of the hardcoded
-  `compliance` block that PR introduces, is a follow-up once it merges.
+  `develop`. If #527 merges before this work is ready, rebase and cover the
+  update path here; if not, it stays out and #527's author binds its own copy
+  of the `compliance` block to session.
 - Multi-profile selection (#496).
 - Recovery when `fetch_profile` fails outright — not a 400, but a timeout or
   5xx. The call then proceeds as if the caller were new, which is the one

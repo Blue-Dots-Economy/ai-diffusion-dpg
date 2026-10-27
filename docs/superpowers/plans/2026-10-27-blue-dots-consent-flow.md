@@ -995,7 +995,10 @@ git commit -m "fix(blue-dots): accept a saved-details answer only when that was 
 
 ## Before opening the PR
 
+- [ ] **Decide the update path by which PR merged first.** `update_profile` does not exist on `develop`; it arrives with PR #527 (open since 19 Oct, no review yet).
+  - If **#527 has merged** by the time these tasks are done: rebase onto `develop` and extend Task 2 (bind `update_profile`'s `compliance` to session, delete its `terms_accepted` / `privacy_accepted`) and Task 4 (gate the two routes into `profile_update_confirm`) inside this PR. No follow-up issue.
+  - If **it has not**: leave the update path alone and make sure the comment below is on #527, so its author binds compliance to session in their own PR rather than us doing a second round.
+- [ ] Comment on PR #527 that its `update_profile` endpoint carries a second copy of the hardcoded `compliance` block plus `terms_accepted` / `privacy_accepted`, and should bind to session the way `save_profile` now does. Send this early — before #527 gets reviewed, not after.
 - [ ] File the follow-up issue for the `fetch_profile` timeout/5xx path: the call proceeds as if the caller were new, which is the one remaining route by which a minor could state an adult age and overwrite the stored one. Get the issue preview approved before creating it.
-- [ ] Comment on PR #527 that its `update_profile` endpoint carries a second copy of the hardcoded `compliance` block plus `terms_accepted` / `privacy_accepted`, and should bind to session the way `save_profile` now does.
 - [ ] Manual verification on the local host-mode stack: a new caller through to profile creation; a returning caller with current consent (not asked); a returning caller with stale profile consent (asked, profile-only phrasing); a returning minor (blocked at turn 1); a caller who only searches jobs and hangs up (never asked).
 - [ ] Open as a draft PR with `Closes #531`, title `feat(blue-dots): #531 ask for consent when the upstream needs it`.
