@@ -1752,6 +1752,10 @@ agent_workflow:
 
 
       routing:
+        # The participant fetch refuses a caller already on file as under 19.
+        - intent: "*"
+          conditions: [{ field: fetch_error, operator: eq, value: "U18_NOT_ALLOWED" }]
+          next_subagent_id: u18_blocked
         # off_track (spec §6.6): stay here after repeated
         # off-script turns; never coincides with termination_intent.
         - intent: off_track
@@ -1847,6 +1851,11 @@ agent_workflow:
           next_subagent_id: ended
         - intent: "*"
           conditions:
+            - { field: age, operator: gt, value: 0 }
+            - { field: age, operator: lt, value: 19 }
+          next_subagent_id: u18_blocked
+        - intent: "*"
+          conditions:
             - { field: consent_response, operator: eq, value: "declined" }
             - { field: consent_declines, operator: gt, value: 0 }
           next_subagent_id: consent_declined
@@ -1932,24 +1941,29 @@ agent_workflow:
     - id: u18_blocked
       name: Under 19 — Portal Only
       description: >
-        Terminal. Reached when the caller's age is under 19 — the upstream
-        treats the whole 18th year as under-age (see rule 1 in `opening`).
-        Explains that the application must be completed on the portal with a
-        parent or guardian, and closes.
+        Terminal. Reached when the caller is under 19 — either the participant
+        fetch refused them or they said so in the consent phase. The upstream
+        treats the whole 18th year as under-age. Explains that the application
+        must be completed on the portal with a parent or guardian, and closes.
       is_start: false
       is_terminal: true
       opening_phrase: >
-        उन्नीस साल से कम उम्र में फ़ोन पर आवेदन पूरा नहीं हो सकता। कृपया
-        ब्लू डॉट्स पोर्टल पर अपने माता-पिता या अभिभावक के साथ रजिस्टर
-        कीजिए। धन्यवाद।
+        आपकी जानकारी के अनुसार आपकी उम्र उन्नीस साल से कम है, और इतनी उम्र में
+        फ़ोन पर आवेदन पूरा नहीं हो सकता। कृपया ब्लू डॉट्स पोर्टल पर अपने
+        माता-पिता या अभिभावक के साथ रजिस्टर कीजिए। धन्यवाद।
       special_handler: null
       tools: []
       system_prompt: |
         The caller is under 19. Say, warmly and in one or two Hindi
-        sentences, that applications can only be completed over the phone
-        from age NINETEEN, and that they should register on the Blue Dots
-        portal where a parent or guardian can complete it with them. Then
-        close.
+        sentences: that their details show them as under nineteen, that
+        applications can only be completed over the phone from age NINETEEN,
+        and that they should register on the Blue Dots portal where a parent
+        or guardian can complete it with them. Then close.
+
+        Say where the age came from. They may not have mentioned it on this
+        call — it can come from what is already on file — and a bare "you are
+        under nineteen" with no source is confusing to someone who never
+        said so.
 
         Say NINETEEN. Never invent a different threshold — "under fifteen"
         and "under eighteen" have both been spoken here by mistake, and

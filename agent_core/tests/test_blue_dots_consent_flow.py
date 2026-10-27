@@ -287,3 +287,24 @@ def test_an_age_the_caller_states_is_enough_to_leave_consent():
     state = {"user_terms": True, "user_privacy": True, "profile_consent": True,
              "age": 25, "consent_return_to": "profile_setup"}
     assert _route("consent", state)[0] == "profile_setup"
+
+
+def test_an_upstream_u18_rejection_ends_the_call_at_the_opening():
+    assert _route("opening", {"fetch_error": "U18_NOT_ALLOWED"})[0] == "u18_blocked"
+
+
+def test_an_under_19_answer_in_the_consent_phase_ends_the_call():
+    state = {"current_question": _ASKED_AGE, "age": 17, "consent_return_to": "profile_setup"}
+    assert _route("consent", state)[0] == "u18_blocked"
+
+
+def test_other_fetch_failures_do_not_block_the_call():
+    assert _route("opening", {"fetch_error": "INTERNAL_ERROR"})[0] == "profile_resolve"
+
+
+def test_the_under_19_line_says_where_the_age_came_from():
+    _, wf = _load()
+    line = wf.subagents["u18_blocked"].opening_phrase
+    assert "जानकारी के अनुसार" in line
+    assert "उन्नीस" in line
+    assert "पोर्टल" in line

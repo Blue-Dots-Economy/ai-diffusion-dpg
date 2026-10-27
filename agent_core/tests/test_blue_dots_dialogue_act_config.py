@@ -76,8 +76,11 @@ def test_off_track_rule_precedes_catch_all_everywhere():
         if sub.is_terminal or not sub.routing:
             continue
         intents = [r.intent for r in sub.routing]
-        if "*" in intents:
-            assert "off_track" in intents and intents.index("off_track") < intents.index("*"), sid
+        # Only an UNCONDITIONAL "*" swallows an off_track turn; a guarded one does not.
+        catch_all = next((i for i, r in enumerate(sub.routing)
+                          if r.intent == "*" and not r.conditions and not r.condition), None)
+        if catch_all is not None:
+            assert "off_track" in intents and intents.index("off_track") < catch_all, sid
 
 def test_blue_dots_journey_routes_end_to_end():
     """Real TurnUnderstander + real routing over the Blue Dots workflow, scripted NLU (spec §12)."""
