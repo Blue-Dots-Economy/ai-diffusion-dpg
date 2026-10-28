@@ -519,3 +519,14 @@ def test_the_first_turn_hands_straight_on():
 def test_a_caller_can_still_end_the_call_from_the_first_turn():
     assert _route("trade_ask", {}, intent="termination_intent")[0] == "ended"
     assert _route("trade_ask", {}, intent="termination_blocked")[0] == "confirm_close"
+
+
+def test_the_consent_prompts_do_not_mix_english_into_the_line_to_speak():
+    """An instruction written half in English came back with "behalf" inside the Hindi reply."""
+    _, wf = _load()
+    for sid in ("consent", "consent_reask"):
+        prompt = wf.subagents[sid].system_prompt
+        assert "behalf" not in prompt, (
+            f"{sid}: an English phrase inside the sentence to speak is copied through")
+        assert "हिंदी" in prompt or "Hindi only" in prompt, (
+            f"{sid}: the prompt must say the spoken reply is Hindi only")
