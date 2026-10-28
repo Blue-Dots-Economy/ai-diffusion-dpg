@@ -184,7 +184,8 @@ def test_every_entry_into_profile_setup_requires_every_consent_flag():
     _, wf = _load()
     seen = list(_profile_setup_entries(wf))
     assert {sid for sid, _, _ in seen} == {
-        "job_match", "job_details", "apply_confirm", "service_match", "consent"}
+        "job_match", "job_details", "apply_confirm", "service_match",
+        "consent", "consent_reask"}
     for sid, i, routing in seen:
         rule = routing[i]
         fields = {c.field for c in rule.conditions}
@@ -253,18 +254,10 @@ def test_granting_writes_every_flag_the_write_needs():
     assert rule.session_writes["profile_consent"] is True
 
 
-def test_the_first_refusal_asks_again():
-    state = {"consent_response": "declined", "consent_declines": 0,
-             "consent_return_to": "profile_setup"}
-    nxt, rule = _route("consent", state)
-    assert nxt == "consent"
-    assert rule.session_writes["consent_declines"] == 1
-
-
 def test_the_second_refusal_ends_the_call():
     state = {"consent_response": "declined", "consent_declines": 1,
              "consent_return_to": "profile_setup"}
-    assert _route("consent", state)[0] == "consent_declined"
+    assert _route("consent_reask", state)[0] == "consent_declined"
 
 
 def test_declines_are_counted_separately_from_visits():
@@ -305,11 +298,12 @@ def test_other_fetch_failures_do_not_block_the_call():
     assert _route("opening", {"fetch_error": "INTERNAL_ERROR"})[0] == "profile_resolve"
 
 
-def test_the_under_19_line_says_where_the_age_came_from():
+def test_the_age_block_line_says_where_the_age_came_from():
     _, wf = _load()
     line = wf.subagents["u18_blocked"].opening_phrase
     assert "जानकारी के अनुसार" in line
-    assert "उन्नीस" in line
+    assert "अठारह" in line
+    assert "उन्नीस" not in line
     assert "पोर्टल" in line
 
 
@@ -395,3 +389,84 @@ def test_a_refusal_does_not_follow_the_caller_into_the_next_call():
     block = src[src.index("_SESSION_LIFECYCLE_FIELDS"):src.index("})", src.index("_SESSION_LIFECYCLE_FIELDS"))]
     for field in ("consent_declines", "fetch_error"):
         assert f'"{field}"' in block, field
+
+
+_CONSENT_ANCHORS = ["अनुमति", "रिकॉर्ड", "सेव"]
+
+
+def _anchor_words(sa):
+    return [w for w in _CONSENT_ANCHORS if w in (sa.fixed_opening or "")]
+
+
+def test_consent_speaks_its_question_without_the_model():
+    _, wf = _load()
+    sa = wf.subagents["consent"]
+    assert sa.fixed_opening, "the entry turn must not depend on the model asking"
+    assert sa.fixed_opening_requires == ["consent_return_to"]
+
+
+def test_the_consent_question_carries_a_pending_anchor():
+    _, wf = _load()
+    sa = wf.subagents["consent"]
+    pending = next(p for p in sa.pending if p.id == "consent")
+    anchored = next(c for c in pending.when if c.field == "current_question")
+    assert set(_anchor_words(sa)) & set(anchored.value), (
+        "the spoken question must contain a word the pending matches on")
+
+
+def test_every_gate_site_writes_the_field_the_consent_opening_requires():
+    _, wf = _load()
+    required = wf.subagents["consent"].fixed_opening_requires[0]
+    for sid in ("job_match", "job_details", "apply_confirm", "service_match"):
+        for rule in wf.subagents[sid].routing:
+            if rule.next_subagent_id == "consent":
+                assert (rule.session_writes or {}).get(required), (
+                    f"{sid} enters consent without writing {required}")
+
+
+def test_the_first_refusal_goes_to_its_own_reask_phase():
+    state = {"consent_response": "declined", "consent_declines": 0,
+             "consent_return_to": "profile_setup"}
+    nxt, rule = _route("consent", state)
+    assert nxt == "consent_reask"
+    assert rule.session_writes["consent_declines"] == 1
+    assert rule.session_writes["consent_response"] == ""
+
+
+def test_the_reask_is_spoken_without_the_model():
+    _, wf = _load()
+    sa = wf.subagents["consent_reask"]
+    assert sa.fixed_opening, "the re-ask must not depend on the model"
+    assert _anchor_words(sa), "the re-ask must carry a pending anchor"
+    assert sa.fixed_opening_requires == ["consent_return_to"]
+
+
+def test_the_reask_names_what_refusing_costs():
+    _, wf = _load()
+    line = wf.subagents["consent_reask"].fixed_opening
+    assert "आवेदन" in line, "the caller must learn no application can be sent"
+
+
+def test_refusing_the_reask_ends_the_call():
+    nxt, _ = _route("consent_reask", {"consent_response": "declined",
+                                      "consent_declines": 1})
+    assert nxt == "consent_declined"
+
+
+def test_granting_at_the_reask_moves_on_like_the_first_ask():
+    state = {"consent_response": "granted", "has_age": True,
+             "consent_declines": 1, "consent_return_to": "profile_setup"}
+    nxt, rule = _route("consent_reask", state)
+    assert nxt == "profile_setup"
+    for flag in ("user_terms", "user_privacy", "profile_consent"):
+        assert rule.session_writes[flag] is True
+
+
+def test_an_under_age_caller_is_blocked_from_the_reask_too():
+    nxt, _ = _route("consent_reask", {"age": 16, "consent_declines": 1})
+    assert nxt == "u18_blocked"
+
+
+def test_the_reask_keeps_its_own_consent_pending():
+    _, wf = _load()
+    assert any(p.id == "consent" for p in wf.subagents["consent_reask"].pending)

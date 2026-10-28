@@ -3790,6 +3790,15 @@ class AgentCore(AgentCoreBase):
         translated = (self._translate_consent_message(termination_message, detected_language)
                       if translate else termination_message)
 
+        # A line that does not end the call is a question the next turn answers.
+        if not end_session and bundle.session.get("current_question") != translated:
+            cq_value = self._sanitize_current_question(
+                prev=bundle.session.get("current_question", "") or "",
+                new=translated, session_id=session_id)
+            bundle.session["current_question"] = cq_value
+            write_tasks.append(self._async_memory.write(
+                session_id, user_id, "session", "current_question", cq_value))
+
         # Best-effort fan-out of routing writes; parallel with the SentenceEvent
         # so the caller hears the goodbye even if Memory Layer is slow.
         await asyncio.gather(*write_tasks, return_exceptions=True)

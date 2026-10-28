@@ -1791,8 +1791,10 @@ agent_workflow:
         only when something is missing, and returns to the phase that sent it.
       is_start: false
       is_terminal: false
-      # Carries none of the pending's anchor words, so the bridge alone cannot open it.
       opening_phrase: "आगे बढ़ने से पहले एक बात पूछनी है।"
+      # Spoken verbatim on entry, so the question is never left to the model.
+      fixed_opening: "आगे बढ़ने से पहले एक बात — क्या मुझे आपकी जानकारी सेव करने और आपकी ओर से आवेदन भेजने की अनुमति है?"
+      fixed_opening_requires: [consent_return_to]
       tools: []
       pending:
         - id: consent
@@ -1869,7 +1871,7 @@ agent_workflow:
           session_writes: { user_storage_mode: "anonymous", consent_given: false }
         - intent: "*"
           conditions: [{ field: consent_response, operator: eq, value: "declined" }]
-          next_subagent_id: consent
+          next_subagent_id: consent_reask
           session_writes: { consent_declines: 1, consent_response: "" }
         # Granted with an age already satisfied: leave now, do not spend a turn.
         - intent: "*"
@@ -1930,6 +1932,92 @@ agent_workflow:
         - intent: "*"
           next_subagent_id: consent
 
+    - id: consent_reask
+      name: Consent — Second Ask
+      description: >
+        Reached once, after the caller refuses the first time. States what
+        refusing costs and asks again. A second refusal closes the call; a
+        grant rejoins the normal path.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "एक बात और बतानी है।"
+      fixed_opening: "आपकी अनुमति के बिना मैं आपकी जानकारी सेव नहीं कर सकती और आपकी ओर से आवेदन भी नहीं भेज सकती। क्या आप अनुमति देंगे?"
+      fixed_opening_requires: [consent_return_to]
+      tools: []
+      pending:
+        - id: consent
+          expects: "हाँ/नहीं — details save करने की अनुमति"
+          when:
+            - { field: profile_consent, operator: not_eq, value: true }
+            - { field: current_question, operator: contains, value: ["अनुमति", "रिकॉर्ड", "सेव"] }
+      system_prompt: |
+        The caller has already refused once and has just been asked a second
+        time. Say nothing unless they answer unclearly; then put the same
+        question more plainly, in one Hindi sentence containing the word
+        अनुमति.
+
+        Never pressure them, never offer a way around it, and never say the
+        call is ending — routing decides that. Never call a tool here.
+      routing:
+        - intent: "*"
+          conditions:
+            - { field: age, operator: gt, value: 0 }
+            - { field: age, operator: lt, value: 19 }
+          next_subagent_id: u18_blocked
+        - intent: off_track
+          next_subagent_id: consent_reask
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: consent_reask }
+        - intent: "*"
+          conditions: [{ field: consent_response, operator: eq, value: "declined" }]
+          next_subagent_id: consent_declined
+          session_writes: { user_storage_mode: "anonymous", consent_given: false }
+        - intent: "*"
+          conditions:
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: has_age, operator: eq, value: true }
+          next_subagent_id: profile_setup
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
+        - intent: "*"
+          conditions:
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: age, operator: gt, value: 18 }
+          next_subagent_id: profile_setup
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
+        # Granted but the age is still unknown: consent asks it.
+        - intent: "*"
+          conditions: [{ field: consent_response, operator: eq, value: "granted" }]
+          next_subagent_id: consent
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+        - intent: "*"
+          next_subagent_id: consent_reask
+
     # ─────────────────────────────────────────────────────────────
     # 1b. consent_declined — terminal. No consent, no journey.
     #
@@ -1973,34 +2061,34 @@ agent_workflow:
     # conversation is a worse experience than being told at the start.
     # ─────────────────────────────────────────────────────────────
     - id: u18_blocked
-      name: Under 19 — Portal Only
+      name: Under 18 — Portal Only
       description: >
-        Terminal. Reached when the caller is under 19 — either the participant
-        fetch refused them or they said so in the consent phase. The upstream
-        treats the whole 18th year as under-age. Explains that the application
-        must be completed on the portal with a parent or guardian, and closes.
+        Terminal. Reached when the caller is too young to apply by voice —
+        either the participant fetch refused them or they said so in the
+        consent phase. Explains that the application must be completed on the
+        portal with a parent or guardian, and closes.
       is_start: false
       is_terminal: true
       opening_phrase: >
-        आपकी जानकारी के अनुसार आपकी उम्र उन्नीस साल से कम है, और इतनी उम्र में
+        आपकी जानकारी के अनुसार आपकी उम्र अठारह साल से कम है, और इतनी उम्र में
         फ़ोन पर आवेदन पूरा नहीं हो सकता। कृपया ब्लू डॉट्स पोर्टल पर अपने
         माता-पिता या अभिभावक के साथ रजिस्टर कीजिए। धन्यवाद।
       special_handler: null
       tools: []
       system_prompt: |
-        The caller is under 19. Say, warmly and in one or two Hindi
-        sentences: that their details show them as under nineteen, that
-        applications can only be completed over the phone from age NINETEEN,
-        and that they should register on the Blue Dots portal where a parent
-        or guardian can complete it with them. Then close.
+        The caller is too young to apply over the phone. Say, warmly and in
+        one or two Hindi sentences: that their details show them as under
+        eighteen, that applications can only be completed over the phone from
+        age EIGHTEEN, and that they should register on the Blue Dots portal
+        where a parent or guardian can complete it with them. Then close.
 
         Say where the age came from. They may not have mentioned it on this
         call — it can come from what is already on file — and a bare "you are
-        under nineteen" with no source is confusing to someone who never
+        under eighteen" with no source is confusing to someone who never
         said so.
 
-        Say NINETEEN. Never invent a different threshold — "under fifteen"
-        and "under eighteen" have both been spoken here by mistake, and
+        Say EIGHTEEN. Never invent a different threshold — "under fifteen"
+        and "under nineteen" have both been spoken here by mistake, and
         each one tells the caller the wrong thing about when to come back.
 
         Do NOT collect any further details. Do NOT call any tool. Do NOT
