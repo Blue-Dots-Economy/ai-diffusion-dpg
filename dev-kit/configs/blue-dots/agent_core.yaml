@@ -505,10 +505,8 @@ connectors:
   write:
     - name: save_profile
       description: >
-        Create a new seeker profile or update an existing one. The
-        upstream does NOT support partial updates — pass the full
-        item_state on every call. For UPDATE pass profile_item_id;
-        for CREATE omit it.
+        Create a new seeker profile. This is the create path only —
+        changing an existing profile is update_profile's job.
       input_schema:
         type: object
         properties:
@@ -653,6 +651,8 @@ connectors:
           अभी प्रोफ़ाइल अपडेट नहीं कर पा रही हूँ।
         bridge_line: "मैं आपकी प्रोफ़ाइल अपडेट करती हूँ।"
         max_calls_per_turn: 1
+      # An update changes what fetch_profile returns, so drop its stored result.
+      invalidates: [fetch_profile]
 
     - name: apply_job
       description: >
@@ -2386,8 +2386,8 @@ agent_workflow:
         currently limited to name and age"). Greeting a caller by name is
         the fixed opening's job, not yours.
 
-        Never send `stored_name` as the name on a write: it is what to call
-        them, not a value to collect.
+        Never offer `stored_name` as a name the caller has just given you:
+        it is what to call them, not a value to collect.
 
         <trade> and <city> are already in <state> collected as
         `stored_trade` and `stored_location`, lifted from the live item by

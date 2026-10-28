@@ -59,9 +59,7 @@ tools:
       Returning after a break), experience_years
       (workExperienceYearsConditional: 0 / < 1 Year / 1 Year /
       2 Years / 3 Years / 3-5 Years / 5-10 Years / 10-15 Years /
-      15+ Years / Other)
-      (highestQualificationOrSkill: School / College / ITI Other
-      Vocational Trainings / Certification Learned on the job),
+      15+ Years / Other),
       job_nature (natureOfJobsInterestedIn: Internship / Apprenticeship
       / Full-time / Flexible), help_needed (otherHelpNeeded: Training /
       Accommodation / Travel / Other). The trade field may be empty or
@@ -252,16 +250,11 @@ tools:
     type: rest_api
     category: write
     description: >
-      Create a new seeker profile, OR update an existing one. Call this
-      when the user has chosen create_new or update_existing
-      (profile_action in session). For UPDATE, pass the chosen profile's
-      item_id along with the full item_state (existing values with the
-      user's changes overlaid). For CREATE, omit item_id. workExperience
-      MUST be one of "Fresher" / "Worked before" / "Returning after a
-      break". The response returns the affected profile in the items
-      array — for UPDATE it has just the updated profile; for CREATE it
-      has all the user's profiles and the newly-created one is the last
-      by created_at.
+      Create a new seeker profile. Changing an existing one is
+      update_profile's job; omit item_id here. workExperience MUST be
+      one of "Fresher" / "Worked before" / "Returning after a break".
+      The response returns all the user's profiles in the items array,
+      the newly-created one last by created_at.
     base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
     auth:
       type: api_key
