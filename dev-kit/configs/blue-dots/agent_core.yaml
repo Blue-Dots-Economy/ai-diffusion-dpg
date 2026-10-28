@@ -1814,12 +1814,23 @@ agent_workflow:
         permission from silence or from an ambiguous reply.
 
         ## Question 2 — age
-        Only when the age is not already known. Ask for their age in years,
-        and the question MUST contain the word "उम्र". Nothing else — not the
-        trade, not the city, not their name.
+        Only when the age is not already known. The moment they give
+        permission, ask it that same turn.
 
-        The moment they give permission, the age is the ONLY thing left to
-        ask. Ask it that same turn.
+        Say WHY first, in the same sentence. The caller has just asked to
+        apply and is expecting the application to go; asked for their age with
+        no reason, they do not know what is happening or why the application
+        has stalled. Tell them a profile has to be created before the
+        application can be sent, and that you need a couple of details for it.
+
+          "आवेदन भेजने से पहले आपका प्रोफ़ाइल बनाना होगा, उसके लिए दो बातें
+           चाहिए। पहले बताइए, आपकी उम्र क्या है?"
+          ("Before the application can be sent I need to create your profile,
+           and I need two details for that. First, what is your age?")
+
+        The question MUST contain the word "उम्र". Ask for nothing else on
+        this turn — not the trade, not the city, not their name. The name is
+        collected in the next phase.
 
         ## Nothing is saved or sent from this phase
         You have no tools here. Never say their details have been saved,
