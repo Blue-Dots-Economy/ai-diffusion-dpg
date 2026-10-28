@@ -1640,35 +1640,24 @@ agent_workflow:
     # Both facts are now established in the first two answers.
     # ─────────────────────────────────────────────────────────────
     - id: opening
-      name: Opening & Consent
+      name: Opening
       description: >
-        First phase of every call. Tells the caller their details will be
-        saved so applications can be sent on their behalf, asks consent,
-        then asks their age. Routes minors out to u18_blocked and refusals
-        to ended; everyone else goes on to profile_resolve.
+        First phase of every call. Greets the caller and finds out what work
+        they want. Nothing is collected here and nothing is written. Routes a
+        caller the upstream refused out to u18_blocked; everyone else goes on
+        to profile_resolve.
       is_start: true
       is_terminal: false
-      # Emitted verbatim on the bridge's BLOCKING path. The streaming path
-      # suppresses canned opening phrases (GH-239) because the LLM's own first
-      # reply already greets, so a voice caller hears the equivalent produced
-      # from the system prompt below. Hindi, because it is spoken as written.
-      # Emitted verbatim on turn 1, BEFORE any LLM call. The start-of-call
-      # bootstrap fetch may already have run, but this phrase stays static and
-      # must never ask for consent, because it has to work when that fetch
-      # failed: a caller whose consent is already on file would be asked
-      # anyway, which is the exact behaviour this phase was reworked to stop.
-      # It greets and asks the one thing that is useful for everyone.
+      # Blocking path only; the streaming path suppresses it (GH-239).
       opening_phrase: >
         नमस्ते! ब्लू डॉट्स में आपका स्वागत है। क्या आप काम की तलाश में हैं?
 
-      # Nothing is fetched or written before consent and age are settled.
-      # (The orchestrator still appends end_session to every subagent.)
       tools:
         - fetch_profile
 
       system_prompt: |
-        You are in the **opening** phase. It has exactly two questions,
-        asked one per turn, in this order. Nothing else happens here.
+        You are in the **opening** phase. It asks ONE thing: what work the
+        caller is looking for. Nothing else happens here.
 
         ## Turn 1: greet and ask if they want work
         `fetch_profile` already ran when the call started, before this turn;
@@ -1679,55 +1668,11 @@ agent_workflow:
           "नमस्ते! क्या आप काम की तलाश में हैं?"
           ("Hello! Are you looking for work?")
 
-        Ask NOTHING about consent or age on this turn — the greeting is all
-        this turn does. The fetch tells us what is already on file, so asking
-        now is how a caller ends up being asked for something the system
-        already knows.
-
-        ## Fallback: if you have to fetch yourself, ask for the TRADE, never for consent
-        If the fetch_profile entry is absent from <known_facts> (the
-        start-of-call fetch failed) and you call `fetch_profile` yourself, its
-        flags have not arrived on that turn — tools run after routing, so the
-        result reaches you on the turn AFTER. Asking for consent now is
-        guessing, and for most callers the guess is wrong: they have already
-        consented.
-
-        Ask instead for the one thing needed either way:
-
+        ## Every other turn: ask for the trade
           "आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?"
           ("What work or trade are you looking for?")
 
-        That is useful for every caller, so no turn is wasted while the fetch
-        comes back.
-
-        ## What the fetch tells you
-        These facts are in session state from the first turn when the
-        start-of-call fetch succeeded; otherwise from the turn after you
-        fetch yourself.
-        Three facts arrive in session state:
-
-          has_age        an age is already on file
-          user_terms     terms of use already accepted
-          user_privacy   privacy policy already accepted
-
-        **Ask only for what is false or missing.** If all three are true,
-        say nothing about consent or age at all — routing moves the caller on
-        by itself. Asking a caller to re-consent to something they have
-        already consented to reads as the system not knowing them.
-
-        If the fetch failed and no flags arrived, treat them as unknown and
-        ask as you would for a new caller. Never assume consent was given.
-
-        ### false IS AN ANSWER, AND THE ANSWER IS NO
-        A caller with no record does not come back with these flags missing —
-        the lookup returns all three explicitly **false**. That is not "nothing
-        to go on". It is a definite "this person has agreed to nothing", and it
-        is the commonest case on this line.
-
-        So `user_terms: false` means the consent question below is MANDATORY on
-        this call, before anything is saved on their behalf. Never skip it
-        because the caller seems keen, never fold it into another question, and
-        never go to the trade or the city first.
+        That is useful for every caller, whether or not the fetch came back.
 
         ## TWO ABSOLUTES FOR THIS PHASE
         **1. NEVER call `end_session` here.** Not for any reason, no

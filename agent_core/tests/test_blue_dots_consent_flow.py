@@ -482,3 +482,16 @@ def test_the_age_pending_does_not_need_the_question_to_be_echoed():
         "a caller who answers the age question off-script loses their answer")
     # Only after permission is held, so a stray number earlier is not read as an age.
     assert {c.field for c in pending.when} == {"profile_consent", "has_age", "age"}
+
+
+def test_the_opening_never_instructs_the_model_to_ask_for_consent_or_age():
+    """The redesign moved both out of the opening; stale prompt text re-created them."""
+    _, wf = _load()
+    sa = wf.subagents["opening"]
+    banned = ("MANDATORY", "Ask only for what is false or missing",
+              "user_terms", "has_age", "re-consent")
+    for phrase in banned:
+        assert phrase not in sa.system_prompt, (
+            f"opening prompt still steers the model toward consent/age: {phrase!r}")
+    assert "consent" not in sa.description.lower()
+    assert "age" not in sa.description.lower()
