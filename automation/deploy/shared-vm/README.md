@@ -5,7 +5,7 @@ repo on the VM — the images carry the code, and the clone supplies the domain
 config, which is mounted straight out of `dev-kit/`.
 
 This compose file is standalone and holds what is specific to the VM: the
-secrets init container, loopback-only ports, persistent volumes and shared-host
+secrets init container, loopback-only ports (Grafana aside), persistent volumes and shared-host
 limits. The observability config (collector, Prometheus and blackbox configs,
 Grafana datasources, dashboards and alert rules) is shared with the local
 compose files and mounted from `automation/docker/`; its README describes what
@@ -150,20 +150,21 @@ Two supported options:
 `otelcol` receives traces, metrics and logs from every DPG service and forwards
 them to Jaeger, Prometheus and Loki; Grafana reads all three.
 
-Nothing here is authenticated beyond Grafana's admin password, so all of it is
-bound to `127.0.0.1`. Reach it over an SSH tunnel:
+Grafana is published on port 3001 on every interface of the VM, so anyone on
+the VPN reaches it directly at `http://<vm-address>:3001`; its login is the only
+gate. Jaeger and Prometheus have no authentication, so they stay bound to
+`127.0.0.1`. Reach them over an SSH tunnel:
 
 ```bash
-ssh -L 3001:127.0.0.1:3001 \
-    -L 16686:127.0.0.1:16686 \
+ssh -L 16686:127.0.0.1:16686 \
     -L 9090:127.0.0.1:9090 <user>@<vm>
 ```
 
-| UI | URL through the tunnel | What it shows |
+| UI | URL | What it shows |
 | --- | --- | --- |
-| Grafana | <http://localhost:3001> | everything; `admin` / `$GF_SECURITY_ADMIN_PASSWORD` (default `admin`) |
-| Jaeger | <http://localhost:16686> | per-turn traces, span by span |
-| Prometheus | <http://localhost:9090> | raw metric series |
+| Grafana | `http://<vm-address>:3001` (VPN) | everything; `admin` / `$GF_SECURITY_ADMIN_PASSWORD` (default `admin`) |
+| Jaeger | <http://localhost:16686> (tunnel) | per-turn traces, span by span |
+| Prometheus | <http://localhost:9090> (tunnel) | raw metric series |
 
 Grafana is on **3001**, not the usual 3000 — the telephony platform's frontend
 uses 3000 on this host.
@@ -217,7 +218,8 @@ unconditionally, with no profile. VM specifics:
   Service Status and never alert: *Service down* only fires for a service that
   was up in the last 24 hours.
 - **`GRAFANA_ROOT_URL`** (default `http://localhost:3001`) is the base of the
-  dashboard links in each alert, which open through the SSH tunnel above.
+  dashboard links in each alert; set it to `http://<vm-address>:3001` so they
+  open over the VPN.
 - **Retention:** Prometheus keeps 15 days on a volume; Loki and Grafana state
   are on volumes too. Jaeger keeps traces in memory, so a restart loses them,
   and only the latest 5000 (`MEMORY_MAX_TRACES`); without that cap it grew
@@ -242,7 +244,7 @@ then replace the tag with `@sha256:<digest>` in `docker-compose.yml`.
 
 - All images are `linux/amd64`, published public — no `docker login` needed.
 - The only published ports are the bridge, the web UI and the three
-  observability UIs, and every one of them is bound to `127.0.0.1`. The three
+  observability UIs. All are bound to `127.0.0.1` except Grafana. The three
   exporters publish nothing; Prometheus reaches them inside `dpg_net`.
 - `cadvisor` runs privileged with read-only mounts of `/`, `/sys` and
   `/var/lib/docker` — its documented requirement for reading every

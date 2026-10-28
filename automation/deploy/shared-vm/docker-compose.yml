@@ -1,7 +1,7 @@
 # ai-diffusion-dpg — shared VM deployment.
 #
 # A standalone compose file with what is specific to the VM: the secrets init
-# container (SSM, instance role), loopback-only ports, persistent volumes and
+# container (SSM, instance role), loopback-only ports (Grafana aside), persistent volumes and
 # the shared-host limits. The observability config itself is shared with the
 # local compose files and mounted from automation/docker/: the collector,
 # Prometheus and blackbox configs, and Grafana's provisioning and dashboards.
@@ -225,10 +225,10 @@ services:
   # received was dropped on export, and the metrics it published on :8889 had
   # nothing scraping them. The collector was running and doing nothing.
   #
-  # All four are loopback-only, like the bridge and the web UI: none of them
-  # has authentication worth relying on, and this is a shared box. Reach them
-  # over an SSH tunnel, e.g.
-  #     ssh -L 3001:127.0.0.1:3001 -L 16686:127.0.0.1:16686 <user>@<vm>
+  # All but Grafana are loopback-only, like the bridge and the web UI: none of
+  # them has authentication worth relying on, and this is a shared box. Reach
+  # them over an SSH tunnel, e.g.
+  #     ssh -L 16686:127.0.0.1:16686 -L 9090:127.0.0.1:9090 <user>@<vm>
   #
   # Grafana is on host port 3001, not the usual 3000 — 3000 is the port the
   # telephony platform's own frontend uses, and a 0.0.0.0 bind on their side
@@ -376,8 +376,7 @@ services:
     container_name: dpg_grafana
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:-admin}
-      # No sign-up, and no anonymous access — loopback-only is the perimeter,
-      # but a default-open Grafana behind a tunnel is still a bad habit.
+      # No sign-up and no anonymous access: Grafana is reachable over the VPN.
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_AUTH_ANONYMOUS_ENABLED=false
       # Land on the service-status overview after login instead of an empty
@@ -389,7 +388,7 @@ services:
       - GF_FEATURE_TOGGLES_ENABLE=autoMigrateOldPanels
       # Base for every link Grafana generates, including the dashboard links
       # in Discord alerts. Grafana is published on host port 3001 (reached over
-      # the SSH tunnel on the VM), not the 3000 it listens on in the container.
+      # the VPN), not the 3000 it listens on in the container.
       - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3001}
     # The shared contact points read each Discord webhook from an environment
     # variable (automation/docker/grafana/provisioning/alerting). Here the
@@ -411,7 +410,7 @@ services:
       - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets:ro
       - grafana_data:/var/lib/grafana
     ports:
-      - "127.0.0.1:3001:3000"
+      - "3001:3000"
     depends_on:
       init_secrets: { condition: service_completed_successfully }
       prometheus: { condition: service_started }
