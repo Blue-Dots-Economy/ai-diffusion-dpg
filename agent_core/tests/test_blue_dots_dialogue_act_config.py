@@ -84,7 +84,10 @@ def test_off_track_rule_precedes_catch_all_everywhere():
         catch_all = next((i for i, r in enumerate(sub.routing)
                           if r.intent == "*" and not r.conditions and not r.condition), None)
         if catch_all is not None:
-            assert "off_track" in intents and intents.index("off_track") < catch_all, sid
+            assert "off_track" in intents, f"{sid} has no off_track rule"
+            assert intents.index("off_track") < catch_all, (
+                f"{sid} reaches its catch-all before off_track")
+
 
 def test_blue_dots_journey_routes_end_to_end():
     """Real TurnUnderstander + real routing over the Blue Dots workflow, scripted NLU (spec §12)."""
