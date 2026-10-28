@@ -177,8 +177,42 @@ The bot never handles coordinates or a Google key.
 These apply to approaches 1, 2 and 3, which all filter by radius.
 
 - **Jobs without coordinates disappear.** A job with no coordinates can never be inside a radius. On UAT that is 14 of 468 jobs (3%). 13 of them have location text that did not resolve to coordinates, and 1 has no location at all. Those jobs need re-geocoding or fixing at the source, or they are invisible to voice callers.
-- **The trade still needs a floor.** As measured, once a city's jobs of the asked trade run out, other trades fill the list. A minimum relevance score is needed, so "no cook jobs in Bengaluru" is said as exactly that. The cut-off needs tuning on more trades.
+- **The trade still needs a floor.** As measured, once a city's jobs of the asked trade run out, other trades fill the list. A minimum relevance score is needed, so "no cook jobs in Bengaluru" is said as exactly that. The cut-off needs tuning on more trades. Where the score is applied is covered in the next section.
 - **A radius needs a widening rule.** When nothing is found within the default radius, the bot should either widen it or offer the nearest job with its distance ("the nearest welder job is about 70 km away"). That should be a deliberate step, not a silent fallback.
+
+## Minimum relevance score: where to apply it
+
+A floor is needed whichever approach is chosen. It can live in AI Diffusion DPG or in signals-search.
+
+### Today
+
+- **signals-search has no minimum score.** It always returns up to `limit` rows, however weak the match.
+- **AI Diffusion DPG can already drop rows below a score, but does not.** The `fetch_jobs` result-shaping rule supports `drop_when: { field: match_score, operator: lt, value: <floor> }`. It is not set today.
+
+### Option A: drop low-score rows in AI Diffusion DPG
+
+No API change. The rows are dropped once, when the tool result arrives, before anything else reads it. The LLM, the cached result and the "which job did the caller pick" resolver all see the same shortened list. So "the first one" always means the first job the bot read out. Dropping rows here does **not** cause a list mismatch.
+
+Limits:
+- **It breaks the nearest-first fallback.** The bot's fallback when a city has none of the trade is "the nearest welder job is 70 km away". That search is ordered by distance, not by score. Its five nearest jobs are mostly other trades, so the floor drops all of them, and the bot finds nothing even though welder jobs exist further away.
+- **The count is wrong.** signals-search's `total` still counts every job in the radius (136 for Bengaluru, measured), not the jobs that pass the floor. The bot cannot say "there are 2 welder jobs in Bengaluru", or know whether asking for more will find anything.
+- **Wasted rows.** Five rows are fetched and some are thrown away, so a page can come back with one job, or none, while more good jobs exist.
+- **Each client sets its own floor.** Raya and the Signals UI would each need their own.
+
+### Option B: signals-search applies the floor (recommended)
+
+The request carries a new optional field, for example `minScore: 0.45`. signals-search drops jobs below it **before** ordering and paging, then returns up to `limit` jobs that pass.
+
+Why this helps:
+- **Nearest-first works.** "The nearest welder jobs" returns welder jobs ordered by distance, because the other trades are filtered out first.
+- **`total` becomes the real count of matching jobs**, so the bot can say how many there are and whether asking for more is worth it.
+- **Each page is full**, up to `limit` jobs that pass, instead of a page with a hole in it.
+- **One floor for every client.**
+
+Limits:
+- **It is a new field on `/v1/search` and needs API approval**, the same as the `place` field in approach 1. Both could be proposed together.
+- **The floor depends on the query.** Scores for a one-word trade query ("Mason", 0.47) run lower than for others ("Electrician", 0.68). One fixed number may be too strict for some trades and too loose for others. The value must be tuned on many trades, and should stay per-request rather than fixed inside signals-search.
+- **A score filter makes the search index work harder.** When few jobs pass the floor, the database checks more candidates to fill a page. At today's size (hundreds of jobs on UAT, about 11,000 on the test cluster) this is negligible. It should be measured before the job count grows by orders of magnitude.
 
 ## Open questions for review
 
@@ -186,3 +220,4 @@ These apply to approaches 1, 2 and 3, which all filter by radius.
 2. Is moving profile creation before the job search acceptable as a product change (approach 2)?
 3. What is the default radius, and how far should the bot widen it before offering the nearest job?
 4. How should the 14 jobs without coordinates be handled?
+5. Should the minimum relevance score be applied in signals-search (a new `minScore` field, option B) or in AI Diffusion DPG (option A)? Either way, what is the starting value?
