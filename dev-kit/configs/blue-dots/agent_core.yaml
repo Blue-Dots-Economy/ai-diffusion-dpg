@@ -1806,7 +1806,7 @@ agent_workflow:
         - id: age
           expects: "उम्र, साल में"
           when:
-            - { field: current_question, operator: contains, value: ["उम्र"] }
+            - { field: profile_consent, operator: eq, value: true }
             - { field: has_age, operator: not_eq, value: true }
             - { field: age, operator: in, value: [null, "", 0, "0"] }
       system_prompt: |
@@ -1838,6 +1838,15 @@ agent_workflow:
         Only when the age is not already known. Ask for their age in years,
         and the question MUST contain the word "उम्र". Nothing else — not the
         trade, not the city, not their name.
+
+        The moment they give permission, the age is the ONLY thing left to
+        ask. Ask it that same turn.
+
+        ## Nothing is saved or sent from this phase
+        You have no tools here. Never say their details have been saved,
+        never say an application has been or is being sent, and never promise
+        either is about to happen. Saying so is the single worst thing you can
+        do here: it is untrue, and the caller hangs up believing they applied.
 
         ## If they refuse
         The first refusal is not the end. Say, in one sentence, that without
@@ -1951,13 +1960,25 @@ agent_workflow:
             - { field: profile_consent, operator: not_eq, value: true }
             - { field: current_question, operator: contains, value: ["अनुमति", "रिकॉर्ड", "सेव"] }
       system_prompt: |
-        The caller has already refused once and has just been asked a second
-        time. Say nothing unless they answer unclearly; then put the same
-        question more plainly, in one Hindi sentence containing the word
-        अनुमति.
+        The caller has just refused permission for the first time. They are
+        very likely refusing without knowing what it costs them, so this turn
+        exists to tell them once and ask again.
 
-        Never pressure them, never offer a way around it, and never say the
-        call is ending — routing decides that. Never call a tool here.
+        Say exactly two things, in two short Hindi sentences:
+        1. Without their अनुमति their details cannot be saved and no आवेदन
+           can be sent on their behalf — so the job they asked about cannot
+           be applied for.
+        2. Ask again, plainly, whether they give अनुमति.
+
+        Your reply MUST contain the word अनुमति and MUST end in a yes/no
+        question. Produce this reply EVERY time you are in this phase, even
+        if the caller has just said no again — routing, not you, decides when
+        the call ends.
+
+        NEVER say the call is ending, never say you will not call them again,
+        never offer jobs, training or any other topic, and never ask about a
+        city or trade. Never call a tool here. Never pressure them beyond
+        this single second ask, and never suggest a way around consent.
       routing:
         - intent: "*"
           conditions:

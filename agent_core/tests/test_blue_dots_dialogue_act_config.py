@@ -34,8 +34,10 @@ def test_blue_dots_config_loads():
     ("opening", {}, None),
     ("consent", {"current_question": "आपकी जानकारी सेव करने की अनुमति चाहिए। ठीक है?"}, "consent"),
     # Live shape: Memory Layer seeds int age and has returned it as "0".
-    ("consent", {"current_question": "आपकी उम्र क्या है?", "has_age": "false", "age": "0"}, "age"),
-    ("consent", {"current_question": "आपकी उम्र क्या है?", "has_age": True}, None),
+    ("consent", {"current_question": "आपकी उम्र क्या है?", "profile_consent": True,
+     "has_age": "false", "age": "0"}, "age"),
+    ("consent", {"current_question": "आपकी उम्र क्या है?", "profile_consent": True,
+     "has_age": True}, None),
     ("profile_resolve", {"profile_item_id": "p1",
                          "current_question": "मुझे आपकी जानकारी मिली — वेल्डर, बेंगलुरु। "
                                              "क्या इन्हीं से नौकरियाँ ढूंढूँ?"}, "use_saved_details"),

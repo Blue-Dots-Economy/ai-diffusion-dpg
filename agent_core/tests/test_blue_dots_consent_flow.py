@@ -145,7 +145,8 @@ def test_consent_pending_needs_the_consent_question_to_have_been_asked():
     _, wf = _load()
     r = PendingResolver(wf)
     assert r.resolve("consent", {"current_question": _ASKED_CONSENT}).id == "consent"
-    assert r.resolve("consent", {"current_question": _ASKED_AGE, "has_age": "false"}).id == "age"
+    assert r.resolve("consent", {"current_question": _ASKED_AGE, "has_age": "false",
+                                 "profile_consent": True}).id == "age"
 
 
 def test_nothing_is_pending_before_the_bot_has_asked_anything():
@@ -346,7 +347,8 @@ def test_the_consent_pending_shuts_once_consent_is_held():
     _, wf = _load()
     state = {"current_question": _ASKED_CONSENT, "user_terms": True,
              "user_privacy": True, "profile_consent": True}
-    assert PendingResolver(wf).resolve("consent", state) is None
+    resolved = PendingResolver(wf).resolve("consent", state)
+    assert resolved is None or resolved.id != "consent"
 
 
 def test_a_caller_can_end_the_call_from_the_consent_phase():
@@ -470,3 +472,13 @@ def test_an_under_age_caller_is_blocked_from_the_reask_too():
 def test_the_reask_keeps_its_own_consent_pending():
     _, wf = _load()
     assert any(p.id == "consent" for p in wf.subagents["consent_reask"].pending)
+
+
+def test_the_age_pending_does_not_need_the_question_to_be_echoed():
+    """consent exists to collect consent and age; a stated age must land either way."""
+    _, wf = _load()
+    pending = next(p for p in wf.subagents["consent"].pending if p.id == "age")
+    assert not [c for c in pending.when if c.field == "current_question"], (
+        "a caller who answers the age question off-script loses their answer")
+    # Only after permission is held, so a stray number earlier is not read as an age.
+    assert {c.field for c in pending.when} == {"profile_consent", "has_age", "age"}
