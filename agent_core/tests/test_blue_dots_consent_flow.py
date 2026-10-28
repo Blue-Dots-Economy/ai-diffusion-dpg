@@ -495,3 +495,27 @@ def test_the_opening_never_instructs_the_model_to_ask_for_consent_or_age():
             f"opening prompt still steers the model toward consent/age: {phrase!r}")
     assert "consent" not in sa.description.lower()
     assert "age" not in sa.description.lower()
+
+
+def test_a_caller_with_nothing_on_file_gets_a_spoken_first_turn():
+    """Turn 1 was model-written for new callers, and asked for consent in 43% of calls."""
+    _, wf = _load()
+    sa = wf.subagents["trade_ask"]
+    assert sa.fixed_opening
+    assert sa.fixed_opening_requires == ["journey_id"]
+    for word in ("अनुमति", "सेव", "उम्र"):
+        assert word not in sa.fixed_opening, f"the first turn must not raise {word!r}"
+
+
+def test_the_opening_sends_a_new_caller_to_that_turn_and_a_returning_one_past_it():
+    assert _route("opening", {"stored_trade": ""})[0] == "trade_ask"
+    assert _route("opening", {"stored_trade": "Welder"})[0] == "profile_resolve"
+
+
+def test_the_first_turn_hands_straight_on():
+    assert _route("trade_ask", {"trade": "Welder"})[0] == "profile_resolve"
+
+
+def test_a_caller_can_still_end_the_call_from_the_first_turn():
+    assert _route("trade_ask", {}, intent="termination_intent")[0] == "ended"
+    assert _route("trade_ask", {}, intent="termination_blocked")[0] == "confirm_close"

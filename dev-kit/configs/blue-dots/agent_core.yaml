@@ -1725,6 +1725,40 @@ agent_workflow:
           next_subagent_id: confirm_close
           session_writes: { close_return_to: opening }
         - intent: "*"
+          conditions: [{ field: stored_trade, operator: not_eq, value: "" }]
+          next_subagent_id: profile_resolve
+        - intent: "*"
+          next_subagent_id: trade_ask
+
+    - id: trade_ask
+      name: Ask For The Trade
+      description: >
+        The first spoken turn for a caller with nothing on file. Asks the one
+        question useful to everyone — what work they want — then hands on to
+        profile_resolve. Collects nothing else and writes nothing.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "नमस्ते!"
+      # Every caller has a journey_id, so this always speaks rather than the model.
+      fixed_opening: "नमस्ते! ब्लू डॉट्स में आपका स्वागत है। आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?"
+      fixed_opening_requires: [journey_id]
+      tools: []
+      system_prompt: |
+        Ask ONE short Hindi sentence: what work or trade the caller is looking
+        for. Nothing else — not their name, not their age, and never
+        permission to save anything. Never call a tool here.
+      routing:
+        - intent: off_track
+          next_subagent_id: trade_ask
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: trade_ask }
+        - intent: "*"
           next_subagent_id: profile_resolve
 
     - id: consent
