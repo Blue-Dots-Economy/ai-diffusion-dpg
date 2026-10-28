@@ -1758,6 +1758,9 @@ agent_workflow:
         - intent: termination_blocked
           next_subagent_id: confirm_close
           session_writes: { close_return_to: trade_ask }
+        - intent: services_request
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
         - intent: "*"
           next_subagent_id: profile_resolve
 

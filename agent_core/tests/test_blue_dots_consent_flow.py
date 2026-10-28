@@ -530,3 +530,18 @@ def test_the_consent_prompts_do_not_mix_english_into_the_line_to_speak():
             f"{sid}: an English phrase inside the sentence to speak is copied through")
         assert "हिंदी" in prompt or "Hindi only" in prompt, (
             f"{sid}: the prompt must say the spoken reply is Hindi only")
+
+
+def test_the_first_turn_does_not_swallow_a_request_for_help():
+    """trade_ask sits in front of profile_resolve, so it must route what that phase routes."""
+    assert _route("trade_ask", {}, intent="services_request")[0] == "service_match"
+
+
+def test_the_first_turn_passes_on_every_intent_profile_resolve_acts_on():
+    _, wf = _load()
+    def targets(sid):
+        return {r.intent: r.next_subagent_id for r in wf.subagents[sid].routing
+                if r.intent != "*" and r.next_subagent_id not in (sid, "ended", "confirm_close")}
+    missing = {i: t for i, t in targets("profile_resolve").items()
+               if t != "job_match" and i not in targets("trade_ask")}
+    assert not missing, f"trade_ask swallows {missing} before profile_resolve can act"
