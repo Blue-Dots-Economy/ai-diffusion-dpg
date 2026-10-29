@@ -58,7 +58,7 @@ def test_blue_dots_config_loads():
                          "profile_item_id": "p1",
                          "subagent_entry_count": {"profile_resolve": 1}}, "wants_services"),
     ("profile_update", {}, None),
-    ("profile_update", {"current_question": "क्या इन्हीं से नौकरियाँ ढूंढूँ?"}, "what_to_change"),
+    ("profile_update", {"current_question": "क्या आपके सेव किए गए शहर में ही नौकरियाँ ढूंढूँ?"}, "what_to_change"),
     ("profile_update", {"current_question": "क्या बदलना है — काम या शहर?"}, "what_to_change"),
     ("profile_update_confirm", {}, "confirm_update"),
     ("apply_confirm", {"applications_submitted": 0}, "submit_confirm"),
@@ -659,3 +659,73 @@ def test_yes_in_job_match_applies_only_with_a_selected_job(selected, expected):
         current_subagent=wf.subagents["job_match"], nlu_result=u.nlu_result, session=state)
     assert u.nlu_result.intent == "apply_now"
     assert nxt == expected
+
+
+def _route_update(step, state, intent):
+    from src.models import NLUResult
+    from tests.test_stream_turn import _make_agent_core
+
+    _, wf = _load()
+    agent = _make_agent_core(workflow=wf)
+    return agent._resolve_next_subagent(
+        current_subagent=wf.subagents[step],
+        nlu_result=NLUResult(intent=intent, entities={}, confidence=1.0),
+        session=dict(state),
+    )
+
+
+@pytest.mark.parametrize("step, state, intent, expected", [
+    ("profile_update", {"update_return_to": "job_match"}, "profile_update_declined", "job_match"),
+    ("profile_update", {"update_return_to": "apply_confirm"}, "profile_update_declined", "apply_confirm"),
+    ("profile_update", {"update_return_to": "service_match"}, "profile_update_declined", "service_match"),
+    ("profile_update_confirm", {"update_return_to": "apply_confirm"}, "profile_update_declined", "apply_confirm"),
+    ("profile_update_confirm", {"update_return_to": "service_match"}, "profile_update_declined", "service_match"),
+    ("profile_update_confirm", {"update_return_to": "job_match"}, "profile_update_declined", "job_match"),
+])
+def test_a_decline_goes_back_where_the_caller_came_from(step, state, intent, expected):
+    nxt, rule = _route_update(step, state, intent)
+    assert nxt == expected
+    assert rule.session_writes["update_stage"] == "skipped"
+
+
+@pytest.mark.parametrize("step, state, intent, expected", [
+    ("profile_update", {"trade": "Welder", "update_return_to": "job_match"}, "profile_update_declined", "job_match"),
+    ("profile_update", {"location": "Ghaziabad", "update_return_to": "job_match"}, "services_request", "service_match"),
+])
+def test_a_leftover_search_value_no_longer_captures_the_turn(step, state, intent, expected):
+    assert _route_update(step, state, intent)[0] == expected
+
+
+@pytest.mark.parametrize("step", ["job_match", "profile_resolve", "apply_confirm", "service_match"])
+def test_every_route_into_the_update_phase_clears_the_stage(step):
+    nxt, rule = _route_update(step, {"profile_item_id": "p1"}, "update_profile_request")
+    assert nxt == "profile_update"
+    assert rule.session_writes["update_stage"] == ""
+    assert rule.session_writes["update_return_to"] == (step if step != "profile_resolve" else "job_match")
+
+
+@pytest.mark.parametrize("state, expected", [
+    ({"update_stage": True, "update_return_to": "apply_confirm"}, "apply_confirm"),
+    ({"update_stage": True, "update_return_to": "service_match"}, "service_match"),
+    ({"update_stage": True, "update_return_to": "job_match"}, "job_match"),
+    ({"update_stage": "skipped", "update_return_to": "job_match"}, "job_match"),
+    ({"update_stage": "", "update_return_to": "job_match"}, "profile_update_confirm"),
+])
+def test_the_confirm_phase_is_left_only_once_the_write_landed(state, expected):
+    assert _route_update("profile_update_confirm", state, "any_input")[0] == expected
+
+
+def test_a_yes_no_longer_records_the_write_before_it_happens():
+    nxt, rule = _route_update("profile_update_confirm", {}, "profile_update_confirmed")
+    assert nxt == "profile_update_confirm"
+    assert "update_stage" not in (rule.session_writes or {})
+
+
+def test_nothing_to_change_is_read_as_a_decline():
+    from src.understanding.models import DialogueActResult
+    u = _understand_once(
+        "profile_update",
+        {"current_question": "क्या बदलना है — काम या शहर?"},
+        DialogueActResult(acts=("deny",), relation="answers_pending"),
+    )
+    assert u.nlu_result.intent == "profile_update_declined"

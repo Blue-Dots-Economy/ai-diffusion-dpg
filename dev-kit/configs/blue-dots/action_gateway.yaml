@@ -500,7 +500,6 @@ tools:
           # stored_name: the upstream requires a top-level name on an update.
           name: "{stored_name}"
           phone_number: "+{user_id}"
-          age: "{age}"
           compliance:
             - key: "user_terms"
               value: true
@@ -533,10 +532,6 @@ tools:
             source: session
             type: string
             required: false
-          - name: age
-            source: session
-            type: integer
-            required: false
           - name: location
             source: agent
             type: string
@@ -565,6 +560,9 @@ tools:
             type: string
             required: false
     response:
+      session_mapping:
+        - source: "user_existed"
+          target: update_stage
       projection:
         fields:
           user_id: user_id

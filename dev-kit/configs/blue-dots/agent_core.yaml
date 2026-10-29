@@ -895,6 +895,9 @@ preprocessing:
       # Mentioning someone, or asking whom to contact at the company, is not asking for a person now.
       - { pending: select_job, caller: "किसी ने मुझे बताया था", out: { acts: [provide_info], relation: unclear } }
       - { pending: select_job, caller: "कंपनी में किससे बात करनी होगी?", out: { acts: [ask], relation: new_topic, topic: job_details } }
+      - { pending: what_to_change, caller: "कुछ नहीं", out: { acts: [deny], relation: answers_pending } }
+      - { pending: what_to_change, caller: "रहने दीजिए", out: { acts: [deny], relation: answers_pending } }
+      - { pending: what_to_change, caller: "कुछ नहीं बदलना", out: { acts: [deny], relation: answers_pending } }
     act_intents:
       - { acts: [affirm], pending: wants_services, relation: answers_pending, intent: services_request }
       - { acts: [deny], pending: wants_services, relation: answers_pending, intent: services_declined }
@@ -902,6 +905,7 @@ preprocessing:
       - { acts: [request_change], topic: profile, intent: update_profile_request }
       - { acts: [affirm], pending: confirm_update, relation: answers_pending, intent: profile_update_confirmed }
       - { acts: [deny], pending: confirm_update, relation: answers_pending, intent: profile_update_declined }
+      - { acts: [deny], pending: what_to_change, relation: answers_pending, intent: profile_update_declined }
       # Declining jobs, whatever was being asked at the time.
       - { acts: [deny], relation: new_topic, topic: services, intent: jobs_declined }
       - { acts: [deny], pending: consent, relation: answers_pending, intent: decline }
@@ -2305,7 +2309,7 @@ agent_workflow:
       # fixed line bypasses the "speak a city, not an address" rule, which
       # only constrains what the MODEL writes. Referring to the saved city
       # without reciting it keeps the turn short and cannot leak an address.
-      fixed_opening: "मुझे आपकी जानकारी मिली — {stored_trade}, {stored_location}। क्या इन्हीं से नौकरियाँ ढूंढूँ?"
+      fixed_opening: "मुझे आपकी जानकारी मिली — {stored_trade}। क्या आपके सेव किए गए शहर में ही नौकरियाँ ढूंढूँ?"
       # stored_location is REQUIRED even though the line no longer interpolates
       # it. The sentence offers to search "in your saved city", which is only
       # meaningful if one exists — drop it from this list and a returning caller
@@ -2904,7 +2908,7 @@ agent_workflow:
           session_writes: { services_in_play: "true" }
         - intent: update_profile_request
           next_subagent_id: profile_update
-          session_writes: { update_return_to: job_match }
+          session_writes: { update_return_to: job_match, update_stage: "" }
         - intent: jobs_declined
           next_subagent_id: job_match
         - intent: services_declined
@@ -3379,7 +3383,7 @@ agent_workflow:
       tools: []
       pending:
         - id: what_to_change
-          when: [{ field: current_question, operator: contains, value: ["इन्हीं से", "क्या बदलना है"] }]
+          when: [{ field: current_question, operator: contains, value: ["सेव किए गए शहर", "क्या बदलना है"] }]
           expects: "काम या शहर — क्या बदलना है"
       system_prompt: |
         ## Which turn you are on
@@ -3462,17 +3466,20 @@ agent_workflow:
           session_writes: { close_return_to: profile_update }
         - intent: jobs_declined
           next_subagent_id: profile_update
+        - intent: services_request
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
+        - { intent: profile_update_declined, conditions: [{ field: update_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm, session_writes: { update_stage: skipped } }
+        - { intent: profile_update_declined, conditions: [{ field: update_return_to, operator: eq, value: service_match }], next_subagent_id: service_match, session_writes: { update_stage: skipped } }
+        - { intent: profile_update_declined, next_subagent_id: job_match, session_writes: { update_stage: skipped } }
         # Stays here: only this phase holds update_profile.
         # Two rules: conditions are AND-ed and only one field may change.
         - { intent: "*", conditions: [{ field: trade, operator: not_eq, value: "" }, { field: update_stage, operator: in, value: [null, ""] }], next_subagent_id: profile_update_confirm }
         - { intent: "*", conditions: [{ field: location, operator: not_eq, value: "" }, { field: update_stage, operator: in, value: [null, ""] }], next_subagent_id: profile_update_confirm }
-        - intent: services_request
-          next_subagent_id: service_match
-          session_writes: { services_in_play: "true" }
         # Only leave once the write is settled, or the confirm is skipped.
-        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }, { field: update_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
-        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }, { field: update_return_to, operator: eq, value: service_match }], next_subagent_id: service_match }
-        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }], next_subagent_id: job_match }
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [true, skipped] }, { field: update_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [true, skipped] }, { field: update_return_to, operator: eq, value: service_match }], next_subagent_id: service_match }
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [true, skipped] }], next_subagent_id: job_match }
         - intent: "*"
           next_subagent_id: profile_update
 
@@ -3533,14 +3540,13 @@ agent_workflow:
           session_writes: { close_return_to: profile_update_confirm }
         - intent: profile_update_confirmed
           next_subagent_id: profile_update_confirm
-          session_writes: { update_stage: written }
         # Straight out: another turn here and the model claims a write.
-        - intent: profile_update_declined
-          next_subagent_id: job_match
-          session_writes: { update_stage: skipped }
-        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }, { field: update_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
-        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }, { field: update_return_to, operator: eq, value: service_match }], next_subagent_id: service_match }
-        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [written, skipped] }], next_subagent_id: job_match }
+        - { intent: profile_update_declined, conditions: [{ field: update_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm, session_writes: { update_stage: skipped } }
+        - { intent: profile_update_declined, conditions: [{ field: update_return_to, operator: eq, value: service_match }], next_subagent_id: service_match, session_writes: { update_stage: skipped } }
+        - { intent: profile_update_declined, next_subagent_id: job_match, session_writes: { update_stage: skipped } }
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [true, skipped] }, { field: update_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [true, skipped] }, { field: update_return_to, operator: eq, value: service_match }], next_subagent_id: service_match }
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [true, skipped] }], next_subagent_id: job_match }
         - intent: "*"
           next_subagent_id: profile_update_confirm
 
@@ -4139,6 +4145,9 @@ agent_workflow:
           next_subagent_id: ended
         - intent: termination_blocked
           next_subagent_id: confirm_close
+        - intent: update_profile_request
+          next_subagent_id: profile_update
+          session_writes: { update_return_to: service_match, update_stage: "" }
         - intent: explore_more
           next_subagent_id: job_match
           session_writes: { services_in_play: "false", selected_service_item_id: "" }
