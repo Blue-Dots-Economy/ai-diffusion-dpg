@@ -150,10 +150,12 @@ Two supported options:
 `otelcol` receives traces, metrics and logs from every DPG service and forwards
 them to Jaeger, Prometheus and Loki; Grafana reads all three.
 
-Grafana is published on port 3001 on every interface of the VM, so anyone on
-the VPN reaches it directly at `http://<vm-address>:3001`; its login is the only
-gate. Jaeger and Prometheus have no authentication, so they stay bound to
-`127.0.0.1`. Reach them over an SSH tunnel:
+Grafana is published on port 3001 at `GRAFANA_BIND_ADDR`. Set it in `.env` to
+the VM's VPN-facing address and anyone on the VPN reaches Grafana at
+`http://<vm-address>:3001`; its login is the only gate. Left unset, Grafana
+stays on `127.0.0.1` and is reached over the SSH tunnel like the rest. Jaeger
+and Prometheus have no authentication, so they stay bound to `127.0.0.1`.
+Reach them over an SSH tunnel:
 
 ```bash
 ssh -L 16686:127.0.0.1:16686 \
@@ -162,7 +164,7 @@ ssh -L 16686:127.0.0.1:16686 \
 
 | UI | URL | What it shows |
 | --- | --- | --- |
-| Grafana | `http://<vm-address>:3001` (VPN) | everything; `admin` / `$GF_SECURITY_ADMIN_PASSWORD` (default `admin`) |
+| Grafana | `http://<vm-address>:3001` (VPN) | everything; `admin` / `$GF_SECURITY_ADMIN_PASSWORD` |
 | Jaeger | <http://localhost:16686> (tunnel) | per-turn traces, span by span |
 | Prometheus | <http://localhost:9090> (tunnel) | raw metric series |
 
@@ -172,10 +174,17 @@ uses 3000 on this host.
 Loki is deliberately not published: Grafana queries it inside `dpg_net` and
 nothing needs it from the host.
 
-Set a real Grafana password in `.env` before deploying:
+A Grafana login is a login to everything above: through its datasources it
+queries the Loki logs, Jaeger traces and Prometheus metrics, so share it only
+with people who may see all of them.
+
+`GF_SECURITY_ADMIN_PASSWORD` is required; `docker compose` refuses to start
+without it. Grafana applies it only when its data volume is first created, so
+on an existing install it must match the password already in use:
 
 ```
 GF_SECURITY_ADMIN_PASSWORD=<something other than admin>
+GRAFANA_BIND_ADDR=<vm-address>
 ```
 
 ### Checking it works
@@ -244,7 +253,8 @@ then replace the tag with `@sha256:<digest>` in `docker-compose.yml`.
 
 - All images are `linux/amd64`, published public — no `docker login` needed.
 - The only published ports are the bridge, the web UI and the three
-  observability UIs. All are bound to `127.0.0.1` except Grafana. The three
+  observability UIs. All are bound to `127.0.0.1` except Grafana, which is
+  bound to `GRAFANA_BIND_ADDR` (default `127.0.0.1`). The three
   exporters publish nothing; Prometheus reaches them inside `dpg_net`.
 - `cadvisor` runs privileged with read-only mounts of `/`, `/sys` and
   `/var/lib/docker` — its documented requirement for reading every
