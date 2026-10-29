@@ -591,3 +591,26 @@ def test_a_caller_who_refused_twice_can_still_ask_to_apply():
 def test_a_refusal_on_a_later_visit_skips_the_re_ask():
     state = {**_REFUSED_TWICE, "consent_response": "declined"}
     assert _route("consent", state)[0] == "consent_declined"
+
+
+def test_a_refusal_routes_on_the_act_not_only_the_extracted_slot():
+    """acts=deny on the consent pending derives `decline`; the slot is filled less reliably."""
+    assert _route("consent", {"consent_declines": 0}, intent="decline")[0] == "consent_reask"
+    assert _route("consent", {"consent_declines": 1}, intent="decline")[0] == "consent_declined"
+    assert _route("consent_reask", {"consent_declines": 1}, intent="decline")[0] == "consent_declined"
+
+
+def test_a_refusal_counted_once_is_counted_again_on_the_act_route():
+    _, rule = _route("consent", {"consent_declines": 0}, intent="decline")
+    assert rule.session_writes["consent_declines"] == 1
+    assert rule.session_writes["consent_response"] == ""
+
+
+@pytest.mark.parametrize("sid", ["job_match", "job_details", "service_match"])
+def test_a_phase_with_no_write_tool_may_not_claim_one_ran(sid):
+    """The caller hangs up believing they applied; nothing was sent."""
+    _, wf = _load()
+    phase = wf.subagents[sid]
+    assert not ({"save_profile", "apply_job", "connect_service"} & set(phase.tools or []))
+    assert "never say an application has been or is being sent" in phase.system_prompt.lower(), (
+        f"{sid} has no write tool but its prompt does not forbid claiming a send")

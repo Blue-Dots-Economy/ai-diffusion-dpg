@@ -1878,8 +1878,16 @@ agent_workflow:
           next_subagent_id: consent_declined
           session_writes: { user_storage_mode: "anonymous", consent_given: false,
                             consent_response: "" }
+        - intent: decline
+          conditions: [{ field: consent_declines, operator: gt, value: 0 }]
+          next_subagent_id: consent_declined
+          session_writes: { user_storage_mode: "anonymous", consent_given: false,
+                            consent_response: "" }
         - intent: "*"
           conditions: [{ field: consent_response, operator: eq, value: "declined" }]
+          next_subagent_id: consent_reask
+          session_writes: { consent_declines: 1, consent_response: "" }
+        - intent: decline
           next_subagent_id: consent_reask
           session_writes: { consent_declines: 1, consent_response: "" }
         # Granted with an age already satisfied: leave now, do not spend a turn.
@@ -2008,6 +2016,10 @@ agent_workflow:
           next_subagent_id: consent_declined
           session_writes: { user_storage_mode: "anonymous", consent_given: false,
                             consent_response: "" }
+        - intent: decline
+          next_subagent_id: consent_declined
+          session_writes: { user_storage_mode: "anonymous", consent_given: false,
+                            consent_response: "" }
         - intent: "*"
           conditions:
             - { field: consent_response, operator: eq, value: "granted" }
@@ -2070,11 +2082,17 @@ agent_workflow:
         ट्रेनिंग से जुड़ी और किसी बात में मदद करूँ, या कॉल यहीं ख़त्म करूँ?
       special_handler: null
       tools: []
+      fixed_opening: "ठीक है, कोई बात नहीं। आपकी कोई जानकारी सेव नहीं की गई है। नौकरी या ट्रेनिंग से जुड़ी और किसी बात में मदद करूँ, या कॉल यहीं ख़त्म करूँ?"
+      fixed_opening_requires: [consent_declines]
       system_prompt: |
         The caller has refused permission to save their details a second time.
 
-        Say exactly this one sentence and nothing else:
+        Say exactly this one sentence, on its own:
         "ठीक है, कोई बात नहीं। आपकी कोई जानकारी सेव नहीं की गई है। नौकरी या ट्रेनिंग से जुड़ी और किसी बात में मदद करूँ, या कॉल यहीं ख़त्म करूँ?"
+
+        Nothing before it and nothing after it. No greeting, no
+        "धन्यवाद", no goodbye — a thank-you after the question makes it
+        sound like the call is over, and the caller stops answering.
 
         The spoken reply is हिंदी only — every word of it. An English word
         left in the sentence is read out as-is to the caller.
@@ -2725,6 +2743,12 @@ agent_workflow:
         `fetch_jobs`, and present the NEW results. Do not narrate
         old results.
 
+
+        ## Nothing is saved or sent from this phase
+        You have no tool that writes anything here. Never say their details
+        have been saved, never say an application has been or is being sent,
+        and never promise either is about to happen. Saying so is untrue and
+        the caller hangs up believing they applied.
       pending:
         # #439: after describing one job this phase asks the submit question
         # itself ("क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"). Under select_job a
@@ -2867,6 +2891,12 @@ agent_workflow:
         You cannot apply from here, and you must never say an application
         was sent. When the caller says yes, the next phase sends it.
 
+
+        ## Nothing is saved or sent from this phase
+        You have no tool that writes anything here. Never say their details
+        have been saved, never say an application has been or is being sent,
+        and never promise either is about to happen. Saying so is untrue and
+        the caller hangs up believing they applied.
       pending:
         - id: submit_confirm
           expects: "आवेदन भेजूँ? हाँ/नहीं, इस जॉब के बारे में सवाल, या दूसरी job चुनना"
@@ -3847,6 +3877,12 @@ agent_workflow:
         sends one. Picking one here only means the caller wants us to put
         them in touch.
 
+
+        ## Nothing is saved or sent from this phase
+        You have no tool that writes anything here. Never say their details
+        have been saved, never say an application has been or is being sent,
+        and never promise either is about to happen. Saying so is untrue and
+        the caller hangs up believing they applied.
       pending:
         - id: select_service
           expects: "offered organisations में से एक, या नौकरियों पर वापस"

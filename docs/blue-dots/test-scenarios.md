@@ -228,6 +228,23 @@ Continue B2d, but refuse the permission question instead.
 second re-ask. Saying "नहीं, बस" ends the call. Nothing upstream.
 **Fails if:** the re-ask runs a second time, or the call loops.
 
+### B2f — the offer after a refusal reaches training, not just jobs
+> नमस्ते / वेल्डर / बेंगलुरु / पहला वाला / हाँ भेज दीजिए /
+> नहीं / नहीं / **मुझे ट्रेनिंग चाहिए**
+
+**Expect:** a real organisation list, the same as any other services request.
+Browsing training needs no permission, so the earlier refusal changes nothing
+here.
+**Fails if:** the refusal closes the services path too.
+
+### B2g — nothing else wanted after a refusal
+> नमस्ते / वेल्डर / बेंगलुरु / पहला वाला / हाँ भेज दीजिए /
+> नहीं / नहीं / **नहीं, बस धन्यवाद**
+
+**Expect:** the call ends there, politely, and `end_session` fires. Nothing
+upstream: no participant, no profile, no application.
+**Fails if:** the bot asks again, or the call hangs open after the goodbye.
+
 ### B3 — "पता नहीं" is not a refusal (trade question)
 > नमस्ते / **पता नहीं**
 
