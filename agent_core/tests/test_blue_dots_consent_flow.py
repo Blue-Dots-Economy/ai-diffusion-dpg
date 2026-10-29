@@ -614,3 +614,25 @@ def test_a_phase_with_no_write_tool_may_not_claim_one_ran(sid):
     assert not ({"save_profile", "apply_job", "connect_service"} & set(phase.tools or []))
     assert "never say an application has been or is being sent" in phase.system_prompt.lower(), (
         f"{sid} has no write tool but its prompt does not forbid claiming a send")
+
+
+def test_the_decline_phase_is_not_allowed_to_hang_up():
+    """It asks a question now; ending the call there drops the line mid-question."""
+    cfg = yaml.safe_load((BD / "agent_core.yaml").read_text(encoding="utf-8"))
+    names = cfg["conversation"]["session_end_eval"]["subagents"]
+    assert "consent_declined" not in names
+    assert {"ended", "u18_blocked"} <= set(names)
+
+
+def test_no_prompt_tells_the_model_to_end_the_call_on_a_refusal():
+    cfg = yaml.safe_load((BD / "agent_core.yaml").read_text(encoding="utf-8"))
+    prompt = cfg["conversation"]["session_end_eval"]["prompt"]
+    assert "REFUSES consent" not in prompt
+
+
+def test_the_shared_flow_description_matches_the_phases_that_exist():
+    """agent_system_prompt goes into every phase, so a stale line there is spoken anywhere."""
+    cfg = yaml.safe_load((BD / "agent_core.yaml").read_text(encoding="utf-8"))
+    shared = cfg["agent_workflow"]["agent_system_prompt"]
+    for stale in ("Under 19", "Five phases", "a refusal goes to ended"):
+        assert stale not in shared, f"stale flow text still reaches every phase: {stale!r}"
