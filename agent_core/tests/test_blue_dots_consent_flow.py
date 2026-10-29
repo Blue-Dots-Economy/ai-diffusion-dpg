@@ -545,3 +545,49 @@ def test_the_first_turn_passes_on_every_intent_profile_resolve_acts_on():
     missing = {i: t for i, t in targets("profile_resolve").items()
                if t != "job_match" and i not in targets("trade_ask")}
     assert not missing, f"trade_ask swallows {missing} before profile_resolve can act"
+
+
+_REFUSED_TWICE = {"user_terms": False, "user_privacy": False, "profile_consent": False,
+                  "has_age": False, "profile_item_id": "", "consent_declines": 1,
+                  "consent_given": False}
+
+
+def test_a_second_refusal_asks_what_else_instead_of_ending_the_call():
+    _, wf = _load()
+    phase = wf.subagents["consent_declined"]
+    assert phase.is_terminal is False
+    assert "कॉल यहीं ख़त्म करूँ" in phase.system_prompt
+    assert any(p.id == "closing_offer" for p in phase.pending)
+
+
+def test_the_offer_after_a_refusal_reaches_the_job_search():
+    for intent in ("explore_more", "job_pick", "apply_now"):
+        assert _route("consent_declined", dict(_REFUSED_TWICE), intent=intent)[0] == "job_match", intent
+
+
+def test_the_offer_after_a_refusal_reaches_the_services():
+    nxt, rule = _route("consent_declined", dict(_REFUSED_TWICE), intent="services_request")
+    assert nxt == "service_match"
+    assert rule.session_writes["services_in_play"] == "true"
+
+
+def test_the_offer_after_a_refusal_ends_the_call_when_nothing_else_is_wanted():
+    for intent in ("termination_intent", "services_declined", "decline"):
+        assert _route("consent_declined", dict(_REFUSED_TWICE), intent=intent)[0] == "ended", intent
+
+
+def test_a_second_refusal_clears_the_answer_so_the_question_can_be_asked_again():
+    """A stale "declined" would fire the decline rule before the caller spoke."""
+    state = {**_REFUSED_TWICE, "consent_response": "declined"}
+    _, rule = _route("consent", state)
+    assert rule.next_subagent_id == "consent_declined"
+    assert rule.session_writes["consent_response"] == ""
+
+
+def test_a_caller_who_refused_twice_can_still_ask_to_apply():
+    assert _route("job_match", dict(_REFUSED_TWICE), intent="apply_now")[0] == "consent"
+
+
+def test_a_refusal_on_a_later_visit_skips_the_re_ask():
+    state = {**_REFUSED_TWICE, "consent_response": "declined"}
+    assert _route("consent", state)[0] == "consent_declined"

@@ -1876,7 +1876,8 @@ agent_workflow:
             - { field: consent_response, operator: eq, value: "declined" }
             - { field: consent_declines, operator: gt, value: 0 }
           next_subagent_id: consent_declined
-          session_writes: { user_storage_mode: "anonymous", consent_given: false }
+          session_writes: { user_storage_mode: "anonymous", consent_given: false,
+                            consent_response: "" }
         - intent: "*"
           conditions: [{ field: consent_response, operator: eq, value: "declined" }]
           next_subagent_id: consent_reask
@@ -2005,7 +2006,8 @@ agent_workflow:
         - intent: "*"
           conditions: [{ field: consent_response, operator: eq, value: "declined" }]
           next_subagent_id: consent_declined
-          session_writes: { user_storage_mode: "anonymous", consent_given: false }
+          session_writes: { user_storage_mode: "anonymous", consent_given: false,
+                            consent_response: "" }
         - intent: "*"
           conditions:
             - { field: consent_response, operator: eq, value: "granted" }
@@ -2056,31 +2058,62 @@ agent_workflow:
     - id: consent_declined
       name: Consent Declined
       description: >
-        Terminal. Reached when the caller refuses permission to save their
-        details. Acknowledges the refusal without pressure, states that no
-        information has been saved and that applications cannot be sent
-        without consent, and closes.
+        Reached when the caller refuses permission a second time. Acknowledges
+        the refusal without pressure, says nothing has been saved, and asks
+        whether they want anything else on jobs or training before the call
+        ends. Browsing and training need no consent, so a refusal closes the
+        application path, not the call.
       is_start: false
-      is_terminal: true
+      is_terminal: false
       opening_phrase: >
-        कोई बात नहीं। आपकी कोई जानकारी सेव नहीं की गई है। आपकी सहमति के
-        बिना मैं आपकी ओर से नौकरी के आवेदन नहीं भेज सकती। फ़ोन करने के लिए
-        धन्यवाद।
+        ठीक है, कोई बात नहीं। आपकी कोई जानकारी सेव नहीं की गई है। नौकरी या
+        ट्रेनिंग से जुड़ी और किसी बात में मदद करूँ, या कॉल यहीं ख़त्म करूँ?
       special_handler: null
       tools: []
       system_prompt: |
-        The caller has refused permission to save their details.
+        The caller has refused permission to save their details a second time.
 
-        Say, warmly and in one or two sentences: that is completely fine,
-        nothing has been saved, and without that permission no application
-        can be sent for them. Thank them for calling. Then stop.
+        Say exactly this one sentence and nothing else:
+        "ठीक है, कोई बात नहीं। आपकी कोई जानकारी सेव नहीं की गई है। नौकरी या ट्रेनिंग से जुड़ी और किसी बात में मदद करूँ, या कॉल यहीं ख़त्म करूँ?"
 
         The spoken reply is हिंदी only — every word of it. An English word
         left in the sentence is read out as-is to the caller.
 
-        Do NOT argue, do NOT re-ask for consent, do NOT offer a way around
-        it, and do NOT collect any other detail. Do NOT call any tool.
-      routing: []
+        Do NOT argue, do NOT ask for permission again, do NOT say what they
+        are missing out on, and do NOT collect any detail. Do NOT call any
+        tool. Do NOT say goodbye — this is a question, and the caller answers
+        it on the next turn.
+      pending:
+        - id: closing_offer
+          expects: "और कुछ मदद चाहिए? / कॉल खतम"
+      routing:
+        - intent: off_track
+          next_subagent_id: consent_declined
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: decline
+          next_subagent_id: ended
+        - intent: services_declined
+          next_subagent_id: ended
+        - intent: jobs_declined
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
+        - intent: services_request
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
+        - intent: apply_now
+          next_subagent_id: job_match
+        - intent: job_pick
+          next_subagent_id: job_match
+        - intent: explore_more
+          next_subagent_id: job_match
+        - intent: "*"
+          conditions:
+            - { field: trade,    operator: not_eq, value: "" }
+            - { field: location, operator: not_eq, value: "" }
+          next_subagent_id: job_match
+        - intent: "*"
+          next_subagent_id: profile_resolve
 
     # ─────────────────────────────────────────────────────────────
     # 1c. u18_blocked — terminal. A minor cannot be onboarded by voice.

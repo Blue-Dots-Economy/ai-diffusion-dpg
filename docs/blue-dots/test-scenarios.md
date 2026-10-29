@@ -188,8 +188,9 @@ route with a generic goodbye is a different bug from a wrong route.
 
 **Expect:** the first refusal is answered with what refusing costs — details
 cannot be saved, no application can be sent — and the question is asked ONCE
-more. Only the second refusal ends the call, and the caller is told nothing
-was saved. Not just "धन्यवाद".
+more. The second refusal closes the application path, not the call: the
+caller is told nothing was saved and asked whether they want anything else on
+jobs or training. Not just "धन्यवाद".
 **Fails if:** the first refusal ends the call, or the bot says the call is
 ending and then carries on.
 **Guards:** **F10, F32.**
@@ -200,6 +201,32 @@ Same as B2, but answer the second ask with "ठीक है, अनुमति
 **Expect:** the call continues into age and name, the profile is created, and
 upstream shows `profile_consent_accepted: true` with all three compliance keys
 true. `consent_declines` stays 1 — the earlier refusal is still on record.
+
+### B2c — a second refusal offers help instead of hanging up
+> नमस्ते / वेल्डर / बेंगलुरु / पहला वाला / हाँ भेज दीजिए /
+> नहीं / नहीं / **और नौकरियाँ दिखाओ**
+
+**Expect:** the second refusal is answered with "nothing has been saved" and a
+question — anything else on jobs or training, or shall I end the call. The
+call does NOT end there. Asking for more jobs returns a real list.
+**Fails if:** the bot says goodbye on the second refusal, or the question is
+open enough that the caller asks for something outside jobs and training.
+
+### B2d — the caller changes their mind after refusing twice
+Continue B2c: pick a job and ask to apply.
+
+**Expect:** the permission question is put again, in the same words as the
+first time. Answering "हाँ" creates the profile and sends the application;
+upstream shows all three compliance keys true.
+**Fails if:** the bot refuses to ask, or tells the caller what they would
+rather not give.
+
+### B2e — refusing again costs only one question
+Continue B2d, but refuse the permission question instead.
+
+**Expect:** straight back to "nothing has been saved — anything else?" with NO
+second re-ask. Saying "नहीं, बस" ends the call. Nothing upstream.
+**Fails if:** the re-ask runs a second time, or the call loops.
 
 ### B3 — "पता नहीं" is not a refusal (trade question)
 > नमस्ते / **पता नहीं**
