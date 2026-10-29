@@ -3383,7 +3383,7 @@ agent_workflow:
       tools: []
       pending:
         - id: what_to_change
-          when: [{ field: current_question, operator: contains, value: ["सेव किए गए शहर", "क्या बदलना है"] }]
+          when: [{ field: update_stage, operator: in, value: [null, ""] }]
           expects: "काम या शहर — क्या बदलना है"
       system_prompt: |
         ## Which turn you are on
@@ -3499,6 +3499,7 @@ agent_workflow:
       tools: [update_profile]
       pending:
         - id: confirm_update
+          when: [{ field: update_stage, operator: in, value: [null, ""] }]
           expects: "प्रोफ़ाइल अपडेट करने की हाँ/नहीं"
       system_prompt: |
         ## The question is already asked
