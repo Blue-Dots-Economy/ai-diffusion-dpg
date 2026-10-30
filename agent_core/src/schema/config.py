@@ -855,6 +855,8 @@ class SubAgent(BaseModel):
     fixed_opening_prefix_unless: list[str] = Field(default_factory=list)
     # Speak the fixed opening even on a turn where the caller named something.
     fixed_opening_when_told: bool = False
+    # Speak it on every entry to the phase, not only the first.
+    fixed_opening_on_entry: bool = False
     routing: list[RoutingRule] = Field(default_factory=list)
     pending: list[PendingQuestionConfig] = Field(default_factory=list)
     predispatch: list[PredispatchRule] = Field(default_factory=list)

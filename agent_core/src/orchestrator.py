@@ -5267,9 +5267,13 @@ class AgentCore(AgentCoreBase):
             if _tmpl:
                 _requires = list(getattr(_sa, "fixed_opening_requires", []) or [])
                 _counts = bundle.session.get("subagent_entry_count") or {}
-                _first_entry = int(
-                    (_counts or {}).get(next_subagent_id, 0) or 0
-                ) <= 1
+                # A phase re-entered after a detour is asking its question for
+                # the first time again; a self-loop inside it is not.
+                _first_entry = (
+                    next_subagent_id != current_subagent_id
+                    if getattr(_sa, "fixed_opening_on_entry", False)
+                    else int((_counts or {}).get(next_subagent_id, 0) or 0) <= 1
+                )
                 _vals = {k: _first_present(bundle.session, k) for k in _requires}
                 _have_all = bool(_requires) and all(_vals.values())
                 # A fragment, not a template slot: an empty slot leaves its

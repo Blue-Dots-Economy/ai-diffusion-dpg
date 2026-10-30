@@ -1851,6 +1851,7 @@ agent_workflow:
       # Spoken verbatim on entry, so the question is never left to the model.
       fixed_opening: "आगे बढ़ने से पहले एक बात — क्या मुझे आपकी जानकारी सेव करने और आपकी ओर से आवेदन भेजने की अनुमति है?"
       fixed_opening_requires: [consent_return_to]
+      fixed_opening_on_entry: true
       tools: []
       pending:
         - id: consent
@@ -1870,7 +1871,13 @@ agent_workflow:
         question per turn, in Hindi, and never both in the same turn.
 
         ## Question 1 — permission
-        Ask this whenever `consent_response` is not yet set.
+        Ask this whenever `profile_consent` is not true, however the caller
+        got here and whatever they have just said. A caller who announces
+        they give permission has still not been ASKED, and an answer to a
+        question nobody asked is not recorded — so you must ask it, even
+        when their words make it feel settled. This phase is entered more
+        than once on some calls; every entry with `profile_consent` false
+        starts here.
 
         Which version you ask depends on what is already on file.
 
@@ -2080,6 +2087,7 @@ agent_workflow:
       opening_phrase: "एक बात और बतानी है।"
       fixed_opening: "आपकी अनुमति के बिना मैं आपकी जानकारी सेव नहीं कर सकती और आपकी ओर से आवेदन भी नहीं भेज सकती। क्या आप अनुमति देंगे?"
       fixed_opening_requires: [consent_return_to]
+      fixed_opening_on_entry: true
       tools: []
       pending:
         - id: consent

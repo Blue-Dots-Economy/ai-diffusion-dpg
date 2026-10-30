@@ -657,6 +657,21 @@ def test_a_second_refusal_clears_the_answer_so_the_question_can_be_asked_again()
     assert rule.session_writes["consent_response"] == ""
 
 
+@pytest.mark.parametrize("sid", ["consent", "consent_reask"])
+def test_the_permission_question_is_re_spoken_on_a_later_entry(sid):
+    """A caller who refused, browsed on and came back was never asked again."""
+    _, wf = _load()
+    assert wf.subagents[sid].fixed_opening_on_entry is True
+
+
+def test_the_permission_question_is_keyed_on_the_record_not_the_answer():
+    """Re-entry clears consent_response, so keying Question 1 on it skipped the ask."""
+    _, wf = _load()
+    prompt = wf.subagents["consent"].system_prompt
+    assert "Ask this whenever `profile_consent` is not true" in prompt
+    assert "every entry with `profile_consent` false" in " ".join(prompt.split())
+
+
 def test_a_caller_who_refused_twice_can_still_ask_to_apply():
     assert _route("job_match", dict(_REFUSED_TWICE), intent="apply_now")[0] == "consent"
 
