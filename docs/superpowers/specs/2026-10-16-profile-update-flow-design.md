@@ -73,8 +73,10 @@ nothing named yet
   CALLER  शहर                       → ask which, then confirm
 
 change known
-  BOT     शहर गाज़ियाबाद — प्रोफ़ाइल में अपडेट कर दूँ?
-          (City Ghaziabad — shall I update your profile?)
+  BOT     शहर गाज़ियाबाद और काम वेल्डर — प्रोफ़ाइल में अपडेट कर दूँ?
+          (City Ghaziabad and trade Welder — shall I update your profile?)
+          The city clause is dropped when the caller named no city. The
+          saved location is never spoken; it can be a full postal address.
   CALLER  नहीं                      → no write; search Ghaziabad anyway
   CALLER  हाँ                       → update_profile tool
 

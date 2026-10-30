@@ -228,8 +228,10 @@ returned to where they were, not dropped back to the start.
 ### U6 — both questions are spoken word for word
 Run U2 four times.
 **Expect:** "क्या बदलना है — काम या शहर?" and
-"काम <trade> और शहर <city> — प्रोफ़ाइल में अपडेट कर दूँ?" are **identical every
-run**. Any rewording, a second question in the same turn, a feminine form
+"काम <trade> — प्रोफ़ाइल में अपडेट कर दूँ?" are **identical every
+run**, with "शहर <city> और " in front whenever the caller has named a city.
+The saved location is never spoken — it can be a full postal address.
+Any rewording, a second question in the same turn, a feminine form
 addressed to the caller, or any claim that the profile was updated before the
 tool has run, is a failure — these two lines are spoken by the orchestrator
 and the model never composes them.

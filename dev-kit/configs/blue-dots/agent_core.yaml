@@ -3493,8 +3493,10 @@ agent_workflow:
       is_start: false
       is_terminal: false
       opening_phrase: "ठीक है।"
-      fixed_opening: "काम {trade|stored_trade} और शहर {location|stored_location} — प्रोफ़ाइल में अपडेट कर दूँ?"
-      fixed_opening_requires: ["trade|stored_trade", "location|stored_location"]
+      fixed_opening_prefix: "शहर {location} और "
+      fixed_opening_prefix_requires: [location]
+      fixed_opening: "काम {trade|stored_trade} — प्रोफ़ाइल में अपडेट कर दूँ?"
+      fixed_opening_requires: ["trade|stored_trade"]
       fixed_opening_when_told: true
       tools: [update_profile]
       pending:

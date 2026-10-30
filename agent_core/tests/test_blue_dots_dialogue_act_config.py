@@ -597,7 +597,25 @@ def test_fixed_opening_when_told_defaults_off_and_loads():
     assert pu.fixed_opening_when_told is False
     pc = wf.subagents["profile_update_confirm"]
     assert pc.fixed_opening_when_told is True
-    assert pc.fixed_opening_requires == ["trade|stored_trade", "location|stored_location"]
+    assert pc.fixed_opening_requires == ["trade|stored_trade"]
+
+
+def test_the_confirm_question_cannot_speak_a_stored_address():
+    """A saved location may be a full postal address, so only the caller's
+    own city is ever spoken, and the question still gets asked without
+    one (#514)."""
+    from src.orchestrator import _first_present
+    _, wf = _load()
+    pc = wf.subagents["profile_update_confirm"]
+    assert "stored_location" not in pc.fixed_opening
+    assert "stored_location" not in pc.fixed_opening_prefix
+    assert pc.fixed_opening_prefix_requires == ["location"]
+
+    session = {"trade": "Data Entry", "stored_trade": "Welder", "location": "",
+               "stored_location": "31, 6th Main, Rajajinagar, Bengaluru 560010"}
+    values = {k: _first_present(session, k) for k in pc.fixed_opening_requires}
+    assert all(values.values())
+    assert "6th Main" not in pc.fixed_opening.format(**values)
 @pytest.mark.parametrize("acts, expected", [
     (("affirm", "request_change"), ("explore_more", "job_match")),
     (("affirm",), ("explore_more", "job_match")),
