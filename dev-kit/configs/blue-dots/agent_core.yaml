@@ -2049,11 +2049,7 @@ agent_workflow:
           next_subagent_id: consent_reask
 
     # ─────────────────────────────────────────────────────────────
-    # 1b. consent_declined — terminal. No consent, no journey.
-    #
-    # Its own subagent rather than a route to `ended`, so the caller hears
-    # WHY the call is ending. `ended` says a generic goodbye, which after a
-    # refusal reads as the line simply dropping. Symmetric with u18_blocked.
+    # 1b. consent_declined
     # ─────────────────────────────────────────────────────────────
     - id: consent_declined
       name: Consent Declined
