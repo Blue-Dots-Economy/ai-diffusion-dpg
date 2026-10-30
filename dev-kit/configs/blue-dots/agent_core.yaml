@@ -1803,6 +1803,18 @@ agent_workflow:
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
+        - intent: update_profile_request
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
+          next_subagent_id: profile_update
+          session_writes: { update_return_to: job_match, update_stage: "" }
+        - intent: update_profile_request
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_update,
+                            update_return_to: job_match, update_stage: "" }
         - intent: "*"
           next_subagent_id: profile_resolve
 
@@ -1937,7 +1949,35 @@ agent_workflow:
           conditions:
             - { field: consent_response, operator: eq, value: "granted" }
             - { field: has_age, operator: eq, value: true }
+            - { field: consent_return_to, operator: eq, value: profile_update }
+          next_subagent_id: profile_update
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
+        - intent: "*"
+          conditions:
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: has_age, operator: eq, value: true }
           next_subagent_id: profile_setup
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
+        - intent: "*"
+          conditions:
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: age, operator: gt, value: 18 }
+            - { field: consent_return_to, operator: eq, value: profile_update }
+          next_subagent_id: profile_update
           session_writes:
             user_terms: true
             user_privacy: true
@@ -1975,10 +2015,28 @@ agent_workflow:
             - { field: user_privacy,    operator: eq, value: true }
             - { field: profile_consent, operator: eq, value: true }
             - { field: has_age,         operator: eq, value: true }
+            - { field: consent_return_to, operator: eq, value: profile_update }
+          next_subagent_id: profile_update
+          session_writes: { consent_return_to: "" }
+        - intent: "*"
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
             - { field: consent_return_to, operator: eq, value: profile_setup }
           next_subagent_id: profile_setup
           session_writes: { consent_return_to: "" }
         # has_age comes only from the fetch, so a spoken age needs its own rule.
+        - intent: "*"
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: age,             operator: gt, value: 18 }
+            - { field: consent_return_to, operator: eq, value: profile_update }
+          next_subagent_id: profile_update
+          session_writes: { consent_return_to: "" }
         - intent: "*"
           conditions:
             - { field: user_terms,      operator: eq, value: true }
@@ -2066,7 +2124,35 @@ agent_workflow:
           conditions:
             - { field: consent_response, operator: eq, value: "granted" }
             - { field: has_age, operator: eq, value: true }
+            - { field: consent_return_to, operator: eq, value: profile_update }
+          next_subagent_id: profile_update
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
+        - intent: "*"
+          conditions:
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: has_age, operator: eq, value: true }
           next_subagent_id: profile_setup
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
+        - intent: "*"
+          conditions:
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: age, operator: gt, value: 18 }
+            - { field: consent_return_to, operator: eq, value: profile_update }
+          next_subagent_id: profile_update
           session_writes:
             user_terms: true
             user_privacy: true
@@ -2421,8 +2507,17 @@ agent_workflow:
           next_subagent_id: ended
         # Must out-rank the "*" rules below; a profile holder matches those.
         - intent: update_profile_request
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_update
           session_writes: { update_return_to: job_match, update_stage: "" }
+        - intent: update_profile_request
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_update,
+                            update_return_to: job_match, update_stage: "" }
         - intent: jobs_declined
           next_subagent_id: profile_resolve
         - intent: services_request
@@ -2853,8 +2948,17 @@ agent_workflow:
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
         - intent: update_profile_request
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_update
           session_writes: { update_return_to: job_match, update_stage: "" }
+        - intent: update_profile_request
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_update,
+                            update_return_to: job_match, update_stage: "" }
         - intent: jobs_declined
           next_subagent_id: job_match
         - intent: services_declined
@@ -3421,6 +3525,12 @@ agent_workflow:
         can't update your profile right now") and offer the search just
         the same — the caller's time is not worth less because a write
         failed, and what they told you is still what gets searched.
+
+        ## Nothing is saved or sent from this phase
+        You have no tool that writes anything here. Never say their details
+        have been saved, never say an application has been or is being sent,
+        and never promise either is about to happen. Saying so is untrue and
+        the caller hangs up believing it went through.
       routing:
         - intent: off_track
           next_subagent_id: profile_update
@@ -3937,8 +4047,17 @@ agent_workflow:
           next_subagent_id: consent
           session_writes: { consent_return_to: profile_setup }
         - intent: update_profile_request
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_update
           session_writes: { update_return_to: apply_confirm, update_stage: "" }
+        - intent: update_profile_request
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_update,
+                            update_return_to: apply_confirm, update_stage: "" }
         - intent: jobs_declined
           next_subagent_id: apply_confirm
         - intent: services_declined
@@ -4130,8 +4249,17 @@ agent_workflow:
         - intent: termination_blocked
           next_subagent_id: confirm_close
         - intent: update_profile_request
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_update
           session_writes: { update_return_to: service_match, update_stage: "" }
+        - intent: update_profile_request
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_update,
+                            update_return_to: service_match, update_stage: "" }
         - intent: explore_more
           next_subagent_id: job_match
           session_writes: { services_in_play: "false", selected_service_item_id: "" }

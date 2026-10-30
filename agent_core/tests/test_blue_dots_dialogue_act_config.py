@@ -738,12 +738,17 @@ def test_a_leftover_search_value_no_longer_captures_the_turn(step, state, intent
     assert _route_update(step, state, intent)[0] == expected
 
 
-@pytest.mark.parametrize("step", ["job_match", "profile_resolve", "apply_confirm", "service_match"])
+@pytest.mark.parametrize("step", ["trade_ask", "job_match", "profile_resolve",
+                                  "apply_confirm", "service_match"])
 def test_every_route_into_the_update_phase_clears_the_stage(step):
-    nxt, rule = _route_update(step, {"profile_item_id": "p1"}, "update_profile_request")
+    # The write is gated on consent, so the direct route needs every flag.
+    state = {"profile_item_id": "p1", "user_terms": True, "user_privacy": True,
+             "profile_consent": True, "has_age": True}
+    nxt, rule = _route_update(step, state, "update_profile_request")
     assert nxt == "profile_update"
     assert rule.session_writes["update_stage"] == ""
-    assert rule.session_writes["update_return_to"] == (step if step != "profile_resolve" else "job_match")
+    assert rule.session_writes["update_return_to"] == (
+        step if step in ("apply_confirm", "service_match") else "job_match")
 
 
 @pytest.mark.parametrize("state, expected", [

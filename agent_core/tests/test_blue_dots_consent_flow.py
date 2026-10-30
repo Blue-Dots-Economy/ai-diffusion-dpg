@@ -2,6 +2,7 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -97,15 +98,23 @@ def test_an_older_upstream_without_the_field_reads_as_absent():
 
 
 def _save_profile():
+    return _endpoint("save_profile")
+
+
+def _endpoint(name):
     for t in AG["tools"]:
         for ep in t.get("endpoints") or []:
-            if ep["name"] == "save_profile":
+            if ep["name"] == name:
                 return ep
-    raise AssertionError("save_profile not found")
+    raise AssertionError(f"{name} not found")
 
 
-def test_compliance_values_come_from_session():
-    body = _save_profile()["body_template"]
+WRITE_ENDPOINTS = ["save_profile", "update_profile"]
+
+
+@pytest.mark.parametrize("endpoint", WRITE_ENDPOINTS)
+def test_compliance_values_come_from_session(endpoint):
+    body = _endpoint(endpoint)["body_template"]
     assert body["compliance"] == [
         {"key": "user_terms", "value": "{user_terms}"},
         {"key": "user_privacy", "value": "{user_privacy}"},
@@ -113,14 +122,16 @@ def test_compliance_values_come_from_session():
     ]
 
 
-def test_the_dead_consent_fields_are_gone():
-    body = _save_profile()["body_template"]
+@pytest.mark.parametrize("endpoint", WRITE_ENDPOINTS)
+def test_the_dead_consent_fields_are_gone(endpoint):
+    body = _endpoint(endpoint)["body_template"]
     assert "terms_accepted" not in body
     assert "privacy_accepted" not in body
 
 
-def test_consent_params_are_session_sourced_booleans():
-    params = {p["name"]: p for p in _save_profile()["params"]}
+@pytest.mark.parametrize("endpoint", WRITE_ENDPOINTS)
+def test_consent_params_are_session_sourced_booleans(endpoint):
+    params = {p["name"]: p for p in _endpoint(endpoint)["params"]}
     for name in ("user_terms", "user_privacy", "profile_consent"):
         assert params[name]["source"] == "session", name
         assert params[name]["type"] == "boolean", name
@@ -161,17 +172,17 @@ def test_age_is_not_asked_when_it_arrived_with_the_consent():
     assert PendingResolver(wf).resolve("consent", state).id == "consent"
 
 
-def _profile_setup_entries(wf):
-    """Rules that ENTER profile_setup from elsewhere.
+def _write_phase_entries(wf, phase):
+    """Rules that ENTER a participant-write phase from elsewhere.
 
     Self-routes and `close_return_to` returns are re-entries: the caller only
     reaches those having already passed the gate, so they are not entry points.
     """
     for sid, sub in wf.subagents.items():
-        if sid == "profile_setup":
+        if sid == phase:
             continue
         for i, rule in enumerate(sub.routing):
-            if rule.next_subagent_id != "profile_setup":
+            if rule.next_subagent_id != phase:
                 continue
             if any(c.field == "close_return_to" for c in rule.conditions):
                 continue
@@ -180,32 +191,38 @@ def _profile_setup_entries(wf):
 
 _CONSENT_FLAGS = {"user_terms", "user_privacy", "profile_consent"}
 
+# The phase holding each participant write, and every phase that can enter it.
+WRITE_PHASES = {
+    "profile_setup": {"job_match", "job_details", "apply_confirm", "service_match",
+                      "consent", "consent_reask"},
+    "profile_update": {"trade_ask", "profile_resolve", "job_match", "apply_confirm",
+                       "service_match", "consent", "consent_reask"},
+}
 
-def test_every_entry_into_profile_setup_requires_every_consent_flag():
+
+@pytest.mark.parametrize("phase, entrants", WRITE_PHASES.items())
+def test_every_entry_into_a_write_phase_requires_every_consent_flag(phase, entrants):
     _, wf = _load()
-    seen = list(_profile_setup_entries(wf))
-    assert {sid for sid, _, _ in seen} == {
-        "job_match", "job_details", "apply_confirm", "service_match",
-        "consent", "consent_reask"}
+    seen = list(_write_phase_entries(wf, phase))
+    assert {sid for sid, _, _ in seen} == entrants
     for sid, i, routing in seen:
         rule = routing[i]
         fields = {c.field for c in rule.conditions}
         # A rule either checks the flags, or IS the grant and writes them all true.
         granted = all(rule.session_writes.get(f) is True for f in _CONSENT_FLAGS)
         missing = set() if granted else _CONSENT_FLAGS - fields
-        assert not missing, f"{sid} rule {i} enters profile_setup without checking {missing}"
+        assert not missing, f"{sid} rule {i} enters {phase} without checking {missing}"
         # An age on file or one the caller just stated; either satisfies the upstream.
-        assert fields & {"has_age", "age"}, f"{sid} rule {i} enters profile_setup unaged"
+        assert fields & {"has_age", "age"}, f"{sid} rule {i} enters {phase} unaged"
 
 
-def test_every_subagent_that_enters_profile_setup_can_also_reach_consent():
+@pytest.mark.parametrize("phase", list(WRITE_PHASES))
+def test_every_subagent_that_enters_a_write_phase_can_also_reach_consent(phase):
     _, wf = _load()
-    for sid, _, routing in _profile_setup_entries(wf):
+    for sid, _, routing in _write_phase_entries(wf, phase):
         targets = [r.next_subagent_id for r in routing]
-        assert "consent" in targets, f"{sid} can enter profile_setup but never consent"
+        assert "consent" in targets, f"{sid} can enter {phase} but never consent"
 
-
-import pytest  # noqa: E402
 
 from src.models import NLUResult  # noqa: E402
 from tests.test_stream_turn import _make_agent_core  # noqa: E402
@@ -238,6 +255,49 @@ def test_every_flag_given_reaches_profile_setup_directly():
 def test_consent_returns_to_the_phase_that_sent_it():
     state = {**_ALL_GIVEN, "consent_return_to": "profile_setup"}
     assert _route("consent", state)[0] == "profile_setup"
+
+
+_HAS_PROFILE = {**_ALL_GIVEN, "profile_item_id": "p1"}
+
+
+@pytest.mark.parametrize("sid", ["trade_ask", "profile_resolve", "job_match",
+                                 "apply_confirm", "service_match"])
+def test_asking_to_update_with_consent_on_file_reaches_the_update_phase(sid):
+    nxt, _ = _route(sid, dict(_HAS_PROFILE), intent="update_profile_request")
+    assert nxt == "profile_update"
+
+
+@pytest.mark.parametrize("missing", ["user_terms", "user_privacy", "profile_consent", "has_age"])
+def test_a_missing_flag_diverts_the_update_to_consent(missing):
+    state = {**_HAS_PROFILE, missing: False}
+    nxt, rule = _route("job_match", state, intent="update_profile_request")
+    assert nxt == "consent"
+    assert rule.session_writes["consent_return_to"] == "profile_update"
+    # The destination the update returns to must survive the detour.
+    assert rule.session_writes["update_return_to"] == "job_match"
+
+
+def test_consent_returns_to_the_update_phase_that_sent_it():
+    state = {**_HAS_PROFILE, "consent_return_to": "profile_update"}
+    assert _route("consent", state)[0] == "profile_update"
+
+
+def test_granting_at_the_update_gate_does_not_divert_into_profile_setup():
+    """The grant rules are shared; without the return check a grant creates a second profile."""
+    state = {"current_question": _ASKED_CONSENT, "consent_response": "granted",
+             "has_age": True, "profile_item_id": "p1",
+             "consent_return_to": "profile_update"}
+    for phase in ("consent", "consent_reask"):
+        nxt, rule = _route(phase, dict(state))
+        assert nxt == "profile_update", phase
+        assert all(rule.session_writes[f] is True
+                   for f in ("user_terms", "user_privacy", "profile_consent")), phase
+
+
+def test_a_caller_with_no_profile_is_never_sent_to_the_update_phase():
+    """profile_update has nothing to change; apply_confirm must create one instead."""
+    state = {**_ALL_GIVEN, "profile_item_id": ""}
+    assert _route("apply_confirm", state, intent="update_profile_request")[0] == "profile_setup"
 
 
 def test_a_brand_new_caller_is_sent_to_consent():
@@ -606,12 +666,14 @@ def test_a_refusal_counted_once_is_counted_again_on_the_act_route():
     assert rule.session_writes["consent_response"] == ""
 
 
-@pytest.mark.parametrize("sid", ["job_match", "job_details", "service_match"])
+@pytest.mark.parametrize("sid", ["job_match", "job_details", "service_match",
+                                 "profile_update"])
 def test_a_phase_with_no_write_tool_may_not_claim_one_ran(sid):
     """The caller hangs up believing they applied; nothing was sent."""
     _, wf = _load()
     phase = wf.subagents[sid]
-    assert not ({"save_profile", "apply_job", "connect_service"} & set(phase.tools or []))
+    assert not ({"save_profile", "update_profile", "apply_job", "connect_service"}
+                & set(phase.tools or []))
     assert "never say an application has been or is being sent" in phase.system_prompt.lower(), (
         f"{sid} has no write tool but its prompt does not forbid claiming a send")
 

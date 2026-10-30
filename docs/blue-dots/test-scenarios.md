@@ -659,6 +659,23 @@ confirmation, and a services pick.
 `user_terms`, `user_privacy`, `profile_consent`, `has_age` is false, and
 straight on when all four are true.
 
+### K4b — the update path gates the same way
+Ask "मेरी प्रोफ़ाइल अपडेट कीजिए" ("update my profile") from each of: the first
+turn, the saved-details offer, the job list, the apply confirmation, and a
+services pick, using a profile whose `profile_consent_accepted` is false.
+
+**Expect:** every one asks for permission before "क्या बदलना है — काम या शहर?"
+("what would you like to change — the trade or the city?"). Granting goes to
+the update, not to profile creation, and the caller is never asked for a name.
+**Fails if:** the update question is asked first and the permission question
+after, or a second profile is created.
+
+### K4c — an update asked for with no profile
+Same request from a caller who has no live profile.
+
+**Expect:** the create path — permission, then the name — never the update
+phase. There is nothing to change.
+
 ### K5 — a returning caller with current permission is never asked
 Use a number whose compliance shows all keys true and whose live profile has
 `profile_consent_accepted: true`.
@@ -692,6 +709,13 @@ Complete a journey that creates a profile.
 `privacy_accepted` fields at all.
 **Verify:** the created item is `live` with `profile_consent_accepted: true`.
 **Guards:** the hardcoded `true` that used to be sent for every caller.
+
+### K8b — the same holds for an update
+Change the city on an existing profile and let the write go through.
+
+**Expect:** the update carries the three compliance keys from the call, with
+no `terms_accepted` or `privacy_accepted`. The stored city changes and the
+consent recorded against the item is the caller's own.
 
 ### K9 — blocked at the start when the upstream refuses
 Use a number the participant lookup rejects with `U18_NOT_ALLOWED`.

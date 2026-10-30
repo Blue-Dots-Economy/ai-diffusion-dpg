@@ -519,14 +519,9 @@ tools:
           name: "{stored_name}"
           phone_number: "+{user_id}"
           compliance:
-            - key: "user_terms"
-              value: true
-            - key: "user_privacy"
-              value: true
-            - key: "profile_creation"
-              value: true
-          terms_accepted: true
-          privacy_accepted: true
+            - { key: "user_terms",       value: "{user_terms}" }
+            - { key: "user_privacy",     value: "{user_privacy}" }
+            - { key: "profile_creation", value: "{profile_consent}" }
           channel: "voice"
           source_id: "919240024229"
           network: "blue_dot"
@@ -550,6 +545,27 @@ tools:
             source: session
             type: string
             required: false
+          - name: user_terms
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: user_privacy
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: profile_consent
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
           - name: location
             source: agent
             type: string
