@@ -195,8 +195,8 @@ _CONSENT_FLAGS = {"user_terms", "user_privacy", "profile_consent"}
 WRITE_PHASES = {
     "profile_setup": {"job_match", "job_details", "apply_confirm", "service_match",
                       "consent", "consent_reask"},
-    "profile_update": {"trade_ask", "profile_resolve", "job_match", "apply_confirm",
-                       "service_match", "consent", "consent_reask"},
+    "profile_update": {"opening", "trade_ask", "profile_resolve", "job_match",
+                       "apply_confirm", "service_match", "consent", "consent_reask"},
 }
 
 
@@ -260,7 +260,7 @@ def test_consent_returns_to_the_phase_that_sent_it():
 _HAS_PROFILE = {**_ALL_GIVEN, "profile_item_id": "p1"}
 
 
-@pytest.mark.parametrize("sid", ["trade_ask", "profile_resolve", "job_match",
+@pytest.mark.parametrize("sid", ["opening", "trade_ask", "profile_resolve", "job_match",
                                  "apply_confirm", "service_match"])
 def test_asking_to_update_with_consent_on_file_reaches_the_update_phase(sid):
     nxt, _ = _route(sid, dict(_HAS_PROFILE), intent="update_profile_request")
@@ -294,7 +294,7 @@ def test_granting_at_the_update_gate_does_not_divert_into_profile_setup():
                    for f in ("user_terms", "user_privacy", "profile_consent")), phase
 
 
-@pytest.mark.parametrize("sid", ["trade_ask", "profile_resolve", "job_match",
+@pytest.mark.parametrize("sid", ["opening", "trade_ask", "profile_resolve", "job_match",
                                  "apply_confirm", "service_match"])
 def test_a_caller_with_no_profile_is_never_sent_to_the_update_phase(sid):
     """profile_update cannot run without an item_id; its own write requires one."""
@@ -303,7 +303,8 @@ def test_a_caller_with_no_profile_is_never_sent_to_the_update_phase(sid):
     assert nxt != "profile_update", sid
 
 
-@pytest.mark.parametrize("sid", ["trade_ask", "profile_resolve", "job_match", "service_match"])
+@pytest.mark.parametrize("sid", ["opening", "trade_ask", "profile_resolve", "job_match",
+                                 "service_match"])
 def test_an_update_request_without_a_profile_does_not_ask_for_permission(sid):
     """Nothing is about to be written, so there is nothing to ask permission for."""
     state = {"profile_item_id": "", "user_terms": False, "user_privacy": False,
