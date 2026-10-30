@@ -5267,8 +5267,7 @@ class AgentCore(AgentCoreBase):
             if _tmpl:
                 _requires = list(getattr(_sa, "fixed_opening_requires", []) or [])
                 _counts = bundle.session.get("subagent_entry_count") or {}
-                # A phase re-entered after a detour is asking its question for
-                # the first time again; a self-loop inside it is not.
+                # Re-entry after a detour asks afresh; a self-loop does not.
                 _first_entry = (
                     next_subagent_id != current_subagent_id
                     if getattr(_sa, "fixed_opening_on_entry", False)
