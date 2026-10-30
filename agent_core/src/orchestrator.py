@@ -3807,6 +3807,15 @@ class AgentCore(AgentCoreBase):
         translated = (self._translate_consent_message(termination_message, detected_language)
                       if translate else termination_message)
 
+        # A line that does not end the call is a question the next turn answers.
+        if not end_session and bundle.session.get("current_question") != translated:
+            cq_value = self._sanitize_current_question(
+                prev=bundle.session.get("current_question", "") or "",
+                new=translated, session_id=session_id)
+            bundle.session["current_question"] = cq_value
+            write_tasks.append(self._async_memory.write(
+                session_id, user_id, "session", "current_question", cq_value))
+
         # Best-effort fan-out of routing writes; parallel with the SentenceEvent
         # so the caller hears the goodbye even if Memory Layer is slow.
         await asyncio.gather(*write_tasks, return_exceptions=True)
@@ -5258,9 +5267,12 @@ class AgentCore(AgentCoreBase):
             if _tmpl:
                 _requires = list(getattr(_sa, "fixed_opening_requires", []) or [])
                 _counts = bundle.session.get("subagent_entry_count") or {}
-                _first_entry = int(
-                    (_counts or {}).get(next_subagent_id, 0) or 0
-                ) <= 1
+                # Re-entry after a detour asks afresh; a self-loop does not.
+                _first_entry = (
+                    next_subagent_id != current_subagent_id
+                    if getattr(_sa, "fixed_opening_on_entry", False)
+                    else int((_counts or {}).get(next_subagent_id, 0) or 0) <= 1
+                )
                 _vals = {k: _first_present(bundle.session, k) for k in _requires}
                 _have_all = bool(_requires) and all(_vals.values())
                 # A fragment, not a template slot: an empty slot leaves its

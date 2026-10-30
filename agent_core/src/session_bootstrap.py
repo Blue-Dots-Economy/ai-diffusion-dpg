@@ -104,13 +104,19 @@ class SessionBootstrap:
 
     def _apply(self, bundle, cache: TurnToolCache, call: ToolCall, result: ToolResult,
                writes: list) -> str:
-        """Fold one successful result into this turn's state; returns the outcome."""
+        """Fold one result into this turn's state; returns the outcome.
+
+        Session values are applied even when the call failed: a connector may
+        map them out of an error body (``session_mapping.on_error``), and that
+        is the only place a rejection reason is carried. Only the tool-result
+        cache entry is withheld, so the model never sees a failed result.
+        """
         result = self._shape(result) if self._shape is not None else result
-        if not result.success:
-            return "failed"
         for key, value in (result.session_values or {}).items():
             bundle.session[key] = value
             writes.append((key, value))
+        if not result.success:
+            return "failed"
         entry = cache.after_call(call, result, origin="bootstrap")
         if entry is not None:
             bundle.tool_results.append(entry)

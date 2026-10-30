@@ -896,6 +896,11 @@ def test_subagent_fixed_opening_when_told_defaults_off():
     assert SubAgent(**_subagent_kwargs(fixed_opening_when_told=True)).fixed_opening_when_told is True
 
 
+def test_subagent_fixed_opening_on_entry_defaults_off():
+    assert SubAgent(**_subagent_kwargs()).fixed_opening_on_entry is False
+    assert SubAgent(**_subagent_kwargs(fixed_opening_on_entry=True)).fixed_opening_on_entry is True
+
+
 def test_subagent_fixed_opening_when_told_rejects_a_non_boolean():
     with pytest.raises(ValidationError):
         SubAgent(**_subagent_kwargs(fixed_opening_when_told="sometimes"))

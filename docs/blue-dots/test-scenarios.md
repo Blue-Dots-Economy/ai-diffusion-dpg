@@ -40,12 +40,13 @@ curl -s "https://dev-signals.serveirc.com/api/v1/admin/participant?phone_number=
 ## A. Happy paths
 
 ### A1 — new user, full journey to apply
-> नमस्ते / हाँ ठीक है / मेरा नाम अजय सिंह है / अट्ठाईस साल /
-> मैं वेल्डर का काम ढूंढ रहा हूँ / बेंगलुरु / पहला वाला / हाँ भेज दीजिए / बस इतना ही
+> नमस्ते / मैं वेल्डर का काम ढूंढ रहा हूँ / बेंगलुरु / पहला वाला /
+> हाँ भेज दीजिए / हाँ अनुमति है / अट्ठाईस साल / मेरा नाम अजय सिंह है / बस इतना ही
 
-**Expect:** consent → name → age → trade → city → job list → detail → save →
-apply → goodbye. One profile created with the caller's real name. One
-application with a real `action_id`.
+**Expect:** trade → city → job list → detail → **permission** → age → name →
+save → apply → goodbye. Permission is asked at the apply, never before it.
+One profile created with the caller's real name. One application with a real
+`action_id`.
 **Guards:** F17, F18 (no placeholder name, no duplicate profile).
 
 ### A2 — returning user
@@ -105,8 +106,8 @@ docker exec dpg_redis redis-cli HMGET "session:<phone>:<call_id>" \
 > be skipped silently.
 
 ### P1 — no profile at all (new caller)
-**Expect:** full onboarding — consent, name, age, trade, city. One live profile
-created at the pick turn.
+**Expect:** trade and city first, then — only once the caller asks to apply —
+permission, age and name. One live profile created after that.
 **Session should show:** `profile_item_id` empty on turn 1, populated after the
 save.
 
@@ -248,28 +249,93 @@ a create.
 
 ## C. Terminal paths — the caller must be told WHY
 
-### B1 — under-19 caller
-> नमस्ते / हाँ ठीक है / मेरा नाम राहुल है / **मेरी उम्र सोलह साल है**
+### B1 — under-age caller states their age
+> नमस्ते / वेल्डर / बेंगलुरु / पहला वाला / हाँ भेज दीजिए / हाँ अनुमति है /
+> **मेरी उम्र सोलह साल है**
 
 **Expect:** routing `next_subagent=u18_blocked`, and the caller HEARS the
-reason: applications cannot be completed by phone under nineteen, register on
+reason: applications cannot be completed by phone under eighteen, register on
 the portal with a parent or guardian.
 **Fails if:** the reply is only "धन्यवाद".
 **Guards:** **F10, F32.** Also check the log says `u18_blocked` — a correct
 route with a generic goodbye is a different bug from a wrong route.
 
-### B2 — consent declined
-> नमस्ते / नहीं, मुझे अपनी जानकारी सेव नहीं करवानी
+### B2 — permission declined twice
+> नमस्ते / वेल्डर / बेंगलुरु / पहला वाला / हाँ भेज दीजिए /
+> नहीं, मुझे अनुमति नहीं देनी / नहीं, बिल्कुल नहीं
 
-**Expect:** the caller is told nothing was saved and that applications cannot
-be sent without consent. Not just "धन्यवाद".
+**Expect:** the first refusal is answered with what refusing costs — details
+cannot be saved, no application can be sent — and the question is asked ONCE
+more. The second refusal closes the application path, not the call: the
+caller is told nothing was saved and asked whether they want anything else on
+jobs or training. Not just "धन्यवाद".
+**Fails if:** the first refusal ends the call, or the bot says the call is
+ending and then carries on.
 **Guards:** **F10, F32.**
 
-### B3 — "पता नहीं" is not a refusal
+### B2b — permission granted at the second ask
+Same as B2, but answer the second ask with "ठीक है, अनुमति है".
+
+**Expect:** the call continues into age and name, the profile is created, and
+upstream shows `profile_consent_accepted: true` with all three compliance keys
+true. `consent_declines` stays 1 — the earlier refusal is still on record.
+
+### B2c — a second refusal offers help instead of hanging up
+> नमस्ते / वेल्डर / बेंगलुरु / पहला वाला / हाँ भेज दीजिए /
+> नहीं / नहीं / **और नौकरियाँ दिखाओ**
+
+**Expect:** the second refusal is answered with "nothing has been saved" and a
+question — anything else on jobs or training, or shall I end the call. The
+call does NOT end there. Asking for more jobs returns a real list.
+**Fails if:** the bot says goodbye on the second refusal, or the question is
+open enough that the caller asks for something outside jobs and training.
+
+### B2d — the caller changes their mind after refusing twice
+Continue B2c: pick a job and ask to apply.
+
+**Expect:** the permission question is put again, in the same words as the
+first time. Answering "हाँ" creates the profile and sends the application;
+upstream shows all three compliance keys true.
+**Fails if:** the bot refuses to ask, or tells the caller what they would
+rather not give.
+
+### B2e — refusing again costs only one question
+Continue B2d, but refuse the permission question instead.
+
+**Expect:** straight back to "nothing has been saved — anything else?" with NO
+second re-ask. Saying "नहीं, बस" ends the call. Nothing upstream.
+**Fails if:** the re-ask runs a second time, or the call loops.
+
+### B2f — the offer after a refusal reaches training, not just jobs
+> नमस्ते / वेल्डर / बेंगलुरु / पहला वाला / हाँ भेज दीजिए /
+> नहीं / नहीं / **मुझे ट्रेनिंग चाहिए**
+
+**Expect:** a real organisation list, the same as any other services request.
+Browsing training needs no permission, so the earlier refusal changes nothing
+here.
+**Fails if:** the refusal closes the services path too.
+
+### B2g — nothing else wanted after a refusal
+> नमस्ते / वेल्डर / बेंगलुरु / पहला वाला / हाँ भेज दीजिए /
+> नहीं / नहीं / **नहीं, बस धन्यवाद**
+
+**Expect:** the call ends there, politely, and `end_session` fires. Nothing
+upstream: no participant, no profile, no application.
+**Fails if:** the bot asks again, or the call hangs open after the goodbye.
+
+### B3 — "पता नहीं" is not a refusal (trade question)
 > नमस्ते / **पता नहीं**
 
-**Expect:** the consent question is asked again. The call does NOT end.
+**Expect:** the trade question is asked again. The call does NOT end.
 **Guards:** **F14.** This one dropped live calls.
+
+### B3b — "पता नहीं" is not a refusal (permission question)
+> नमस्ते / वेल्डर / बेंगलुरु / पहला वाला / हाँ भेज दीजिए / **पता नहीं**
+
+**Expect:** the permission question is put again, more plainly. The call does
+NOT end, and nothing is recorded as either granted or declined — the flags
+stay false and `consent_declines` stays 0. An unclear answer is not a refusal.
+**Guards:** **F14**, and the consent gate.
 
 ### B4 — explicit goodbye mid-call
 Any point after turn 1: "बस इतना ही, मैं फोन रखता हूँ".
@@ -438,8 +504,8 @@ caller picks an organisation and we pass their enquiry to it with
 only; seeker→service_provider is `connect`.
 
 ### S1 — new caller asks for training
-> हाँ / हाँ ठीक है / अट्ठाईस साल / मेरा नाम विकास है /
-> मुझे ट्रेनिंग चाहिए / पहला वाला / हाँ भेज दीजिए / बस इतना ही धन्यवाद
+> नमस्ते / मुझे ट्रेनिंग चाहिए / पहला वाला / हाँ भेज दीजिए /
+> हाँ अनुमति है / अट्ठाईस साल / मेरा नाम विकास है / बस इतना ही धन्यवाद
 
 **Expect:** a list of organisations, each with its name, what it offers and
 what it costs → profile saved → **asked** whether to pass the enquiry on →
@@ -533,6 +599,133 @@ call you again") to a caller who dialled us.
 
 ---
 
+## K. Permission — asked only when something is written
+
+Permission is not asked at the start of the call. It is asked at the point the
+upstream is about to be written to, and only for what is still missing. A
+caller who just wants to hear what jobs exist is never asked at all.
+
+**Check what the caller's record already holds before every run:**
+
+```bash
+curl -s "https://dev-signals.serveirc.com/api/v1/admin/participant?phone_number=<phone>" \
+  -H "x-api-key: $BLUE_DOTS_API_KEY" -H "x-acting-org-id: $BLUE_DOTS_ORG_ID" \
+  | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print({c['key']:c['value'] for c in d.get('compliance') or []})
+print([(i['lifecycle_status'], i.get('profile_consent_accepted')) for i in d.get('items') or []])"
+```
+
+And what the agent made of it:
+
+```bash
+docker exec dpg_redis redis-cli HMGET "session:<phone>:<call_id>" \
+  user_terms user_privacy profile_consent has_age consent_declines consent_return_to
+```
+
+### K1 — the first turn is the same every time
+Call on a number with no profile. Run it several times.
+
+**Expect:** turn 1 is the trade question, spoken verbatim, identical on every
+run — "नमस्ते! ब्लू डॉट्स में आपका स्वागत है। आप किस काम या ट्रेड में नौकरी
+ढूंढ रहे हैं?" No greeting variation, and no model call for that turn.
+**Fails if:** it asks for permission, an age, or a name. Measured before this
+was fixed: 13 of 30 first turns asked for permission or age.
+**Verify:** `docker logs dpg_agent_core --since 5m | grep llm_calls` — the turn
+must not have one.
+
+### K2 — browsing jobs never asks for permission
+> नमस्ते / वेल्डर / बेंगलुरु / पहला वाला *(stop before applying)*
+
+**Expect:** trade, city, a job list and a job description, with no permission
+question anywhere. Session flags all still false.
+
+### K3 — permission is asked at the apply, not before
+> ... / पहला वाला / हाँ भेज दीजिए
+
+**Expect:** the reply to "हाँ भेज दीजिए" IS the permission question, spoken
+verbatim: "आगे बढ़ने से पहले एक बात — क्या मुझे आपकी जानकारी सेव करने और आपकी
+ओर से आवेदन भेजने की अनुमति है?" Session shows
+`consent_return_to: profile_setup`.
+**Fails if:** that turn says an application was sent. Nothing has been sent —
+the phase holds no tools — and saying so is the worst failure on this path.
+
+### K4 — the four entry points all gate
+Reach the apply from each of: the job list, the job description, the apply
+confirmation, and a services pick.
+
+**Expect:** each one routes to the permission question when any of
+`user_terms`, `user_privacy`, `profile_consent`, `has_age` is false, and
+straight on when all four are true.
+
+### K4b — the update path gates the same way
+Ask "मेरी प्रोफ़ाइल अपडेट कीजिए" ("update my profile") from each of: the first
+turn, the saved-details offer, the job list, the apply confirmation, and a
+services pick, using a profile whose `profile_consent_accepted` is false.
+
+**Expect:** every one asks for permission before "क्या बदलना है — काम या शहर?"
+("what would you like to change — the trade or the city?"). Granting goes to
+the update, not to profile creation, and the caller is never asked for a name.
+**Fails if:** the update question is asked first and the permission question
+after, or a second profile is created.
+
+### K4c — an update asked for with no profile
+Same request from a caller who has no live profile.
+
+**Expect:** the create path — permission, then the name — never the update
+phase. There is nothing to change.
+
+### K5 — a returning caller with current permission is never asked
+Use a number whose compliance shows all keys true and whose live profile has
+`profile_consent_accepted: true`.
+
+**Expect:** the whole journey to a submitted application with no permission
+question. `applications_submitted` 1, and a real application id.
+
+### K6 — permission granted
+At the permission question, answer "हाँ अनुमति है".
+
+**Expect:** `user_terms`, `user_privacy`, `profile_consent` and `consent_given`
+all become true in session, and the next question explains itself — that a
+profile has to be created before the application can go, then asks the age.
+**Fails if:** the age is asked with no reason given. The caller has just asked
+to apply and cannot tell why it stalled.
+
+### K7 — only an answer to the permission question counts
+Answer "हाँ" to any OTHER question in the call — the trade question, a job
+question, the saved-details offer.
+
+**Expect:** nothing is recorded. `user_terms`, `user_privacy` and
+`profile_consent` stay false.
+**Guards:** the finding that an acknowledgement of something else was being
+stored upstream as consent to everything.
+
+### K8 — what reaches the upstream is what the caller agreed to
+Complete a journey that creates a profile.
+
+**Expect:** the participant write carries `user_terms`, `user_privacy` and
+`profile_creation` taken from the call, and no `terms_accepted` or
+`privacy_accepted` fields at all.
+**Verify:** the created item is `live` with `profile_consent_accepted: true`.
+**Guards:** the hardcoded `true` that used to be sent for every caller.
+
+### K8b — the same holds for an update
+Change the city on an existing profile and let the write go through.
+
+**Expect:** the update carries the three compliance keys from the call, with
+no `terms_accepted` or `privacy_accepted`. The stored city changes and the
+consent recorded against the item is the caller's own.
+
+### K9 — blocked at the start when the upstream refuses
+Use a number the participant lookup rejects with `U18_NOT_ALLOWED`.
+
+**Expect:** the call ends on turn 1 with the reason spoken, and `end_session`
+fires. Session shows `fetch_error: U18_NOT_ALLOWED`.
+**Fails if:** the caller is taken through the journey and fails at the save.
+
+---
+
 ## E. Conversation robustness
 
 ### D1 — a question outside the script
@@ -588,11 +781,15 @@ Never an invented fifth job.
 **Expect:** the profile is saved as सुरेश. ONE profile, not two.
 
 ### D9 — age at the boundary
-Run three times: **अठारह** (18), **उन्नीस** (19), **बीस** (20).
-**Expect:** 18 is blocked (upstream treats the whole 18th year as under-age),
-19 and 20 proceed. The blocked reply must say **nineteen**, never "fifteen" or
-"eighteen" — both have been spoken by mistake and each tells the caller the
-wrong time to come back.
+Reach the age question through the apply (as A1 does), then run three times:
+**सत्रह** (17), **अठारह** (18), **उन्नीस** (19).
+**Expect:** 17 and 18 are blocked, 19 proceeds. The blocked reply must say
+**eighteen**, never "fifteen" or "nineteen" — both have been spoken by mistake
+and each tells the caller the wrong time to come back.
+**Known gap:** the upstream refuses 18 as well as 17, so the gate blocks under
+19 while the spoken line says eighteen. An 18-year-old is correctly stopped but
+hears a threshold that does not describe them. Resolve when "minor/major"
+replaces the numbers.
 **Guards:** the u18 threshold wording.
 
 ### D10 — age given in words, not digits
