@@ -789,6 +789,59 @@ class TestFixedOpening:
         spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
         assert "Which city?" in spoken
 
+    @pytest.mark.asyncio
+    async def test_when_told_speaks_it_anyway(self):
+        """The authorising question must be asked on the turn they answered with a value."""
+        agent = self._agent(
+            {"stored_trade": "Welder", "stored_location": "Ghaziabad"},
+            entities={"location": "Ghaziabad"},
+        )
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening_when_told = True
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Welder in Ghaziabad" in spoken
+
+    @pytest.mark.asyncio
+    async def test_when_told_still_respects_the_first_entry_gate(self):
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad",
+                             "subagent_entry_count": {"start": 2}})
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening_when_told = True
+
+        async def mock_stream(*a, **k):
+            yield "Anything else?"
+
+        agent._llm.stream = mock_stream
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Anything else?" in spoken
+        assert "I found your details" not in spoken
+
+    @pytest.mark.asyncio
+    async def test_a_fallback_placeholder_takes_the_first_value_present(self):
+        agent = self._agent({"stored_trade": "Welder", "location": "Hubli",
+                             "stored_location": "31, 6th Main, Bengaluru 560010"})
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening = "I found your details — {stored_trade} in {location|stored_location}."
+            sa.fixed_opening_requires = ["stored_trade", "location|stored_location"]
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Welder in Hubli" in spoken
+        assert "6th Main" not in spoken
+
 
 class TestTerminalPhaseFixedCopy:
     """A terminal subagent has no tools and verified copy. The model must not

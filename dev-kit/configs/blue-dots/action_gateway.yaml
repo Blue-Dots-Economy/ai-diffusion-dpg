@@ -59,9 +59,7 @@ tools:
       Returning after a break), experience_years
       (workExperienceYearsConditional: 0 / < 1 Year / 1 Year /
       2 Years / 3 Years / 3-5 Years / 5-10 Years / 10-15 Years /
-      15+ Years / Other), qualification
-      (highestQualificationOrSkill: School / College / ITI Other
-      Vocational Trainings / Certification Learned on the job),
+      15+ Years / Other),
       job_nature (natureOfJobsInterestedIn: Internship / Apprenticeship
       / Full-time / Flexible), help_needed (otherHelpNeeded: Training /
       Accommodation / Travel / Other). The trade field may be empty or
@@ -252,16 +250,11 @@ tools:
     type: rest_api
     category: write
     description: >
-      Create a new seeker profile, OR update an existing one. Call this
-      when the user has chosen create_new or update_existing
-      (profile_action in session). For UPDATE, pass the chosen profile's
-      item_id along with the full item_state (existing values with the
-      user's changes overlaid). For CREATE, omit item_id. workExperience
-      MUST be one of "Fresher" / "Worked before" / "Returning after a
-      break". The response returns the affected profile in the items
-      array — for UPDATE it has just the updated profile; for CREATE it
-      has all the user's profiles and the newly-created one is the last
-      by created_at.
+      Create a new seeker profile. Changing an existing one is
+      update_profile's job; omit item_id here. workExperience MUST be
+      one of "Fresher" / "Worked before" / "Returning after a break".
+      The response returns all the user's profiles in the items array,
+      the newly-created one last by created_at.
     base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
     auth:
       type: api_key
@@ -329,7 +322,6 @@ tools:
             workExperience: "{work_experience}"
             workExperienceYearsConditional: "{experience_years}"
             nameOfJobRolesInterestedIn: "{trade}"
-            highestQualificationOrSkill: "{qualification}"
             # Both are `array of string` upstream. Sent as bare strings they
             # rejected the WHOLE write with 400 INVALID_ITEM_STATE
             # "must be array", so one optional field the model chose to fill
@@ -427,14 +419,6 @@ tools:
             type: string
             required: false
             description: 'nameOfJobRolesInterestedIn (e.g. "Plumber").'
-          - name: qualification
-            source: agent
-            type: string
-            required: false
-            description: >
-              highestQualificationOrSkill. One of: "School", "College",
-              "ITI / Other Vocational Trainings", "Certification /
-              Learned on the job".
           - name: job_nature
             source: agent
             type: string
@@ -483,6 +467,105 @@ tools:
         fields:
           user_id: user_id
           user_existed: user_existed
+          items: items
+
+  # ────────────────────────────────────────────────────────────────────
+  # WRITE — Update an existing seeker profile. item_id makes it an update.
+  # ────────────────────────────────────────────────────────────────────
+  - id: update_profile
+    type: rest_api
+    category: write
+    description: >
+      Update an existing seeker profile. Pass profile_item_id and ONLY the
+      fields that are changing — the upstream merges them into the stored
+      item_state and leaves everything else as it is (verified against UAT
+      on 16 Oct 2026). Never use this to create: without a live profile
+      there is nothing to update, and save_profile is the create path.
+    base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_API_KEY
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: BLUE_DOTS_ORG_ID
+    timeout_ms: 8000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: update_profile
+        method: POST
+        path: /api/v1/admin/participant
+        body_template:
+          # stored_name: the upstream requires a top-level name on an update.
+          name: "{stored_name}"
+          phone_number: "+{user_id}"
+          compliance:
+            - key: "user_terms"
+              value: true
+            - key: "user_privacy"
+              value: true
+            - key: "profile_creation"
+              value: true
+          terms_accepted: true
+          privacy_accepted: true
+          channel: "voice"
+          source_id: "919240024229"
+          network: "blue_dot"
+          domain: "seeker"
+          item_type: "profile_1.0"
+          item_id: "{profile_item_id}"
+          item_state:
+            location: "{location}"
+            workExperience: "{work_experience}"
+            workExperienceYearsConditional: "{experience_years}"
+            nameOfJobRolesInterestedIn: "{trade}"
+            natureOfJobsInterestedIn: ["{job_nature}"]
+            otherHelpNeeded: ["{help_needed}"]
+        params:
+          - name: profile_item_id
+            source: session
+            type: string
+            required: true
+            description: "The live profile's item_id. Filled from session, not by the model."
+          - name: stored_name
+            source: session
+            type: string
+            required: false
+          - name: location
+            source: agent
+            type: string
+            required: false
+            description: "The caller's city, only when it is changing."
+          - name: trade
+            source: agent
+            type: string
+            required: false
+            description: 'nameOfJobRolesInterestedIn, only when it is changing.'
+          - name: work_experience
+            source: agent
+            type: string
+            required: false
+            description: "Fresher / Worked before / Returning after a break."
+          - name: experience_years
+            source: agent
+            type: string
+            required: false
+          - name: job_nature
+            source: agent
+            type: string
+            required: false
+          - name: help_needed
+            source: agent
+            type: string
+            required: false
+    response:
+      session_mapping:
+        - source: "user_existed"
+          target: update_stage
+      projection:
+        fields:
+          user_id: user_id
           items: items
 
   # ────────────────────────────────────────────────────────────────────

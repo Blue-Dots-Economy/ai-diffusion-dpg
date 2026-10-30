@@ -44,7 +44,6 @@ state:
       gender:                  { type: string, default: "" }
       work_experience:         { type: string, default: "" }   # enum: Fresher / Worked before / Returning after a break
       experience_years:        { type: string, default: "" }   # enum: 0, < 1 Year, 1 Year, 2 Years, …
-      qualification:           { type: string, default: "" }   # enum: School / College / ITI Other Vocational Trainings / Certification Learned on the job
       job_nature:              { type: string, default: "" }   # enum: Internship / Apprenticeship / Full-time / Flexible
       help_needed:             { type: string, default: "" }   # enum: Training / Accommodation / Travel / Other
       # Search criteria (confirmed in profile_resolve subagent)
@@ -111,7 +110,6 @@ state:
             - trade                  # nameOfJobRolesInterestedIn
             - work_experience        # workExperience
             - experience_years       # workExperienceYearsConditional
-            - qualification          # highestQualificationOrSkill
             - job_nature             # natureOfJobsInterestedIn
             - help_needed            # otherHelpNeeded
             # Identity-on-upstream

@@ -168,6 +168,84 @@ repeated questions.
 
 ---
 
+## U. Profile update — changing what is stored, mid-call
+
+**Seed first.** Every scenario here needs a caller with one live profile. Run
+A1 through to the apply on a fresh number and let it finish; `save_profile`
+only fires at the pick turn, so a seed that stops earlier leaves no profile and
+every U scenario reads as broken when it is not.
+
+Check the profile upstream before and after, not just the transcript — the
+whole point of these is what was written:
+
+```bash
+curl -s "https://signals.bluedotseconomy.org/api/v1/admin/participant?phone_number=<phone>" \
+  -H "x-api-key: $BLUE_DOTS_API_KEY" -H "x-acting-org-id: $BLUE_DOTS_ORG_ID"
+```
+
+### U1 — the saved profile is accepted, nothing is written
+> हाँ / हाँ
+
+**Expect:** the offer, then the search on the stored trade and city. No
+`update_profile` call. The stored record is byte-identical afterwards.
+**Guards:** the update path must not fire on the accept path.
+
+### U2 — the city is changed and the change is confirmed
+> हाँ / नहीं / गाज़ियाबाद / हाँ / हाँ
+
+**Expect:** "क्या बदलना है — काम या शहर?" ("what would you like to change —
+the trade or the city?"), then the confirm, then "आपकी प्रोफ़ाइल अपडेट हो गई
+है" ("your profile has been updated") and the jobs.
+**Upstream must show:** `location` changed to the new city, **and everything
+else untouched** — name, age, gender, workExperience, languageSpoken. The
+upstream merges a partial `item_state`; a write that blanks other fields is a
+failure even though the city is right.
+**The written value is canonical ENGLISH** — `Ghaziabad`, not `गाज़ियाबाद`. The
+job search matches on it, so a Hindi value saved here stops the caller's own
+profile finding them work.
+**Guards:** #514.
+
+### U3 — the change is named but the save is declined
+> हाँ / नहीं / प्लंबर / नहीं / हाँ
+
+**Expect:** nothing written — the stored trade is unchanged. But the search
+still uses the trade they just named: a "नहीं" refuses the saving, not the
+asking.
+**Guards:** #514, decline case 3.
+
+### U4 — "change something", but nothing named
+> हाँ / नहीं / कुछ नहीं, रहने दीजिए
+
+**Expect:** the what-to-change question, then the search on the stored values.
+No write, no second attempt to ask.
+
+### U5 — an update asked for mid-call
+From the job list or the apply step: "मेरी प्रोफ़ाइल अपडेट कीजिए" ("update my
+profile").
+**Expect:** the same confirm-then-write sequence, and afterwards the caller is
+returned to where they were, not dropped back to the start.
+
+### U6 — both questions are spoken word for word
+Run U2 four times.
+**Expect:** "क्या बदलना है — काम या शहर?" and
+"काम <trade> — प्रोफ़ाइल में अपडेट कर दूँ?" are **identical every
+run**, with "शहर <city> और " in front whenever the caller has named a city.
+The saved location is never spoken — it can be a full postal address.
+Any rewording, a second question in the same turn, a feminine form
+addressed to the caller, or any claim that the profile was updated before the
+tool has run, is a failure — these two lines are spoken by the orchestrator
+and the model never composes them.
+**Guards:** #514; the three defects that made this flow unusable when the
+model wrote these turns.
+
+### U7 — a duplicate profile is never created
+After U1 to U5 on one number.
+**Expect:** still exactly one live profile. An update must never fall back to
+a create.
+**Guards:** F16, #496.
+
+---
+
 ## C. Terminal paths — the caller must be told WHY
 
 ### B1 — under-19 caller

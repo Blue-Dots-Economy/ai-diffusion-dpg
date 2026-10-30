@@ -67,7 +67,7 @@ agent:
 # the LLM, so a returning caller's consent/age flags and live profile are in
 # session state when turn 1 is routed (session-bootstrap spec). Read connector only.
 session_bootstrap:
-  timeout_ms: 1500
+  timeout_ms: 2000
   steps:
     - type: tool
       tool: fetch_profile
@@ -505,10 +505,8 @@ connectors:
   write:
     - name: save_profile
       description: >
-        Create a new seeker profile or update an existing one. The
-        upstream does NOT support partial updates — pass the full
-        item_state on every call. For UPDATE pass profile_item_id;
-        for CREATE omit it.
+        Create a new seeker profile. This is the create path only —
+        changing an existing profile is update_profile's job.
       input_schema:
         type: object
         properties:
@@ -521,7 +519,6 @@ connectors:
           profile_item_id: {type: string, description: "Pass to UPDATE; omit to CREATE."}
           experience_years: {type: string}
           trade: {type: string}
-          qualification: {type: string}
           job_nature: {type: string}
           help_needed: {type: string}
         # Mirrors the live upstream schema, fetched from
@@ -599,7 +596,6 @@ connectors:
           age:              [age]
           work_experience:  [work_experience]
           experience_years: [experience_years]
-          qualification:    [qualification]
           job_nature:       [job_nature]
           help_needed:      [help_needed]
           # A returning caller's values live under stored_*; their own words
@@ -614,6 +610,48 @@ connectors:
           माफ़ कीजिए, आपकी जानकारी सेव नहीं हो पाई। मैं एक बार और कोशिश करती हूँ।
         bridge_line: "मैं आपकी जानकारी सेव कर रही हूँ।"
       # A save changes what fetch_profile returns, so drop its stored result.
+      invalidates: [fetch_profile]
+
+    - name: update_profile
+      description: >
+        Update the caller's existing profile. Pass ONLY the fields that are
+        changing — the upstream merges them and leaves the rest alone. This
+        is never a create: without a live profile there is nothing to
+        update.
+
+        Write the canonical ENGLISH value, never the caller's Hindi words:
+        "Ghaziabad" not "गाज़ियाबाद", "Data Entry Operator" not
+        "डेटा एंट्री". The job search matches on these, so a Hindi value
+        saved here stops the caller's own profile finding them work.
+        Canonical city names are the same ones job_match uses — Bengaluru,
+        Mumbai, Chennai, Kolkata, Gurugram.
+      input_schema:
+        type: object
+        properties:
+          location: {type: string}
+          trade: {type: string}
+          work_experience: {type: string, description: "Fresher / Worked before / Returning after a break"}
+          experience_years: {type: string}
+          job_nature: {type: string}
+          help_needed: {type: string}
+        additionalProperties: false
+        required: []
+      invocation_rules:
+        call_when: >
+          The caller is in profile_update AND has said yes to the
+          confirmation question naming what is changing. Send the fields
+          that differ from their stored profile and nothing else. Never
+          send age.
+
+          profile_item_id is filled from session, not by you.
+        must_not_substitute: >
+          Never claim the profile was updated before you have read this
+          tool's result.
+        on_failure: >
+          अभी प्रोफ़ाइल अपडेट नहीं कर पा रही हूँ।
+        bridge_line: "मैं आपकी प्रोफ़ाइल अपडेट करती हूँ।"
+        max_calls_per_turn: 1
+      # An update changes what fetch_profile returns, so drop its stored result.
       invalidates: [fetch_profile]
 
     - name: apply_job
@@ -768,7 +806,6 @@ preprocessing:
       gender:           { type: enum, values: [male, female, other] }
       work_experience:  { type: enum, values: [Fresher, Worked before, Returning after a break] }
       experience_years: { type: int, min: 0, max: 60 }
-      qualification:    { type: string, description: "School / College / ITI / Certification" }
       job_nature:       { type: enum, values: [Internship, Apprenticeship, Full-time, Flexible] }
       monthly_in_hand:  { type: int, min: 0, max: 1000000 }
       language_preference: { type: enum, values: [english, hindi], description: "जिस भाषा में बात करनी है" }
@@ -820,6 +857,16 @@ preprocessing:
       - { pending: trade, caller: "काम सिखाने वाली जगह बताइए", out: { acts: [request_change], relation: new_topic, topic: services } }
       - { pending: location, caller: "पहले काम सीखना है", out: { acts: [provide_info], relation: new_topic, topic: services } }
       - { pending: select_job, caller: "इंटरव्यू की तैयारी में मदद मिलेगी", out: { acts: [ask], relation: new_topic, topic: services } }
+      - { pending: use_saved_details, caller: "नहीं", out: { acts: [deny], relation: answers_pending } }
+      - { pending: use_saved_details, caller: "नहीं, गाज़ियाबाद में देखिए", out: { acts: [deny, provide_info], relation: answers_pending, slots: { location: Ghaziabad } } }
+      - { pending: what_to_change, caller: "शहर", out: { acts: [provide_info], relation: answers_pending } }
+      - { pending: what_to_change, caller: "गाज़ियाबाद", out: { acts: [provide_info], relation: answers_pending, slots: { location: Ghaziabad } } }
+      - { pending: what_to_change, caller: "कुछ नहीं, रहने दीजिए", out: { acts: [deny], relation: answers_pending } }
+      - { pending: confirm_update, caller: "हाँ", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: confirm_update, caller: "हाँ कर दीजिए", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: confirm_update, caller: "नहीं, सेव मत कीजिए", out: { acts: [deny], relation: answers_pending } }
+      - { caller: "मेरी प्रोफ़ाइल अपडेट कीजिए", out: { acts: [request_change], relation: new_topic, topic: profile } }
+      - { caller: "मेरी जानकारी बदलनी है", out: { acts: [request_change], relation: new_topic, topic: profile } }
       - { pending: offer_other_city, caller: "हाँ", out: { acts: [affirm], relation: answers_pending } }
       - { pending: offer_other_city, caller: "हाँ बताइए", out: { acts: [affirm], relation: answers_pending } }
       - { pending: offer_other_city, caller: "नहीं", out: { acts: [deny], relation: answers_pending } }
@@ -848,9 +895,17 @@ preprocessing:
       # Mentioning someone, or asking whom to contact at the company, is not asking for a person now.
       - { pending: select_job, caller: "किसी ने मुझे बताया था", out: { acts: [provide_info], relation: unclear } }
       - { pending: select_job, caller: "कंपनी में किससे बात करनी होगी?", out: { acts: [ask], relation: new_topic, topic: job_details } }
+      - { pending: what_to_change, caller: "कुछ नहीं", out: { acts: [deny], relation: answers_pending } }
+      - { pending: what_to_change, caller: "रहने दीजिए", out: { acts: [deny], relation: answers_pending } }
+      - { pending: what_to_change, caller: "कुछ नहीं बदलना", out: { acts: [deny], relation: answers_pending } }
     act_intents:
       - { acts: [affirm], pending: wants_services, relation: answers_pending, intent: services_request }
       - { acts: [deny], pending: wants_services, relation: answers_pending, intent: services_declined }
+      - { acts: [deny], pending: use_saved_details, relation: answers_pending, intent: update_profile_request }
+      - { acts: [request_change], topic: profile, intent: update_profile_request }
+      - { acts: [affirm], pending: confirm_update, relation: answers_pending, intent: profile_update_confirmed }
+      - { acts: [deny], pending: confirm_update, relation: answers_pending, intent: profile_update_declined }
+      - { acts: [deny], pending: what_to_change, relation: answers_pending, intent: profile_update_declined }
       # Declining jobs, whatever was being asked at the time.
       - { acts: [deny], relation: new_topic, topic: services, intent: jobs_declined }
       - { acts: [deny], pending: consent, relation: answers_pending, intent: decline }
@@ -932,7 +987,6 @@ entity_to_profile_field:
   trade: trade
   work_experience: work_experience
   experience_years: experience_years
-  qualification: qualification
   job_nature: job_nature
   help_needed: help_needed
   language_preference: language_preference
@@ -2336,8 +2390,8 @@ agent_workflow:
         currently limited to name and age"). Greeting a caller by name is
         the fixed opening's job, not yours.
 
-        Never send `stored_name` as the name on a write: it is what to call
-        them, not a value to collect.
+        Never offer `stored_name` as a name the caller has just given you:
+        it is what to call them, not a value to collect.
 
         <trade> and <city> are already in <state> collected as
         `stored_trade` and `stored_location`, lifted from the live item by
@@ -2426,6 +2480,9 @@ agent_workflow:
               value: 2
           next_subagent_id: ended
         # Must out-rank the "*" rules below; a profile holder matches those.
+        - intent: update_profile_request
+          next_subagent_id: profile_update
+          session_writes: { update_return_to: job_match, update_stage: "" }
         - intent: jobs_declined
           next_subagent_id: profile_resolve
         - intent: services_request
@@ -2849,6 +2906,9 @@ agent_workflow:
         - intent: services_request
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
+        - intent: update_profile_request
+          next_subagent_id: profile_update
+          session_writes: { update_return_to: job_match, update_stage: "" }
         - intent: jobs_declined
           next_subagent_id: job_match
         - intent: services_declined
@@ -2992,7 +3052,6 @@ agent_workflow:
             trade:            { from: session, key: trade }
             work_experience:  { from: session, key: work_experience }
             experience_years: { from: session, key: experience_years }
-            qualification:    { from: session, key: qualification }
             job_nature:       { from: session, key: job_nature }
 
       system_prompt: |
@@ -3039,7 +3098,7 @@ agent_workflow:
         So there is exactly ONE question you may ask on the create path:
         the caller's name. Everything else is optional — send it if you
         already have it, skip it if you do not. Do NOT ask for gender,
-        age, work experience, qualification or job type. Asking for them
+        age, work experience or job type. Asking for them
         was the cause of the profile-question loop; they are not required
         and the caller does not need to supply them by voice.
 
@@ -3074,7 +3133,6 @@ agent_workflow:
           gender,
           work_experience,
           experience_years,
-          qualification,
           job_nature,
           help_needed      Only if the caller volunteered them unprompted
                            earlier in the call.
@@ -3309,6 +3367,191 @@ agent_workflow:
         # profile_setup_done is the only legitimate completion signal.
         - intent: "*"
           next_subagent_id: profile_setup
+
+    - id: profile_update
+      name: Profile Update
+      description: >
+        Change what is stored on a caller's existing profile. Reached from
+        the profile offer when they decline it, and from anywhere in the
+        call when they ask to update their profile. Confirms what is
+        changing, writes it, and hands back to the search.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "ठीक है।"
+      fixed_opening: "क्या बदलना है — काम या शहर?"
+      fixed_opening_requires: [profile_item_id]
+      tools: []
+      pending:
+        - id: what_to_change
+          when: [{ field: update_stage, operator: in, value: [null, ""] }]
+          expects: "काम या शहर — क्या बदलना है"
+      system_prompt: |
+        ## Which turn you are on
+        Work out which of these three you are in and do ONLY that one.
+
+        1. You have just arrived and nothing has been named yet →
+           ask what to change. Nothing else. Do not say anything about
+           saving, and do not read their profile back to them.
+        2. You know what is changing, and have not yet asked to save it →
+           ask the one confirmation question.
+        3. They have answered that confirmation → act on their answer.
+
+        Anything about saving or not saving belongs to turn 3 and nowhere
+        else. On turn 1 the caller has not been asked about saving, so
+        telling them you will not save answers a question they never
+        heard. Their "नहीं" there refused the stored details, nothing more.
+
+        ## What this phase is for
+        The caller wants something on their saved profile changed. Your job
+        is to find out what, confirm it in their own terms, write it, and
+        hand back to the search. Nothing else.
+
+        Only two things are changed here: the trade and the city. If they
+        volunteered anything else earlier in the call — work experience,
+        the kind of job they want — that goes in the same write, but it is
+        never what you ask about.
+
+        Never change their age here, whatever they say.
+
+        ## If you do not yet know what they want changed
+        Ask once, plainly:
+          "क्या बदलना है — काम या शहर?"
+          ("What would you like to change — the trade or the city?")
+
+        If they answer with the VALUE itself ("गाज़ियाबाद", "डेटा एंट्री"),
+        you now know what is changing — go straight to the confirmation
+        below. Do not ask again which field it was; a city name is a city
+        and a trade is a trade.
+
+        Only when they name the field alone ("शहर") do you ask for the
+        value: "कौन सा शहर?" ("which city?").
+
+        If they say they do not want to change anything after all —
+        "कुछ नहीं", "रहने दीजिए" — say "ठीक है" and nothing more. The
+        search carries on with what is already saved.
+
+        ## You never ask whether to save
+        The next phase asks that, word for word. Once you know what is
+        changing, end the turn — say nothing about saving and nothing
+        about having saved.
+
+        ## On their answer
+        A yes calls `update_profile` with the changed fields only.
+
+        A no means do not save — it does not mean undo. They asked for
+        that city a turn ago and they still want it searched. Acknowledge
+        briefly, say in your own words that it is not being saved, and
+        move on to the search with the new values.
+
+        ## After the tool
+        Only once you have read a successful result may you say the
+        profile was updated. Then offer the search in the same breath:
+          "आपकी प्रोफ़ाइल अपडेट हो गई है। अब नौकरियाँ देखूँ?"
+          ("Your profile has been updated. Shall I look for jobs now?")
+
+        On a failure say "अभी प्रोफ़ाइल अपडेट नहीं कर पा रही हूँ" ("I
+        can't update your profile right now") and offer the search just
+        the same — the caller's time is not worth less because a write
+        failed, and what they told you is still what gets searched.
+      routing:
+        - intent: off_track
+          next_subagent_id: profile_update
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: profile_update }
+        - intent: jobs_declined
+          next_subagent_id: profile_update
+        - intent: services_request
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
+        - { intent: profile_update_declined, conditions: [{ field: update_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm, session_writes: { update_stage: skipped } }
+        - { intent: profile_update_declined, conditions: [{ field: update_return_to, operator: eq, value: service_match }], next_subagent_id: service_match, session_writes: { update_stage: skipped } }
+        - { intent: profile_update_declined, next_subagent_id: job_match, session_writes: { update_stage: skipped } }
+        # Stays here: only this phase holds update_profile.
+        # Two rules: conditions are AND-ed and only one field may change.
+        - { intent: "*", conditions: [{ field: trade, operator: not_eq, value: "" }, { field: update_stage, operator: in, value: [null, ""] }], next_subagent_id: profile_update_confirm }
+        - { intent: "*", conditions: [{ field: location, operator: not_eq, value: "" }, { field: update_stage, operator: in, value: [null, ""] }], next_subagent_id: profile_update_confirm }
+        # Only leave once the write is settled, or the confirm is skipped.
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [true, skipped] }, { field: update_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [true, skipped] }, { field: update_return_to, operator: eq, value: service_match }], next_subagent_id: service_match }
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [true, skipped] }], next_subagent_id: job_match }
+        - intent: "*"
+          next_subagent_id: profile_update
+
+    - id: profile_update_confirm
+      name: Profile Update Confirm
+      description: >
+        Asks the one question that authorises the write, then performs it.
+        The question is spoken verbatim so it cannot be reworded, asked
+        twice, gendered, or replaced by a claim that the write already
+        happened.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "ठीक है।"
+      fixed_opening_prefix: "शहर {location} और "
+      fixed_opening_prefix_requires: [location]
+      fixed_opening: "काम {trade|stored_trade} — प्रोफ़ाइल में अपडेट कर दूँ?"
+      fixed_opening_requires: ["trade|stored_trade"]
+      fixed_opening_when_told: true
+      tools: [update_profile]
+      pending:
+        - id: confirm_update
+          when: [{ field: update_stage, operator: in, value: [null, ""] }]
+          expects: "प्रोफ़ाइल अपडेट करने की हाँ/नहीं"
+      system_prompt: |
+        ## The question is already asked
+        The caller has been asked, word for word, whether to update their
+        profile. You never ask it again and never rephrase it. Your only
+        job is to act on their answer.
+
+        ## On a yes
+        Call `update_profile` with the fields that differ from their
+        stored profile and nothing else. Never send their age.
+
+        Then, and only after reading a successful result, say once:
+          "आपकी प्रोफ़ाइल अपडेट हो गई है। अब नौकरियाँ देखूँ?"
+          ("Your profile has been updated. Shall I look for jobs now?")
+
+        Once. Not again on the next turn — they heard it.
+
+        On a failure, say you cannot update it right now and offer the
+        search anyway. What they told you is still what gets searched.
+
+        ## On a no
+        Write nothing. A no refuses the saving, not the search — they
+        asked for that trade or city a turn ago and still want it looked
+        up. Acknowledge briefly and offer the search.
+
+        ## Never
+        Say the profile was updated before you have read a successful
+        result. No turn in this phase makes that sentence true earlier.
+      routing:
+        - intent: off_track
+          next_subagent_id: profile_update_confirm
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: profile_update_confirm }
+        - intent: profile_update_confirmed
+          next_subagent_id: profile_update_confirm
+        # Straight out: another turn here and the model claims a write.
+        - { intent: profile_update_declined, conditions: [{ field: update_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm, session_writes: { update_stage: skipped } }
+        - { intent: profile_update_declined, conditions: [{ field: update_return_to, operator: eq, value: service_match }], next_subagent_id: service_match, session_writes: { update_stage: skipped } }
+        - { intent: profile_update_declined, next_subagent_id: job_match, session_writes: { update_stage: skipped } }
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [true, skipped] }, { field: update_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [true, skipped] }, { field: update_return_to, operator: eq, value: service_match }], next_subagent_id: service_match }
+        - { intent: "*", conditions: [{ field: update_stage, operator: in, value: [true, skipped] }], next_subagent_id: job_match }
+        - intent: "*"
+          next_subagent_id: profile_update_confirm
 
     # ─────────────────────────────────────────────────────────────
     # 6. apply_confirm — final apply + confirmation.
@@ -3718,6 +3961,9 @@ agent_workflow:
               operator: eq
               value: ""
           next_subagent_id: profile_setup
+        - intent: update_profile_request
+          next_subagent_id: profile_update
+          session_writes: { update_return_to: apply_confirm, update_stage: "" }
         - intent: jobs_declined
           next_subagent_id: apply_confirm
         - intent: services_declined
@@ -3902,6 +4148,9 @@ agent_workflow:
           next_subagent_id: ended
         - intent: termination_blocked
           next_subagent_id: confirm_close
+        - intent: update_profile_request
+          next_subagent_id: profile_update
+          session_writes: { update_return_to: service_match, update_stage: "" }
         - intent: explore_more
           next_subagent_id: job_match
           session_writes: { services_in_play: "false", selected_service_item_id: "" }

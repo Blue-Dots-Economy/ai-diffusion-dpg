@@ -889,3 +889,13 @@ def test_predispatch_on_subagent_timeout_and_tables():
     tables.model_validate({"city_canonical": {"Bangalore": "Bengaluru"}, "placeholders": ["unknown"]})
     with pytest.raises(ValidationError):
         tables.model_validate({"t": "not a table"})
+
+
+def test_subagent_fixed_opening_when_told_defaults_off():
+    assert SubAgent(**_subagent_kwargs()).fixed_opening_when_told is False
+    assert SubAgent(**_subagent_kwargs(fixed_opening_when_told=True)).fixed_opening_when_told is True
+
+
+def test_subagent_fixed_opening_when_told_rejects_a_non_boolean():
+    with pytest.raises(ValidationError):
+        SubAgent(**_subagent_kwargs(fixed_opening_when_told="sometimes"))

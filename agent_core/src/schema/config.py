@@ -853,6 +853,8 @@ class SubAgent(BaseModel):
     fixed_opening_prefix_requires: list[str] = Field(default_factory=list)
     # Values that count as absent, so a stored placeholder is never spoken.
     fixed_opening_prefix_unless: list[str] = Field(default_factory=list)
+    # Speak the fixed opening even on a turn where the caller named something.
+    fixed_opening_when_told: bool = False
     routing: list[RoutingRule] = Field(default_factory=list)
     pending: list[PendingQuestionConfig] = Field(default_factory=list)
     predispatch: list[PredispatchRule] = Field(default_factory=list)
