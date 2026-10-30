@@ -294,10 +294,22 @@ def test_granting_at_the_update_gate_does_not_divert_into_profile_setup():
                    for f in ("user_terms", "user_privacy", "profile_consent")), phase
 
 
-def test_a_caller_with_no_profile_is_never_sent_to_the_update_phase():
-    """profile_update has nothing to change; apply_confirm must create one instead."""
+@pytest.mark.parametrize("sid", ["trade_ask", "profile_resolve", "job_match",
+                                 "apply_confirm", "service_match"])
+def test_a_caller_with_no_profile_is_never_sent_to_the_update_phase(sid):
+    """profile_update cannot run without an item_id; its own write requires one."""
     state = {**_ALL_GIVEN, "profile_item_id": ""}
-    assert _route("apply_confirm", state, intent="update_profile_request")[0] == "profile_setup"
+    nxt, _ = _route(sid, state, intent="update_profile_request")
+    assert nxt != "profile_update", sid
+
+
+@pytest.mark.parametrize("sid", ["trade_ask", "profile_resolve", "job_match", "service_match"])
+def test_an_update_request_without_a_profile_does_not_ask_for_permission(sid):
+    """Nothing is about to be written, so there is nothing to ask permission for."""
+    state = {"profile_item_id": "", "user_terms": False, "user_privacy": False,
+             "profile_consent": False, "has_age": False}
+    nxt, rule = _route(sid, state, intent="update_profile_request")
+    assert rule.session_writes.get("consent_return_to") != "profile_update", sid
 
 
 def test_a_brand_new_caller_is_sent_to_consent():
