@@ -92,6 +92,11 @@ customer-managed key rather than `alias/aws/ssm`.
 
 ## Deploy
 
+> **Already running?** This section is first-time setup. For every
+> subsequent deploy — pulling a branch, bumping the image, changing a
+> key or switching cluster — follow [`DEPLOY.md`](DEPLOY.md), which
+> covers the failure modes that recur here.
+
 ```bash
 git clone https://github.com/Blue-Dots-Economy/ai-diffusion-dpg.git
 cd ai-diffusion-dpg/automation/deploy/shared-vm
