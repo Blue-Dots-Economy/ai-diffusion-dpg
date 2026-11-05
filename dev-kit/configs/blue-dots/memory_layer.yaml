@@ -33,6 +33,11 @@ state:
       has_age:                 { type: enum,   values: ["true", "false"], default: "false" }
       user_terms:              { type: enum,   values: ["true", "false"], default: "false" }
       user_privacy:            { type: enum,   values: ["true", "false"], default: "false" }
+      profile_consent:         { type: enum,   values: ["true", "false"], default: "false" }
+      fetch_error:             { type: string, default: "" }
+      consent_return_to:       { type: string, default: "" }
+      # Refusals, not visits — a second visit after a grant must not end the call.
+      consent_declines:        { type: int,    default: 0 }
       # Profile data — populated when the user verbalises these and NLU
       # picks them up. Mirrors the profile_1.0 schema returned by
       # fetch_profile so subsequent tool calls (update_profile, apply_job)

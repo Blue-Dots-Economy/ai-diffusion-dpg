@@ -59,7 +59,8 @@ agent:
   # Session fields shown to the LLM in <state> collected. These three are written
   # by fetch_profile's response.session_mapping (action_gateway.yaml), and the
   # profile_resolve prompt reads them from <state> collected.
-  prompt_session_fields: [profile_item_id, stored_trade, stored_location]
+  prompt_session_fields: [profile_item_id, stored_trade, stored_location,
+                          user_terms, user_privacy, profile_consent, has_age]
   history_turns: 2
   state_fields: [applications_submitted, selected_job_item_id]
 
@@ -256,8 +257,7 @@ conversation:
     # `ended` is on this list.
     subagents:
       - ended              # normal close, reached from anywhere on goodbye
-      - consent_declined   # refusal — speaks the close, then hangs up
-      - u18_blocked        # under 19, cannot be onboarded by voice
+      - u18_blocked        # under 18, cannot be onboarded by voice
     prompt: |
       ## Session-end evaluation
       `end_session` hangs up on the caller. Treat it as the last thing you
@@ -290,24 +290,11 @@ conversation:
       commonest way this tool gets fired while the caller is still
       working through the call.
 
-      ONE exception, and only this one: the caller REFUSES consent.
-      A refusal is the single point in the call where there is genuinely
-      nothing left to offer — without permission to save their details
-      no application can ever be sent, so continuing only wastes their
-      time and re-asks a question they have already answered. Say the
-      refusal line and call `end_session` in the SAME turn.
-
-      This overrides the `opening`-phase ban immediately below, and it
-      is the only thing that does. It applies to a refusal of CONSENT,
-      not to a "नहीं" answering anything else — not the age question,
-      not "are you looking for work", not a job they do not want.
-
-      Why it is needed: routing sends a refusal to the terminal
-      `consent_declined` subagent, which flushes the session at the end
-      of that same turn — so `consent_declined`'s own prompt never runs
-      and cannot end anything. Without `end_session` here, nothing tells
-      the caller's phone to hang up — the caller hears the refusal line
-      and then the opening greeting again, as a brand-new caller.
+      NEVER call it because the caller refused permission. A refusal
+      closes the application path, not the call: the caller is asked
+      whether they want anything else on jobs or training, and that is
+      a question like any other. Ending there drops the line on a
+      question the caller has not answered yet.
 
       NEVER call it:
         - in the `opening` phase for any reason OTHER than the consent
@@ -1350,16 +1337,18 @@ agent_workflow:
       live calls, while fetch_jobs had just returned five real jobs.
 
     ## Linear flow
-    Five phases. Manager Agent routes you to the right subagent; follow
-    that subagent's prompt:
-      1. opening — ask consent to save the caller's details, then ask
-         their age. Under 19 goes to u18_blocked (portal only, terminal —
-         the upstream admits only 19 and over);
-         a refusal goes to ended. Nobody reaches phase 2 without both.
+    Manager Agent routes you to the right subagent; follow that
+    subagent's prompt:
+      1. trade_ask — ask what work the caller is looking for. Nothing
+         is asked about them and nothing is saved.
       2. profile_resolve — fetch profile(s) by phone (silent); ask user
          for trade (and location if profiles disagree on city).
       3. job_match — fetch jobs by location, present results matching
-         the user's trade, user picks one.
+         the user's trade, user picks one. Browsing jobs and training
+         needs no permission and no age, so never tell a caller they
+         are too young or ineligible here — permission and age belong
+         to the consent phase, which runs only before something is
+         saved or sent.
       4. profile_setup — reached only when the caller has NO live
          profile. Ask for the caller's NAME — the one required field
          they alone can supply — and call save_profile with everything
@@ -1368,8 +1357,8 @@ agent_workflow:
       5. apply_confirm — confirm with the caller, then call apply_job.
 
     ## Never ask twice for something you already have
-    age is captured in phase 1, trade and location in phase 2, name in
-    phase 4 (profile_setup). Once a value is in session it is settled — do not re-ask it
+    age is captured in the consent phase, trade and location in
+    profile_resolve, name in profile_setup. Once a value is in session it is settled — do not re-ask it
     in a later phase under any circumstances. Re-asking was the most
     visible failure.
 
@@ -1693,35 +1682,24 @@ agent_workflow:
     # Both facts are now established in the first two answers.
     # ─────────────────────────────────────────────────────────────
     - id: opening
-      name: Opening & Consent
+      name: Opening
       description: >
-        First phase of every call. Tells the caller their details will be
-        saved so applications can be sent on their behalf, asks consent,
-        then asks their age. Routes minors out to u18_blocked and refusals
-        to ended; everyone else goes on to profile_resolve.
+        First phase of every call. Greets the caller and finds out what work
+        they want. Nothing is collected here and nothing is written. Routes a
+        caller the upstream refused out to u18_blocked; everyone else goes on
+        to profile_resolve.
       is_start: true
       is_terminal: false
-      # Emitted verbatim on the bridge's BLOCKING path. The streaming path
-      # suppresses canned opening phrases (GH-239) because the LLM's own first
-      # reply already greets, so a voice caller hears the equivalent produced
-      # from the system prompt below. Hindi, because it is spoken as written.
-      # Emitted verbatim on turn 1, BEFORE any LLM call. The start-of-call
-      # bootstrap fetch may already have run, but this phrase stays static and
-      # must never ask for consent, because it has to work when that fetch
-      # failed: a caller whose consent is already on file would be asked
-      # anyway, which is the exact behaviour this phase was reworked to stop.
-      # It greets and asks the one thing that is useful for everyone.
+      # Blocking path only; the streaming path suppresses it (GH-239).
       opening_phrase: >
         नमस्ते! ब्लू डॉट्स में आपका स्वागत है। क्या आप काम की तलाश में हैं?
 
-      # Nothing is fetched or written before consent and age are settled.
-      # (The orchestrator still appends end_session to every subagent.)
       tools:
         - fetch_profile
 
       system_prompt: |
-        You are in the **opening** phase. It has exactly two questions,
-        asked one per turn, in this order. Nothing else happens here.
+        You are in the **opening** phase. It asks ONE thing: what work the
+        caller is looking for. Nothing else happens here.
 
         ## Turn 1: greet and ask if they want work
         `fetch_profile` already ran when the call started, before this turn;
@@ -1732,55 +1710,11 @@ agent_workflow:
           "नमस्ते! क्या आप काम की तलाश में हैं?"
           ("Hello! Are you looking for work?")
 
-        Ask NOTHING about consent or age on this turn — the greeting is all
-        this turn does. The fetch tells us what is already on file, so asking
-        now is how a caller ends up being asked for something the system
-        already knows.
-
-        ## Fallback: if you have to fetch yourself, ask for the TRADE, never for consent
-        If the fetch_profile entry is absent from <known_facts> (the
-        start-of-call fetch failed) and you call `fetch_profile` yourself, its
-        flags have not arrived on that turn — tools run after routing, so the
-        result reaches you on the turn AFTER. Asking for consent now is
-        guessing, and for most callers the guess is wrong: they have already
-        consented.
-
-        Ask instead for the one thing needed either way:
-
+        ## Every other turn: ask for the trade
           "आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?"
           ("What work or trade are you looking for?")
 
-        That is useful for every caller, so no turn is wasted while the fetch
-        comes back.
-
-        ## What the fetch tells you
-        These facts are in session state from the first turn when the
-        start-of-call fetch succeeded; otherwise from the turn after you
-        fetch yourself.
-        Three facts arrive in session state:
-
-          has_age        an age is already on file
-          user_terms     terms of use already accepted
-          user_privacy   privacy policy already accepted
-
-        **Ask only for what is false or missing.** If all three are true,
-        say nothing about consent or age at all — routing moves the caller on
-        by itself. Asking a caller to re-consent to something they have
-        already consented to reads as the system not knowing them.
-
-        If the fetch failed and no flags arrived, treat them as unknown and
-        ask as you would for a new caller. Never assume consent was given.
-
-        ### false IS AN ANSWER, AND THE ANSWER IS NO
-        A caller with no record does not come back with these flags missing —
-        the lookup returns all three explicitly **false**. That is not "nothing
-        to go on". It is a definite "this person has agreed to nothing", and it
-        is the commonest case on this line.
-
-        So `user_terms: false` means the consent question below is MANDATORY on
-        this call, before anything is saved on their behalf. Never skip it
-        because the caller seems keen, never fold it into another question, and
-        never go to the trade or the city first.
+        That is useful for every caller, whether or not the fetch came back.
 
         ## TWO ABSOLUTES FOR THIS PHASE
         **1. NEVER call `end_session` here.** Not for any reason, no
@@ -1792,172 +1726,24 @@ agent_workflow:
         "इलेक्ट्रिशियन", end_session fired, and the line dropped while
         the bot was still asking them a question.
 
-        **2. The ONLY question you ask after consent is the age.** Not
-        the trade, not the city, not the name — even if the caller has
-        just told you one of those, even if it feels natural to follow
-        up. Asking anything else strands the call here, because nothing
-        but the age lets it move on.
+        **2. Ask nothing here but what work they are looking for.**
+        Not their name, not their age, not permission to save anything —
+        those belong to later phases. Greet them and find out what work
+        they want; asking anything else strands the call here.
 
         ## You must always say something
         Every turn in this phase produces exactly one spoken Hindi
         sentence. There is no turn here where staying silent is correct —
         the caller is on a phone line and hears silence as a dropped call.
-        If you are ever unsure what to say, ask the consent question.
+        If you are ever unsure what to say, ask what work they are
+        looking for.
 
-        ## Question 1 — consent
-        If session has no `consent_response` yet, say this, every time,
-        no matter what the caller opened with:
 
-          Tell them that to send job applications on their behalf you need
-          to save their details, that the conversation may be recorded,
-          and ask whether that is alright. All three belong in ONE
-          sentence. The recording part is required every time: include
-          the clause "यह बातचीत रिकॉर्ड की जा सकती है।" in what you say.
-
-        One sentence, in Hindi, ending in a clear yes/no question. A bare
-        "हेलो" or "नमस्ते" from the caller is still a turn that gets this
-        question — do not treat a greeting as a reason to say nothing.
-
-        Do NOT ask anything else in the same turn, and do not add a long
-        greeting of your own; whatever answered the call already said
-        hello. One short sentence, the question, done.
-
-        If the caller's answer is unclear, ask once more, more plainly.
-        Never assume consent from silence or from an ambiguous reply.
-
-        ## If the caller REFUSES consent — say so and hang up, same turn
-        A refusal ends the call. In ONE turn, both:
-          1. Say, warmly, in one or two Hindi sentences: that is
-             completely fine, nothing has been saved, and without that
-             permission applications cannot be sent on their behalf.
-             Thank them for calling.
-          2. Call `end_session`.
-
-        Do NOT ask their age, do NOT ask whether they would still like
-        to look for work, do NOT re-ask for consent in any form, and do
-        NOT offer a way around it. There is no question left to ask: a
-        refusal is a complete answer.
-
-        This is the ONLY place in this phase where `end_session` is
-        allowed. Ending here is correct precisely because your reply
-        contains no question — which is the condition the global rule
-        cares about.
-
-        ## Question 2 — age
-        Once `consent_response` is `granted`, your entire turn is to ask
-        the caller's age. One short question in Hindi, nothing else.
-
-        Ask it plainly ("आपकी उम्र क्या है?"). Do not explain why you
-        need it unless the caller asks; if they do, say it is needed to
-        confirm they are eligible to apply.
-
-        ## Keep asking until they actually answer it (HARD RULE)
-        Callers often answer a different question than the one asked —
-        they say their trade, or their city, or ask about jobs. That is
-        normal. Acknowledge what they said in a few words, then ask the
-        age AGAIN. Nothing else in the call can happen until you have
-        it.
-
-          caller: "मैं इलेक्ट्रीशियन का काम ढूंढ रहा हूँ"
-          you:    "ठीक है, इलेक्ट्रिशियन। आपकी उम्र क्या है?"
-                  ("Right, electrician. What is your age?")
-
-        The failure to avoid: the age is asked once, the caller
-        replied with their trade, and it was never asked again — so the
-        call spent all seven turns in this phase and reached nothing.
-        Asking again is not nagging; it is the only way out of here.
-
-        Never guess an age, never assume they are an adult, and never
-        move on without it.
-
-        Do not switch to asking a DIFFERENT question when they do not
-        answer. And after two unanswered age
-        questions the bot began asking "आप किस ट्रेड में काम ढूंढ रहे
-        हैं?" instead — a question this phase must never ask — and the
-        age was never obtained. If they have dodged it twice, ask a
-        third time, more simply: "सिर्फ़ उम्र बता दीजिए — कितने साल?"
-        ("Just tell me your age — how many years?")
-
-        ## You have NO job data here — anything you say about a
-        ## specific job is invented (HARD RULE)
-        This phase has no job tool. None. So there is no job list, no
-        company, no salary and no vacancy count available to you, and
-        any you produce you have made up.
-
-        NEVER name a company. NEVER state a salary. NEVER say
-        "मुझे नौकरियाँ मिली हैं" ("I found jobs") or read out options.
-
-        The failure to avoid: a caller stuck in this phase keeps asking
-        for jobs and the bot read out two employers with monthly salaries,
-        in the normal listing format, having called no tool at all. One
-        employer had no such role open; the other did not exist. Both
-        salaries were invented.
-
-        No invented name is repeated here. A concrete example in a prompt
-        reads as a template to copy, and one written here gets spoken in
-        job_match — a phase that has real results in front of it.
-
-        A caller can chase a job that was never posted. Inventing one is
-        worse than saying nothing.
-
-        ## When the caller pushes for jobs before you have their age
-        They are not being difficult; they called about work. Do not
-        refuse, do not stall, and do not invent. Say you will look
-        right after one detail, and ask the age in the same breath:
-
-          "बिल्कुल, अभी देखती हूँ — बस एक बात बताइए, आपकी उम्र क्या है?"
-          ("Of course, I'll look right away — just tell me one thing,
-            what is your age?")
-
-        That is the ONLY thing you may say about jobs in this phase.
-
-        ## What you must NOT do in this phase
-        - Do NOT ask for name, trade, city, gender or work experience.
-          Later phases handle those.
-        - Do NOT call any tool. There are none available to you here.
-        - Do NOT say "I am transferring you" or narrate the phase change.
-          When both answers are in, routing moves on silently and the
-          next phase asks its own question.
-
-        ## If the caller refuses consent
-        You MUST speak a sentence. Acknowledge it warmly and without
-        pressure, in one Hindi sentence: we respect that, their details
-        will not be saved, and we cannot send applications on their behalf
-        without it. Do not argue, do not re-ask, do not offer a workaround.
-
-        Do NOT call end_session on this turn, and do NOT end the turn with
-        a tool call and no words. Routing already moves the call to its
-        close; your only job is to say the sentence. A turn that returns a
-        tool call and no text leaves the caller hearing nothing but the
-        closing word, which sounds like the line dropped.
-
-        ## If the caller is under 19
-        You MUST speak a sentence here too, and MUST NOT call end_session.
-
-        Say, in one warm sentence, that this service can only complete
-        applications over the phone for callers aged NINETEEN or over, and
-        that they should register on the Blue Dots portal instead, where a
-        parent or guardian can complete it with them.
-
-        Say NINETEEN. Do not say eighteen, fifteen, or any other number —
-        inventing a threshold has happened before and it misinforms the
-        caller about when they could reapply. Do not take any other
-        details. Do not continue the journey.
-
-      pending:
-        - id: consent
-          expects: "हाँ/नहीं — details save करने की अनुमति"
-          when:
-            - { field: consent_given, operator: not_eq, value: true }
-            - { field: consent_response, operator: in, value: [null, ""] }
-        - id: age
-          expects: "उम्र, साल में"
-          when:
-            - { field: has_age, operator: not_eq, value: true }
-            # "0" too: the seed as Memory Layer stored it, if a copy reaches
-            # here without its int coercion (same seeds as slot_writer).
-            - { field: age, operator: in, value: [null, "", 0, "0"] }
       routing:
+        # Above off_track: a caller the upstream refused must be told, not left circling.
+        - intent: "*"
+          conditions: [{ field: fetch_error, operator: eq, value: "U18_NOT_ALLOWED" }]
+          next_subagent_id: u18_blocked
         # off_track (spec §6.6): stay here after repeated
         # off-script turns; never coincides with termination_intent.
         - intent: off_track
@@ -1980,260 +1766,524 @@ agent_workflow:
         - intent: termination_blocked
           next_subagent_id: confirm_close
           session_writes: { close_return_to: opening }
-        # Order matters — first match wins.
-        #
-        # Two different kinds of state are read here, and the difference
-        # decides whether a rule needs a guard:
-        #
-        #   consent_response, age   NLU entities. entity_persistence.scope
-        #                           defaults to "persistent", so these are
-        #                           written to the caller's PROFILE and come
-        #                           back on a LATER CALL via bundle.profile,
-        #                           which routing merges into session state
-        #                           (orchestrator.py:965).
-        #   consent_given,          Written by session_writes below, at
-        #   user_storage_mode       "session" scope. Cannot outlive the session.
-        #
-        # A stale persisted consent_response would otherwise fire on the very
-        # first evaluation of a new call — silently skipping the consent
-        # question for a returning caller, or permanently locking out anyone
-        # who once said no. So every rule that reads consent_response is
-        # guarded by `opening_phrase_emitted eq true`.
-        #
-        # The marker is `opening_phrase_emitted`, NOT a phase entry count.
-        # `subagent_entry_count.opening gt 0` was the obvious guard and it is
-        # WRONG: the framework's opening_phrase gate (orchestrator.py:663-687)
-        # returns the greeting BEFORE Step 2, so that turn never routes and
-        # never increments the counter. The count is therefore still 0 on the
-        # turn the caller ANSWERS the consent question, and every rule below
-        # was dead on exactly the turn it existed to handle — measured on a
-        # local call: "नहीं, मुझे जानकारी सेव नहीं करवानी" routed to `opening`,
-        # and only a SECOND refusal reached consent_declined.
-        #
-        # `opening_phrase_emitted` is written synchronously by that same gate,
-        # so it is true from the greeting onward. It is session-scoped, so a
-        # fresh call resets it — which is the whole point of the guard.
-        #
-        # Deliberately NOT declared in memory_layer's session schema, unlike
-        # has_age/user_terms/user_privacy. The orchestrator writes it with an
-        # explicit scope="session", and memory_layer.py:327 trusts a valid
-        # explicit scope ahead of the scope map, so it persists undeclared.
-        # Declaring it is actively harmful: _build_initial_session stringifies
-        # every schema default, so a default of "false" seeds the literal
-        # string "false" — which is TRUTHY in Python. The gate tests
-        # `if not bundle.session.get("opening_phrase_emitted", False)`, so the
-        # greeting would be skipped on turn 1 and fire on turn 2 instead.
-        # Measured: declaring it inverted the first two turns of a live call.
-        #
-        # age is deliberately NOT guarded. A known age is authoritative
-        # however we learned it — the upstream treats an age already on file
-        # the same way — and blocking a returning minor before any question
-        # is asked is the correct, protective behaviour.
+        - intent: update_profile_request
+          conditions:
+            - { field: profile_item_id, operator: not_eq, value: "" }
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
+          next_subagent_id: profile_update
+          session_writes: { update_return_to: job_match, update_stage: "" }
+        # No profile, nothing to change: the create path owns this caller.
+        - intent: update_profile_request
+          conditions:
+            - { field: profile_item_id, operator: not_eq, value: "" }
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_update,
+                            update_return_to: job_match, update_stage: "" }
+        - intent: "*"
+          conditions: [{ field: stored_trade, operator: not_eq, value: "" }]
+          next_subagent_id: profile_resolve
+        - intent: "*"
+          next_subagent_id: trade_ask
 
-        # 1. Minor → blocked, immediately, whenever the age becomes known.
-        #
-        #    The threshold is 19, not 18, and it must match the upstream
-        #    exactly. Signals' rule (apps/api/src/services/minor.ts) is
-        #    `isMinor = age <= 18`, and the comment there explains why:
-        #    age is a snapshot derived from the birth YEAR with no month, so
-        #    someone in their 18th year may not have had their birthday yet.
-        #    The whole boundary year is treated as under-age, fail-closed.
-        #    Adult only at 19+.
-        #
-        #    Verified against the live cluster: age 18 -> U18_NOT_ALLOWED,
-        #    age 19 -> profile created. A gate at 18 waved an 18-year-old
-        #    through and let them give their name, trade and city before the
-        #    upstream refused the save — the worst possible moment to find out.
-        #
-        #    BOTH bounds are required: `lt 19` alone would match a MISSING
-        #    age, because the evaluator coerces None to 0 and 0 < 19. That
-        #    would send every first-time caller here on turn one.
+    - id: trade_ask
+      name: Ask For The Trade
+      description: >
+        The first spoken turn for a caller with nothing on file. Asks the one
+        question useful to everyone — what work they want — then hands on to
+        profile_resolve. Collects nothing else and writes nothing.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "नमस्ते!"
+      # Every caller has a journey_id, so this always speaks rather than the model.
+      fixed_opening: "नमस्ते! ब्लू डॉट्स में आपका स्वागत है। आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?"
+      fixed_opening_requires: [journey_id]
+      tools: []
+      system_prompt: |
+        Ask ONE short Hindi sentence: what work or trade the caller is looking
+        for. Nothing else — not their name, not their age, and never
+        permission to save anything. Never call a tool here.
+      routing:
+        - intent: off_track
+          next_subagent_id: trade_ask
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: trade_ask }
+        - intent: services_request
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
+        - intent: update_profile_request
+          conditions:
+            - { field: profile_item_id, operator: not_eq, value: "" }
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
+          next_subagent_id: profile_update
+          session_writes: { update_return_to: job_match, update_stage: "" }
+        # No profile, nothing to change: the create path owns this caller.
+        - intent: update_profile_request
+          conditions:
+            - { field: profile_item_id, operator: not_eq, value: "" }
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_update,
+                            update_return_to: job_match, update_stage: "" }
+        - intent: "*"
+          next_subagent_id: profile_resolve
+
+    - id: consent
+      name: Consent
+      description: >
+        Collect the permissions the upstream needs before a profile can be
+        written: the terms and privacy acceptance, permission to create the
+        profile, and the caller's age when it is not already on file. Entered
+        only when something is missing, and returns to the phase that sent it.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "आगे बढ़ने से पहले एक बात पूछनी है।"
+      # Spoken verbatim on entry, so the question is never left to the model.
+      fixed_opening: "आगे बढ़ने से पहले एक बात — क्या मुझे आपकी जानकारी सेव करने और आपकी ओर से आवेदन भेजने की अनुमति है?"
+      fixed_opening_requires: [consent_return_to]
+      fixed_opening_on_entry: true
+      tools: []
+      pending:
+        - id: consent
+          expects: "हाँ/नहीं — details save करने की अनुमति"
+          when:
+            # current_question still holds the consent question a turn later.
+            - { field: profile_consent, operator: not_eq, value: true }
+            - { field: current_question, operator: contains, value: ["अनुमति", "रिकॉर्ड", "सेव"] }
+        - id: age
+          expects: "उम्र, साल में"
+          when:
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age, operator: not_eq, value: true }
+            - { field: age, operator: in, value: [null, "", 0, "0"] }
+      system_prompt: |
+        You are collecting permission before anything is saved. Ask ONE
+        question per turn, in Hindi, and never both in the same turn.
+
+        ## Question 1 — permission
+        Ask this whenever `profile_consent` is not true, however the caller
+        got here and whatever they have just said. A caller who announces
+        they give permission has still not been ASKED, and an answer to a
+        question nobody asked is not recorded — so you must ask it, even
+        when their words make it feel settled. This phase is entered more
+        than once on some calls; every entry with `profile_consent` false
+        starts here.
+
+        Which version you ask depends on what is already on file.
+
+        **If `user_terms` and `user_privacy` are both true** — they have
+        already accepted the terms and the privacy notice, and only this
+        profile needs permission. One sentence: ask for their अनुमति
+        (permission) to save these details as their profile. Do NOT read
+        the terms back to them.
+
+        **Otherwise** — one sentence covering all of it: permission to save
+        their details and to send applications for them, and that the call may
+        be recorded. For example:
+
+          "क्या मुझे आपकी जानकारी सेव करने और आपकी ओर से आवेदन भेजने की
+           अनुमति है? यह बातचीत रिकॉर्ड की जा सकती है।"
+
+        Both versions MUST contain the word "अनुमति". One sentence, ending in
+        a clear yes/no question.
+
+        The spoken reply is हिंदी only — every word of it. An English word
+        left in the sentence is read out as-is to the caller.
+
+        If the answer is unclear, ask again more plainly. Never assume
+        permission from silence or from an ambiguous reply.
+
+        ## Question 2 — age
+        Only when the age is not already known. The moment they give
+        permission, ask it that same turn.
+
+        Say WHY first, in the same sentence. The caller has just asked to
+        apply and is expecting the application to go; asked for their age with
+        no reason, they do not know what is happening or why the application
+        has stalled. Tell them a profile has to be created before the
+        application can be sent, and that you need a couple of details for it.
+
+          "आवेदन भेजने से पहले आपका प्रोफ़ाइल बनाना होगा, उसके लिए दो बातें
+           चाहिए। पहले बताइए, आपकी उम्र क्या है?"
+          ("Before the application can be sent I need to create your profile,
+           and I need two details for that. First, what is your age?")
+
+        The question MUST contain the word "उम्र". Ask for nothing else on
+        this turn — not the trade, not the city, not their name. The name is
+        collected in the next phase.
+
+        ## Nothing is saved or sent from this phase
+        You have no tools here. Never say their details have been saved,
+        never say an application has been or is being sent, and never promise
+        either is about to happen. Saying so is the single worst thing you can
+        do here: it is untrue, and the caller hangs up believing they applied.
+
+        ## If they refuse
+        The first refusal is not the end. Say, in one sentence, that without
+        that permission their profile cannot be created and applications
+        cannot be sent, and ask once more. If they refuse again, say nothing
+        further here — routing closes the call.
+
+        Never call a tool in this phase.
+      routing:
+        # Above off_track: an under-19 caller must be told, not left circling.
         - intent: "*"
           conditions:
-            - field: age
-              operator: gt
-              value: 0
-            - field: age
-              operator: lt
-              value: 19
+            - { field: age, operator: gt, value: 0 }
+            - { field: age, operator: lt, value: 19 }
           next_subagent_id: u18_blocked
-
-        # 1b. NOTHING TO ASK — the fetch already answered both questions.
-        #
-        # These three arrive from fetch_profile via the connector's
-        # session_mapping. The start-of-call session bootstrap runs fetch_profile
-        # before turn-1 routing, so they are in session state from turn 1; if
-        # that fetch fails and the LLM fetches itself, they arrive from the turn
-        # after (tools run after routing). All true means
-        # the caller has consented and has an age on file, so this phase has
-        # no question left and must not invent one.
-        #
-        # A minor never reaches here: for a voice caller the participant
-        # endpoint itself answers 400 U18_NOT_ALLOWED, so a 200 with
-        # has_age true is an adult by the upstream's own rule. Rule 1 above
-        # still guards the path where we had to ask, because has_age was false.
+        - intent: off_track
+          next_subagent_id: consent
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: consent }
         - intent: "*"
           conditions:
-            - field: user_terms
-              operator: eq
-              value: true
-            - field: user_privacy
-              operator: eq
-              value: true
-            - field: has_age
-              operator: eq
-              value: true
-          next_subagent_id: profile_resolve
-          session_writes:
-            user_storage_mode: "saved"
-            consent_given: true
-
-        # 2. Consent refused, in this call. Two spellings of the same thing:
-        #    the NLU's explicit read of the consent answer, and the coarser
-        #    `decline` intent as a fallback for when it does not emit one.
-        - intent: "*"
-          conditions:
-            - field: opening_phrase_emitted
-              operator: eq
-              value: true
-            - field: consent_response
-              operator: eq
-              value: "declined"
+            - { field: consent_response, operator: eq, value: "declined" }
+            - { field: consent_declines, operator: gt, value: 0 }
           next_subagent_id: consent_declined
-          session_writes:
-            user_storage_mode: "anonymous"
-            consent_given: false
+          session_writes: { user_storage_mode: "anonymous", consent_given: false,
+                            consent_response: "" }
         - intent: decline
-          conditions:
-            - field: opening_phrase_emitted
-              operator: eq
-              value: true
-            - field: consent_given
-              operator: not_eq
-              value: true
+          conditions: [{ field: consent_declines, operator: gt, value: 0 }]
           next_subagent_id: consent_declined
-          session_writes:
-            user_storage_mode: "anonymous"
-            consent_given: false
-
-        # 3. Consent recorded this session AND an adult age known → go.
-        #    consent_given is session-scoped, so no guard is needed: it can
-        #    only be "true" if a rule below set it during this call.
+          session_writes: { user_storage_mode: "anonymous", consent_given: false,
+                            consent_response: "" }
+        - intent: "*"
+          conditions: [{ field: consent_response, operator: eq, value: "declined" }]
+          next_subagent_id: consent_reask
+          session_writes: { consent_declines: 1, consent_response: "" }
+        - intent: decline
+          next_subagent_id: consent_reask
+          session_writes: { consent_declines: 1, consent_response: "" }
+        # Granted with an age already satisfied: leave now, do not spend a turn.
         - intent: "*"
           conditions:
-            # BOOLEAN, not the string "true". Memory Layer JSON-decodes
-            # session values on read, so a session_writes value of "true"
-            # comes back from context_bundle as Python True — and
-            # `True == "true"` is False. Verified against a live
-            # /context_bundle response: session.consent_given = True.
-            # Writing and comparing booleans on both sides keeps the types
-            # honest end to end.
-            - field: consent_given
-              operator: eq
-              value: true
-            # 18, not 17 — the upstream admits only 19 and over. See rule 1.
-            - field: age
-              operator: gt
-              value: 18
-          next_subagent_id: profile_resolve
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: has_age, operator: eq, value: true }
+            - { field: consent_return_to, operator: eq, value: profile_update }
+          next_subagent_id: profile_update
           session_writes:
-            user_storage_mode: "saved"
-
-        # 4. Consent granted on THIS turn and the age is already known —
-        #    either volunteered in the same breath ("हाँ, मैं पच्चीस का हूँ")
-        #    or carried over from a previous call. Skips the age question.
-        - intent: "*"
-          conditions:
-            - field: opening_phrase_emitted
-              operator: eq
-              value: true
-            - field: consent_response
-              operator: eq
-              value: "granted"
-            - field: age
-              operator: gt
-              value: 18
-          next_subagent_id: profile_resolve
-          session_writes:
-            user_storage_mode: "saved"
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
             consent_given: true
-
-        # 4b. Consent granted on this turn AND the upstream already holds an
-        # age. `has_age` comes from the participant fetch, so it is true even
-        # when session `age` is 0 — the caller never said it aloud in THIS
-        # call, but it is on file and the upstream is the authority.
-        #
-        # Without this, a caller whose only profile is a DRAFT (age on file,
-        # consent not recorded) consented and was then asked their age anyway.
-        # Measured locally: they answered the trade instead, the turn came
-        # back empty, and the next one re-asked for consent.
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
         - intent: "*"
           conditions:
-            - field: opening_phrase_emitted
-              operator: eq
-              value: true
-            - field: consent_response
-              operator: eq
-              value: "granted"
-            - field: has_age
-              operator: eq
-              value: true
-          next_subagent_id: profile_resolve
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: has_age, operator: eq, value: true }
+          next_subagent_id: profile_setup
           session_writes:
-            user_storage_mode: "saved"
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
             consent_given: true
-
-        # 5. Consent granted, age still outstanding → stay and ask for it.
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
         - intent: "*"
           conditions:
-            - field: opening_phrase_emitted
-              operator: eq
-              value: true
-            - field: consent_response
-              operator: eq
-              value: "granted"
-          next_subagent_id: opening
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: age, operator: gt, value: 18 }
+            - { field: consent_return_to, operator: eq, value: profile_update }
+          next_subagent_id: profile_update
           session_writes:
-            user_storage_mode: "saved"
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
             consent_given: true
-
-        # 6. Nothing decided yet → stay and ask the consent question.
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
         - intent: "*"
-          next_subagent_id: opening
+          conditions:
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: age, operator: gt, value: 18 }
+          next_subagent_id: profile_setup
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
+        - intent: "*"
+          conditions: [{ field: consent_response, operator: eq, value: "granted" }]
+          next_subagent_id: consent
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+        - intent: "*"
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
+            - { field: consent_return_to, operator: eq, value: profile_update }
+          next_subagent_id: profile_update
+          session_writes: { consent_return_to: "" }
+        - intent: "*"
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
+            - { field: consent_return_to, operator: eq, value: profile_setup }
+          next_subagent_id: profile_setup
+          session_writes: { consent_return_to: "" }
+        # has_age comes only from the fetch, so a spoken age needs its own rule.
+        - intent: "*"
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: age,             operator: gt, value: 18 }
+            - { field: consent_return_to, operator: eq, value: profile_update }
+          next_subagent_id: profile_update
+          session_writes: { consent_return_to: "" }
+        - intent: "*"
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: age,             operator: gt, value: 18 }
+            - { field: consent_return_to, operator: eq, value: profile_setup }
+          next_subagent_id: profile_setup
+          session_writes: { consent_return_to: "" }
+        - intent: "*"
+          next_subagent_id: consent
+
+    - id: consent_reask
+      name: Consent — Second Ask
+      description: >
+        Reached once, after the caller refuses the first time. States what
+        refusing costs and asks again. A second refusal closes the call; a
+        grant rejoins the normal path.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "एक बात और बतानी है।"
+      fixed_opening: "आपकी अनुमति के बिना मैं आपकी जानकारी सेव नहीं कर सकती और आपकी ओर से आवेदन भी नहीं भेज सकती। क्या आप अनुमति देंगे?"
+      fixed_opening_requires: [consent_return_to]
+      fixed_opening_on_entry: true
+      tools: []
+      pending:
+        - id: consent
+          expects: "हाँ/नहीं — details save करने की अनुमति"
+          when:
+            - { field: profile_consent, operator: not_eq, value: true }
+            - { field: current_question, operator: contains, value: ["अनुमति", "रिकॉर्ड", "सेव"] }
+      system_prompt: |
+        The caller has just refused permission for the first time. They are
+        very likely refusing without knowing what it costs them, so this turn
+        exists to tell them once and ask again.
+
+        Say exactly two things, in two short sentences:
+        1. That without their permission nothing can be saved and no
+           application can be sent for them, so the job they asked about
+           cannot be applied for.
+        2. Ask again, plainly, whether they give permission.
+
+        For example:
+
+          "आपकी अनुमति के बिना आपकी जानकारी सेव नहीं हो सकती और आपकी ओर से
+           आवेदन नहीं भेजा जा सकता। क्या आप अनुमति देंगे?"
+
+        The spoken reply is हिंदी only — every word of it. An English word
+        left in the sentence is read out as-is to the caller.
+
+        Your reply MUST contain the word अनुमति and MUST end in a yes/no
+        question. Produce this reply EVERY time you are in this phase, even
+        if the caller has just said no again — routing, not you, decides when
+        the call ends.
+
+        NEVER say the call is ending, never say you will not call them again,
+        never offer jobs, training or any other topic, and never ask about a
+        city or trade. Never call a tool here. Never pressure them beyond
+        this single second ask, and never suggest a way around consent.
+      routing:
+        - intent: "*"
+          conditions:
+            - { field: age, operator: gt, value: 0 }
+            - { field: age, operator: lt, value: 19 }
+          next_subagent_id: u18_blocked
+        - intent: off_track
+          next_subagent_id: consent_reask
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: consent_reask }
+        - intent: "*"
+          conditions: [{ field: consent_response, operator: eq, value: "declined" }]
+          next_subagent_id: consent_declined
+          session_writes: { user_storage_mode: "anonymous", consent_given: false,
+                            consent_response: "" }
+        - intent: decline
+          next_subagent_id: consent_declined
+          session_writes: { user_storage_mode: "anonymous", consent_given: false,
+                            consent_response: "" }
+        - intent: "*"
+          conditions:
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: has_age, operator: eq, value: true }
+            - { field: consent_return_to, operator: eq, value: profile_update }
+          next_subagent_id: profile_update
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
+        - intent: "*"
+          conditions:
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: has_age, operator: eq, value: true }
+          next_subagent_id: profile_setup
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
+        - intent: "*"
+          conditions:
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: age, operator: gt, value: 18 }
+            - { field: consent_return_to, operator: eq, value: profile_update }
+          next_subagent_id: profile_update
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
+        - intent: "*"
+          conditions:
+            - { field: consent_response, operator: eq, value: "granted" }
+            - { field: age, operator: gt, value: 18 }
+          next_subagent_id: profile_setup
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+            consent_return_to: ""
+        # Granted but the age is still unknown: consent asks it.
+        - intent: "*"
+          conditions: [{ field: consent_response, operator: eq, value: "granted" }]
+          next_subagent_id: consent
+          session_writes:
+            user_terms: true
+            user_privacy: true
+            profile_consent: true
+            consent_given: true
+            user_storage_mode: "saved"
+            consent_response: ""
+        - intent: "*"
+          next_subagent_id: consent_reask
 
     # ─────────────────────────────────────────────────────────────
-    # 1b. consent_declined — terminal. No consent, no journey.
-    #
-    # Its own subagent rather than a route to `ended`, so the caller hears
-    # WHY the call is ending. `ended` says a generic goodbye, which after a
-    # refusal reads as the line simply dropping. Symmetric with u18_blocked.
+    # 1b. consent_declined
     # ─────────────────────────────────────────────────────────────
     - id: consent_declined
       name: Consent Declined
       description: >
-        Terminal. Reached when the caller refuses permission to save their
-        details. Acknowledges the refusal without pressure, states that no
-        information has been saved and that applications cannot be sent
-        without consent, and closes.
+        Reached when the caller refuses permission a second time. Acknowledges
+        the refusal without pressure, says nothing has been saved, and asks
+        whether they want anything else on jobs or training before the call
+        ends. Browsing and training need no consent, so a refusal closes the
+        application path, not the call.
       is_start: false
-      is_terminal: true
+      is_terminal: false
       opening_phrase: >
-        कोई बात नहीं। आपकी कोई जानकारी सेव नहीं की गई है। आपकी सहमति के
-        बिना मैं आपकी ओर से नौकरी के आवेदन नहीं भेज सकती। फ़ोन करने के लिए
-        धन्यवाद।
+        ठीक है, कोई बात नहीं। आपकी कोई जानकारी सेव नहीं की गई है। नौकरी या
+        ट्रेनिंग से जुड़ी और किसी बात में मदद करूँ, या कॉल यहीं ख़त्म करूँ?
       special_handler: null
       tools: []
+      fixed_opening: "ठीक है, कोई बात नहीं। आपकी कोई जानकारी सेव नहीं की गई है। नौकरी या ट्रेनिंग से जुड़ी और किसी बात में मदद करूँ, या कॉल यहीं ख़त्म करूँ?"
+      fixed_opening_requires: [consent_declines]
       system_prompt: |
-        The caller has refused permission to save their details.
+        The caller has refused permission to save their details a second time.
 
-        Say, warmly and in one or two Hindi sentences: that is completely
-        fine, nothing has been saved, and without that permission
-        applications cannot be sent on their behalf. Thank them for
-        calling. Then stop.
+        Say exactly this one sentence, on its own:
+        "ठीक है, कोई बात नहीं। आपकी कोई जानकारी सेव नहीं की गई है। नौकरी या ट्रेनिंग से जुड़ी और किसी बात में मदद करूँ, या कॉल यहीं ख़त्म करूँ?"
 
-        Do NOT argue, do NOT re-ask for consent, do NOT offer a way around
-        it, and do NOT collect any other detail. Do NOT call any tool.
-      routing: []
+        Nothing before it and nothing after it. No greeting, no
+        "धन्यवाद", no goodbye — a thank-you after the question makes it
+        sound like the call is over, and the caller stops answering.
+
+        The spoken reply is हिंदी only — every word of it. An English word
+        left in the sentence is read out as-is to the caller.
+
+        Do NOT argue, do NOT ask for permission again, do NOT say what they
+        are missing out on, and do NOT collect any detail. Do NOT call any
+        tool. Do NOT say goodbye — this is a question, and the caller answers
+        it on the next turn.
+      pending:
+        - id: closing_offer
+          expects: "और कुछ मदद चाहिए? / कॉल खतम"
+      routing:
+        - intent: off_track
+          next_subagent_id: consent_declined
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: decline
+          next_subagent_id: ended
+        - intent: services_declined
+          next_subagent_id: ended
+        - intent: jobs_declined
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
+        - intent: services_request
+          next_subagent_id: service_match
+          session_writes: { services_in_play: "true" }
+        - intent: apply_now
+          next_subagent_id: job_match
+        - intent: job_pick
+          next_subagent_id: job_match
+        - intent: explore_more
+          next_subagent_id: job_match
+        - intent: "*"
+          conditions:
+            - { field: trade,    operator: not_eq, value: "" }
+            - { field: location, operator: not_eq, value: "" }
+          next_subagent_id: job_match
+        - intent: "*"
+          next_subagent_id: profile_resolve
 
     # ─────────────────────────────────────────────────────────────
     # 1c. u18_blocked — terminal. A minor cannot be onboarded by voice.
@@ -2244,29 +2294,34 @@ agent_workflow:
     # conversation is a worse experience than being told at the start.
     # ─────────────────────────────────────────────────────────────
     - id: u18_blocked
-      name: Under 19 — Portal Only
+      name: Under 18 — Portal Only
       description: >
-        Terminal. Reached when the caller's age is under 19 — the upstream
-        treats the whole 18th year as under-age (see rule 1 in `opening`).
-        Explains that the application must be completed on the portal with a
-        parent or guardian, and closes.
+        Terminal. Reached when the caller is too young to apply by voice —
+        either the participant fetch refused them or they said so in the
+        consent phase. Explains that the application must be completed on the
+        portal with a parent or guardian, and closes.
       is_start: false
       is_terminal: true
       opening_phrase: >
-        उन्नीस साल से कम उम्र में फ़ोन पर आवेदन पूरा नहीं हो सकता। कृपया
-        ब्लू डॉट्स पोर्टल पर अपने माता-पिता या अभिभावक के साथ रजिस्टर
-        कीजिए। धन्यवाद।
+        आपकी जानकारी के अनुसार आपकी उम्र अठारह साल से कम है, और इतनी उम्र में
+        फ़ोन पर आवेदन पूरा नहीं हो सकता। कृपया ब्लू डॉट्स पोर्टल पर अपने
+        माता-पिता या अभिभावक के साथ रजिस्टर कीजिए। धन्यवाद।
       special_handler: null
       tools: []
       system_prompt: |
-        The caller is under 19. Say, warmly and in one or two Hindi
-        sentences, that applications can only be completed over the phone
-        from age NINETEEN, and that they should register on the Blue Dots
-        portal where a parent or guardian can complete it with them. Then
-        close.
+        The caller is too young to apply over the phone. Say, warmly and in
+        one or two Hindi sentences: that their details show them as under
+        eighteen, that applications can only be completed over the phone from
+        age EIGHTEEN, and that they should register on the Blue Dots portal
+        where a parent or guardian can complete it with them. Then close.
 
-        Say NINETEEN. Never invent a different threshold — "under fifteen"
-        and "under eighteen" have both been spoken here by mistake, and
+        Say where the age came from. They may not have mentioned it on this
+        call — it can come from what is already on file — and a bare "you are
+        under eighteen" with no source is confusing to someone who never
+        said so.
+
+        Say EIGHTEEN. Never invent a different threshold — "under fifteen"
+        and "under nineteen" have both been spoken here by mistake, and
         each one tells the caller the wrong thing about when to come back.
 
         Do NOT collect any further details. Do NOT call any tool. Do NOT
@@ -2442,7 +2497,6 @@ agent_workflow:
            that is only a tool call leaves the caller hearing silence.
 
       pending:
-        # Before use_saved_details, which is keyed on state alone.
         - id: wants_services
           when: [{ field: current_question, operator: contains, value: ["जॉब्स के अलावा"] }]
           expects: "ट्रेनिंग या कोई और मदद चाहिए? हाँ/नहीं"
@@ -2451,7 +2505,7 @@ agent_workflow:
           when:
             - { field: profile_item_id, operator: not_eq, value: "" }
             - { field: profile_item_id, operator: not_eq, value: null }
-            - { field: subagent_entry_count.profile_resolve, operator: lt, value: 2 }
+            - { field: current_question, operator: contains, value: ["सेव किए गए शहर", "जानकारी मिली"] }
         - id: trade
           expects: "कौन सा काम"
           when: [{ field: trade, operator: in, value: [null, ""] }]
@@ -2481,8 +2535,21 @@ agent_workflow:
           next_subagent_id: ended
         # Must out-rank the "*" rules below; a profile holder matches those.
         - intent: update_profile_request
+          conditions:
+            - { field: profile_item_id, operator: not_eq, value: "" }
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_update
           session_writes: { update_return_to: job_match, update_stage: "" }
+        # No profile, nothing to change: the create path owns this caller.
+        - intent: update_profile_request
+          conditions:
+            - { field: profile_item_id, operator: not_eq, value: "" }
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_update,
+                            update_return_to: job_match, update_stage: "" }
         - intent: jobs_declined
           next_subagent_id: profile_resolve
         - intent: services_request
@@ -2844,6 +2911,12 @@ agent_workflow:
         `fetch_jobs`, and present the NEW results. Do not narrate
         old results.
 
+
+        ## Nothing is saved or sent from this phase
+        You have no tool that writes anything here. Never say their details
+        have been saved, never say an application has been or is being sent,
+        and never promise either is about to happen. Saying so is untrue and
+        the caller hangs up believing they applied.
       pending:
         # #439: after describing one job this phase asks the submit question
         # itself ("क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"). Under select_job a
@@ -2907,8 +2980,21 @@ agent_workflow:
           next_subagent_id: service_match
           session_writes: { services_in_play: "true" }
         - intent: update_profile_request
+          conditions:
+            - { field: profile_item_id, operator: not_eq, value: "" }
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_update
           session_writes: { update_return_to: job_match, update_stage: "" }
+        # No profile, nothing to change: the create path owns this caller.
+        - intent: update_profile_request
+          conditions:
+            - { field: profile_item_id, operator: not_eq, value: "" }
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_update,
+                            update_return_to: job_match, update_stage: "" }
         - intent: jobs_declined
           next_subagent_id: job_match
         - intent: services_declined
@@ -2935,8 +3021,16 @@ agent_workflow:
           next_subagent_id: apply_confirm
           session_writes: { apply_failed: 0 }
         - intent: apply_now
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_setup
           session_writes: { apply_failed: 0 }
+        - intent: apply_now
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_setup, apply_failed: 0 }
         - intent: "*"
           next_subagent_id: job_match
     - id: job_details
@@ -2981,6 +3075,12 @@ agent_workflow:
         You cannot apply from here, and you must never say an application
         was sent. When the caller says yes, the next phase sends it.
 
+
+        ## Nothing is saved or sent from this phase
+        You have no tool that writes anything here. Never say their details
+        have been saved, never say an application has been or is being sent,
+        and never promise either is about to happen. Saying so is untrue and
+        the caller hangs up believing they applied.
       pending:
         - id: submit_confirm
           expects: "आवेदन भेजूँ? हाँ/नहीं, इस जॉब के बारे में सवाल, या दूसरी job चुनना"
@@ -3005,7 +3105,15 @@ agent_workflow:
               value: ""
           next_subagent_id: apply_confirm
         - intent: apply_now
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_setup
+        - intent: apply_now
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_setup }
         - intent: job_pick
           next_subagent_id: job_details
           session_writes: { apply_failed: 0 }
@@ -3453,6 +3561,12 @@ agent_workflow:
         can't update your profile right now") and offer the search just
         the same — the caller's time is not worth less because a write
         failed, and what they told you is still what gets searched.
+
+        ## Nothing is saved or sent from this phase
+        You have no tool that writes anything here. Never say their details
+        have been saved, never say an application has been or is being sent,
+        and never promise either is about to happen. Saying so is untrue and
+        the caller hangs up believing it went through.
       routing:
         - intent: off_track
           next_subagent_id: profile_update
@@ -3957,13 +4071,33 @@ agent_workflow:
         # applied. profile_setup saves and routes straight back.
         - intent: "*"
           conditions:
-            - field: profile_item_id
-              operator: eq
-              value: ""
+            - { field: profile_item_id, operator: eq, value: "" }
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_setup
+        - intent: "*"
+          conditions:
+            - { field: profile_item_id, operator: eq, value: "" }
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_setup }
         - intent: update_profile_request
+          conditions:
+            - { field: profile_item_id, operator: not_eq, value: "" }
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_update
           session_writes: { update_return_to: apply_confirm, update_stage: "" }
+        # No profile, nothing to change: the create path owns this caller.
+        - intent: update_profile_request
+          conditions:
+            - { field: profile_item_id, operator: not_eq, value: "" }
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_update,
+                            update_return_to: apply_confirm, update_stage: "" }
         - intent: jobs_declined
           next_subagent_id: apply_confirm
         - intent: services_declined
@@ -4132,6 +4266,12 @@ agent_workflow:
         sends one. Picking one here only means the caller wants us to put
         them in touch.
 
+
+        ## Nothing is saved or sent from this phase
+        You have no tool that writes anything here. Never say their details
+        have been saved, never say an application has been or is being sent,
+        and never promise either is about to happen. Saying so is untrue and
+        the caller hangs up believing they applied.
       pending:
         - id: select_service
           expects: "offered organisations में से एक, या नौकरियों पर वापस"
@@ -4149,8 +4289,21 @@ agent_workflow:
         - intent: termination_blocked
           next_subagent_id: confirm_close
         - intent: update_profile_request
+          conditions:
+            - { field: profile_item_id, operator: not_eq, value: "" }
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_update
           session_writes: { update_return_to: service_match, update_stage: "" }
+        # No profile, nothing to change: the create path owns this caller.
+        - intent: update_profile_request
+          conditions:
+            - { field: profile_item_id, operator: not_eq, value: "" }
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_update,
+                            update_return_to: service_match, update_stage: "" }
         - intent: explore_more
           next_subagent_id: job_match
           session_writes: { services_in_play: "false", selected_service_item_id: "" }
@@ -4164,7 +4317,15 @@ agent_workflow:
               value: ""
           next_subagent_id: connect_confirm
         - intent: service_pick
+          conditions:
+            - { field: user_terms,      operator: eq, value: true }
+            - { field: user_privacy,    operator: eq, value: true }
+            - { field: profile_consent, operator: eq, value: true }
+            - { field: has_age,         operator: eq, value: true }
           next_subagent_id: profile_setup
+        - intent: service_pick
+          next_subagent_id: consent
+          session_writes: { consent_return_to: profile_setup }
         - intent: "*"
           next_subagent_id: service_match
 
@@ -4328,6 +4489,7 @@ agent_workflow:
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_details }], next_subagent_id: job_details }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: consent }], next_subagent_id: consent }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
         # Any other answer ("नहीं", a question, a detail): back to where the caller was.
@@ -4336,6 +4498,7 @@ agent_workflow:
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: job_details }], next_subagent_id: job_details }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: consent }], next_subagent_id: consent }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
         - intent: "*"
@@ -4387,6 +4550,7 @@ agent_workflow:
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_details }], next_subagent_id: job_details }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: consent }], next_subagent_id: consent }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
         - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
         # Any other answer ("नहीं", a question, a detail): back to where the caller was.
@@ -4395,6 +4559,7 @@ agent_workflow:
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: job_details }], next_subagent_id: job_details }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: consent }], next_subagent_id: consent }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
         - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
         - intent: "*"

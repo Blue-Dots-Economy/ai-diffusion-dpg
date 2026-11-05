@@ -49,6 +49,9 @@ _SESSION_LIFECYCLE_FIELDS: frozenset[str] = frozenset({
     "handoff_line",
     "handoff_ticket_id",
     "handoff_pending_at",
+    # Per call: a caller who refused once and rang back must be asked afresh.
+    "consent_declines",
+    "fetch_error",
 })
 
 # The handoff phase only answers the current call's request; a new call that

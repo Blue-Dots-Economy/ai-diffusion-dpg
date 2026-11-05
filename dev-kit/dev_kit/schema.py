@@ -619,6 +619,10 @@ class SubAgentSchema(BaseModel):
         default=False,
         description="Speak the fixed opening even on a turn where the caller named something.",
     )
+    fixed_opening_on_entry: bool = Field(
+        default=False,
+        description="Speak the fixed opening on every entry to the phase, not only the first.",
+    )
     special_handler: Literal["hitl", "whatsapp_handoff"] | None = Field(
         default=None,
         description="Optional framework-level handler. "

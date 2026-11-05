@@ -668,6 +668,26 @@ class TestFixedOpening:
         )
 
     @pytest.mark.asyncio
+    async def test_the_spoken_line_becomes_current_question(self):
+        """A fixed opening is a QUESTION; the next turn's pending resolves on it."""
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad"})
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        await _collect_events(agent, _make_turn_input())
+        written = {
+            c.args[3]: c.args[4]
+            for c in agent._async_memory.write.call_args_list
+            if len(c.args) >= 5 and c.args[2] == "session"
+        }
+        assert "Welder in Ghaziabad" in (written.get("current_question") or ""), (
+            "the caller cannot answer a question the session never recorded"
+        )
+
+    @pytest.mark.asyncio
     async def test_the_optional_prefix_is_spoken_when_its_field_is_present(self):
         agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad",
                              "stored_name": "Ravi"})

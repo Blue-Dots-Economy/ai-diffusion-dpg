@@ -110,6 +110,12 @@ tools:
           target: user_terms
         - source: "compliance[key=user_privacy].value"
           target: user_privacy
+        # Item-level, so it is reported per item and never in `compliance`.
+        - source: "items[lifecycle_status=live].profile_consent_accepted"
+          target: profile_consent
+        - source: "error"
+          target: fetch_error
+          on_error: true
         - source: "items[lifecycle_status=live].item_id"
           target: profile_item_id
         - source: "user_id"
@@ -287,19 +293,10 @@ tools:
           # ("age is required with consent on this domain"). item_state.age
           # below is the profile field and does NOT satisfy it.
           age: "{age}"
-          # Consent. `compliance` is the current shape (it replaced the
-          # terms_accepted/privacy_accepted pair, which newer builds ignore).
-          # Both are sent so this works against either build; whichever one a
-          # given cluster does not understand is simply ignored.
           compliance:
-            - key: "user_terms"
-              value: true
-            - key: "user_privacy"
-              value: true
-            - key: "profile_creation"
-              value: true
-          terms_accepted: true
-          privacy_accepted: true
+            - { key: "user_terms",       value: "{user_terms}" }
+            - { key: "user_privacy",     value: "{user_privacy}" }
+            - { key: "profile_creation", value: "{profile_consent}" }
           # channel must be one of bulk/link/voice/self — we're voice.
           channel: "voice"
           # source_id is the Vobiz outbound number — tags every profile
@@ -388,8 +385,29 @@ tools:
             required: false
             description: >
               Caller's age in years, supplied by the framework from turn
-              state. The opening subagent collects it before the journey
-              starts. Not visible to the model.
+              state. The consent subagent collects it before the profile is
+              written. Not visible to the model.
+          - name: user_terms
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: user_privacy
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: profile_consent
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
           - name: work_experience
             source: agent
             type: string
@@ -501,14 +519,9 @@ tools:
           name: "{stored_name}"
           phone_number: "+{user_id}"
           compliance:
-            - key: "user_terms"
-              value: true
-            - key: "user_privacy"
-              value: true
-            - key: "profile_creation"
-              value: true
-          terms_accepted: true
-          privacy_accepted: true
+            - { key: "user_terms",       value: "{user_terms}" }
+            - { key: "user_privacy",     value: "{user_privacy}" }
+            - { key: "profile_creation", value: "{profile_consent}" }
           channel: "voice"
           source_id: "919240024229"
           network: "blue_dot"
@@ -532,6 +545,27 @@ tools:
             source: session
             type: string
             required: false
+          - name: user_terms
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: user_privacy
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: profile_consent
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
           - name: location
             source: agent
             type: string
