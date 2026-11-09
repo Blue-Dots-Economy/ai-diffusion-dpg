@@ -69,7 +69,7 @@ def test_literal_and_builtin_normalise():
 def _sel(rules, **kw):
     base = dict(intent="any_input", state={}, session={}, tables=TABLES,
                 tool_schemas={"fetch_jobs": JOBS_SCHEMA, "apply_job": APPLY_SCHEMA},
-                write_tools={"apply_job"}, has_fresh=lambda t: False)
+                write_tools={"apply_job"}, has_fresh=lambda t, a: False)
     base.update(kw)
     return select(rules, **base)
 
@@ -80,7 +80,7 @@ def test_select_first_eligible_rule():
 
 
 def test_unless_fresh_skips():
-    s = _sel([JOBS_RULE], session={"trade": "Welder", "location": "Bengaluru"}, has_fresh=lambda t: t == "fetch_jobs")
+    s = _sel([JOBS_RULE], session={"trade": "Welder", "location": "Bengaluru"}, has_fresh=lambda t, a: t == "fetch_jobs")
     assert (s.tool, s.outcome) == (None, "skipped_fresh")
 
 
@@ -260,3 +260,34 @@ def test_type_validation_table(value, typ, valid):
         assert args == {"x": value}, f"Expected {value} to be valid for type {typ}"
     else:
         assert args is None and why == "skipped_invalid_arg", f"Expected {value} to be invalid for type {typ}"
+
+
+# ── Freshness is per-ARGUMENTS, not per-tool ────────────────────────────────
+# A caller who changes city or trade needs a new search; the previous ask's
+# result must not satisfy `unless_fresh`, or they are answered from the city
+# they just moved away from.
+
+def test_unless_fresh_is_a_miss_when_the_args_changed():
+    seen = {}
+
+    def has_fresh(tool, args):
+        seen["args"] = args
+        return args == {"query_text": "Welder jobs in Lucknow"}   # the OLD ask
+
+    s = _sel([JOBS_RULE], session={"trade": "Welder", "location": "Bengaluru"},
+             has_fresh=has_fresh)
+    assert seen["args"] == {"query_text": "Welder jobs in Bengaluru"}, \
+        "has_fresh must be asked about the args this call would use"
+    assert (s.tool, s.outcome) == ("fetch_jobs", "fired")
+
+
+def test_unless_fresh_still_skips_when_the_args_are_identical():
+    s = _sel([JOBS_RULE], session={"trade": "Welder", "location": "Bengaluru"},
+             has_fresh=lambda t, a: a == {"query_text": "Welder jobs in Bengaluru"})
+    assert (s.tool, s.outcome) == (None, "skipped_fresh")
+
+
+def test_unresolvable_args_are_reported_before_freshness():
+    """Args resolve first now, so a rule that cannot bind says so."""
+    s = _sel([JOBS_RULE], session={}, has_fresh=lambda t, a: True)
+    assert (s.tool, s.outcome) == (None, "skipped_missing_arg")

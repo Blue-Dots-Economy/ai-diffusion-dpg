@@ -40,7 +40,7 @@ OPENAI_API_KEY=<your OpenAI key>
 BLUE_DOTS_API_KEY=<your Signals service key>
 BLUE_DOTS_SEARCH_API_KEY=<your Signals service key>
 BLUE_DOTS_ORG_ID=<your Signals organisation id>
-TOOL_RESULT_KEY_SECRET=<output of: openssl rand -hex 32>
+TOOL_RESULT_KEY_SECRET=<output of: openssl rand -hex 32>   # required; compose will not start without it
 DOMAIN=blue-dots
 DPG_IMAGE_TAG=<short git sha>
 ENV

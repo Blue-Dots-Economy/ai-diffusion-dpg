@@ -12,6 +12,9 @@ spec:
       app: {{ .Release.Name }}
   template:
     metadata:
+      # Roll pods when rendered config changes; services read it only at startup.
+      annotations:
+        checksum/configmap-datasources: {{ include (print $.Template.BasePath "/configmap-datasources.yaml") . | sha256sum }}
       labels:
         app: {{ .Release.Name }}
     spec:

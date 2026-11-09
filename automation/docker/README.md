@@ -59,6 +59,11 @@ docker compose -f docker-compose.dev.yml --profile web up -d reach_layer_web
 A `DOMAIN` exported in your shell overrides the one in `.env`, so unset it if
 you want the `.env` value.
 
+`docker-compose.dev.yml` requires `TOOL_RESULT_KEY_SECRET` in `.env`
+(`openssl rand -hex 32`); compose refuses to start without it. Memory Layer
+uses it to store tool results between turns, which the Blue Dots voice flow
+needs to save a profile or apply.
+
 ---
 
 ## Two Compose Files
@@ -226,8 +231,9 @@ adaptation it makes and why.
 Not covered: Memgraph has no dashboard (its metrics endpoint is an Enterprise
 feature; its up/down status is on Service Status), LLM provider failures such
 as an invalid API key do not appear in the HTTP metrics (Agent Core still
-answers with a 200, so they show up as the *LLM calls failing* alert and as
-ERROR logs), and nothing measures host disk space. On Traces, the service map is
+answers with a 200, so they show up as ERROR logs and, once 3 or more turns in
+5 minutes are abandoned on a provider error, as the *LLM calls failing*
+alert), and nothing measures host disk space. On Traces, the service map is
 a header link to Jaeger's own UI, because Grafana 10.3's Jaeger data source has
 no dependency-graph query.
 

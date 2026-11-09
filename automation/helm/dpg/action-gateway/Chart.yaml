@@ -1,6 +1,0 @@
-apiVersion: v2
-name: action-gateway
-description: DPG Action Gateway — external API connector (ONEST mock for PoC)
-type: application
-version: 0.1.0
-appVersion: "0.1.0"

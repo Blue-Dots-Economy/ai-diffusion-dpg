@@ -58,7 +58,9 @@ from src.interfaces.trust_layer import TrustLayerBase
 from src.http_clients.trust_layer import TrustLayerConstraintError
 from src.preprocessing.language_normalisation import LanguageNormaliser
 from src.manager_agent import ManagerAgent, zero_seed_fields
-from src.tool_guard import check_tool_call
+from src.tool_guard import (
+    apply_session_only, check_tool_call, combine_consent, session_consent_ok,
+)
 from src.predispatch.rules import Selection, select
 from src.predispatch.runner import PREDISPATCH_ID, PredispatchResult, run_async, run_sync
 from src.models import (
@@ -99,9 +101,29 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 logger = logging.getLogger(__name__)
 
+
+def _first_present(session: dict, name: str) -> str:
+    """First non-empty session value among a ``a|b`` fallback placeholder name.
+
+    Args:
+        session: Session state.
+        name: A placeholder name, optionally ``primary|fallback|...``.
+
+    Returns:
+        The first non-empty value as a stripped string, or ``""``.
+    """
+    for key in str(name).split("|"):
+        value = str((session or {}).get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
 # Session key: tool → args_hash of the stored result the caller last heard
 # (NLU dialogue-acts spec §5.2).
 SERVED_TOOL_RESULTS_KEY = "served_tool_results"
+RECENT_TOOL_EXCHANGES_KEY = "recent_tool_exchanges"
+# Session keys `_abandon_offered` rewrites; both must be written back.
+ABANDON_SESSION_KEYS = (SERVED_TOOL_RESULTS_KEY, RECENT_TOOL_EXCHANGES_KEY)
 
 # A ``turn_carryover`` is written by whichever replica ran the interrupted
 # turn and read by whichever runs the next one, so their clocks can disagree.
@@ -112,6 +134,10 @@ _CARRYOVER_CLOCK_SKEW_MS = 5000
 # human_request speaks the already line instead of escalating again
 # (identity/handoff spec §5.2). An older pending marker allows a new escalate.
 _HANDOFF_PENDING_WINDOW_MS = 30_000
+# Shared `operation` value for every handoff log record.
+_OP_HANDOFF = "orchestrator.handoff"
+# Shared `operation` value for every abandoned-offer log record.
+_OP_ABANDON_OFFERED = "orchestrator.abandon_offered"
 
 # Module-level guard to prevent double-instrumentation in test environments.
 _HTTPX_INSTRUMENTED = False
@@ -366,6 +392,13 @@ class AgentCore(AgentCoreBase):
         # recent_turns serves both the NLU frame and <recent>; keep enough for either.
         self._recent_keep = max(self._dialogue_cfg.history_turns, self._agent_history_turns)
         self._pending_resolver = PendingResolver(self._workflow)
+        # Only rows offered as a numbered list can be named by an ordinal.
+        self._option_tools: frozenset[str] = frozenset(
+            of.tool
+            for sa in (self._workflow.subagents or {}).values()
+            for of in (getattr(p, "options_from", None) for p in getattr(sa, "pending", ()) or ())
+            if of is not None and getattr(of, "tool", None)
+        )
 
         # User-state model (GH-139) — cached lookup for per-turn guidance injection.
         usm = (self._config or {}).get("conversation", {}).get("user_state_model", {}) or {}
@@ -668,7 +701,42 @@ class AgentCore(AgentCoreBase):
                       state=self._routing_state(bundle), session=self._tool_session_values(bundle),
                       tables=self._predispatch_tables, tool_schemas=self._tool_schemas,
                       write_tools=self._write_tools,
-                      has_fresh=lambda t: tool_cache.latest_entry(t) is not None)
+                      has_fresh=lambda t, a: tool_cache.has_fresh_for(t, a))
+
+    def _enforce_session_only(self, tc, bundle) -> None:
+        """Replace or drop this call's ``session_only_params`` before it is guarded.
+
+        Runs on every dispatch path. A field the caller never gave is removed
+        rather than sent with whatever the model supplied.
+        """
+        spec = (getattr(self._manager_agent, "_session_only_params", None) or {}).get(
+            getattr(tc, "tool_name", "")) or {}
+        if not spec:
+            return
+        dropped = apply_session_only(tc, spec, getattr(bundle, "session", None))
+        if dropped:
+            logger.info("orchestrator.session_only_dropped", extra={
+                "operation": "orchestrator.session_only", "status": "success",
+                "tool": tc.tool_name, "dropped": sorted(dropped)})
+
+    def _session_consent_ok(self, tc, bundle) -> bool | None:
+        """Consent recorded in session for this call's ``consent_session_fields``.
+
+        A returning caller's stored consent arrives in session from the profile
+        lookup; anyone else's only from the consent phase. Checked on every
+        dispatch path, model-initiated calls included.
+
+        Returns:
+            None when the tool lists no fields, else whether all are true.
+        """
+        spec = (getattr(self._manager_agent, "_consent_session_fields", None) or {}).get(
+            getattr(tc, "tool_name", ""))
+        ok = session_consent_ok(spec, self._tool_session_values(bundle))
+        if ok is False:
+            logger.warning("orchestrator.consent_not_in_session", extra={
+                "operation": "orchestrator.consent_gate", "status": "skipped",
+                "tool": tc.tool_name})
+        return ok
 
     def _predispatch_guard(self, tc, bundle, tool_cache, counts: dict, consent_ok: bool | None):
         """The shared guard (consent, cap, grounding, cache) for a pre-dispatch call.
@@ -683,6 +751,7 @@ class AgentCore(AgentCoreBase):
         Returns:
             GuardVerdict.
         """
+        self._enforce_session_only(tc, bundle)
         grounded = getattr(self._manager_agent, "_grounded_params", None)
         caps = getattr(self._manager_agent, "_tool_call_caps", None)
         spec = (grounded if isinstance(grounded, dict) else {}).get(tc.tool_name) or {}
@@ -691,7 +760,8 @@ class AgentCore(AgentCoreBase):
             used=counts.get(tc.tool_name, 0), grounded_spec=spec, messages=[],
             stored_results=tool_cache.stored_results_by_tool(),
             session_grounded=self._session_grounded_values(bundle, spec),
-            consent_ok=consent_ok, cache_lookup=tool_cache.lookup)
+            consent_ok=combine_consent(consent_ok, self._session_consent_ok(tc, bundle)),
+            cache_lookup=tool_cache.lookup)
 
     @staticmethod
     def _predispatch_error(operation: str, session_id: str, e: Exception) -> PredispatchResult:
@@ -1098,6 +1168,56 @@ class AgentCore(AgentCoreBase):
             return None
         bundle.session[SERVED_TOOL_RESULTS_KEY] = merged
         return merged
+
+    def _abandon_offered(self, understanding, subagent_id: str, bundle, tool_cache) -> bool:
+        """Drop the offered list when the caller asks for something else.
+
+        Otherwise an ordinal spoken afterwards still resolves against the list
+        they turned away from. The domain names the acts that count; a turn
+        that also SELECTS is choosing from the list, not leaving it.
+
+        Args:
+            understanding: This turn's TurnUnderstanding.
+            subagent_id: The subagent the caller is in, for the log record.
+            bundle: This turn's context bundle (mutated).
+            tool_cache: This turn's TurnToolCache.
+
+        Returns:
+            True when something was dropped, so the caller persists it.
+        """
+        try:
+            acts = set(getattr(getattr(understanding, "dialogue", None), "acts", ()) or ())
+            triggers = set(self._dialogue_cfg.abandons_offered_acts)
+            if not acts & triggers or "select" in acts:
+                return False
+            # What was read OUT to the caller is what an ordinal points at.
+            served = bundle.session.get(SERVED_TOOL_RESULTS_KEY)
+            tools = sorted(set(served) & self._option_tools) if isinstance(served, dict) else []
+            dropped = [t for t in tools if tool_cache.abandon(t)]
+            if not dropped:
+                logger.info("orchestrator.offered_abandon_noop", extra={
+                    "operation": _OP_ABANDON_OFFERED, "status": "skipped",
+                    "subagent_id": subagent_id, "served_tools": tools})
+                return False
+            bundle.session[SERVED_TOOL_RESULTS_KEY] = {
+                k: v for k, v in served.items() if k not in dropped}
+            # The model reads the rows from the replay, not only the resolver.
+            bundle.session[RECENT_TOOL_EXCHANGES_KEY] = [
+                ex for ex in (bundle.session.get(RECENT_TOOL_EXCHANGES_KEY) or [])
+                if not any(
+                    (tu or {}).get("name") in dropped
+                    for tu in (ex or {}).get("tool_uses") or ()
+                )
+            ]
+            logger.info("orchestrator.offered_abandoned", extra={
+                "operation": _OP_ABANDON_OFFERED, "status": "success",
+                "subagent_id": subagent_id, "tools": dropped})
+            return True
+        except Exception as e:  # noqa: BLE001 — never raise into the turn
+            logger.warning("orchestrator.abandon_offered_failed", extra={
+                "operation": _OP_ABANDON_OFFERED, "status": "failure",
+                "error": type(e).__name__})
+            return False
 
     async def _apply_understanding_async(self, session_id: str, user_id: str, bundle,
                                          understanding, raw_text: str) -> None:
@@ -1570,6 +1690,11 @@ class AgentCore(AgentCoreBase):
         entity_map: dict = self._config.get("entity_to_profile_field", {})
         self._apply_understanding_sync(session_id, user_id, bundle, understanding,
                                        turn_input.user_message)
+        if self._abandon_offered(understanding, current_subagent_id, bundle, tool_cache):
+            self._persist_tool_cache_sync(session_id, user_id, tool_cache)
+            for _k in ABANDON_SESSION_KEYS:
+                self._write_memory_sync(
+                    session_id, user_id, "session", _k, bundle.session.get(_k))
 
         # ── Language switch — handle before routing ───────────────────────
         if nlu_result.intent == "language_switch_request":
@@ -1707,6 +1832,11 @@ class AgentCore(AgentCoreBase):
             for field_name, field_val in matched_rule.session_writes.items():
                 self._write_memory_sync(session_id, user_id, "session", field_name, field_val)
                 bundle.session[field_name] = field_val
+        if matched_rule and matched_rule.clear_tool_exchanges:
+            kept = self._drop_tool_exchanges(bundle.session.get("recent_tool_exchanges"),
+                                             matched_rule.clear_tool_exchanges)
+            self._write_memory_sync(session_id, user_id, "session", "recent_tool_exchanges", kept)
+            bundle.session["recent_tool_exchanges"] = kept
 
         # Increment subagent_entry_count for the destination subagent.
         raw_counts = bundle.session.get("subagent_entry_count")
@@ -2126,11 +2256,13 @@ class AgentCore(AgentCoreBase):
             "  TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
             "  model=%s  total_latency=%dms  next_subagent=%s\n"
             "  llm_calls=%s  predispatch_tool=%s  predispatch_outcome=%s  predispatch_ms=%s\n"
+            "  %s\n"
             "  response: %r\n"
             "═══════════════════════════════════════════════════════════════",
             session_id, nlu_result.intent, bool(tool_calls),
             llm_response.model_used, latency_ms, next_subagent_id,
             _llm_calls, _pd.tool, _pd.outcome, _pd.ms,
+            self._nlu_banner(understanding),
             final_text[:200],
         )
 
@@ -2139,6 +2271,22 @@ class AgentCore(AgentCoreBase):
     # ------------------------------------------------------------------
     # Private: routing algorithm
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _nlu_banner(understanding) -> str:
+        """`acts`/`relation`/`pending`/`resolved` for the turn banner.
+
+        These decide the derived intent, and therefore the routing, but they are
+        logged only inside ``extra={}`` (dropped by the default formatter) and as
+        OTel counters. With neither visible, a turn that routes on a resolver
+        miss is indistinguishable from one the model simply got wrong — which
+        cost three successive wrong diagnoses of the same bug.
+        """
+        d = getattr(understanding, "dialogue", None)
+        acts = ",".join(getattr(d, "acts", ()) or ()) or "-"
+        return (f"acts={acts}  relation={getattr(d, 'relation', None) or '-'}  "
+                f"pending={getattr(understanding, 'pending_id', None) or '-'}  "
+                f"resolved={getattr(understanding, 'resolved', None) is not None}")
 
     def _resolve_next_subagent(
         self,
@@ -2784,15 +2932,7 @@ class AgentCore(AgentCoreBase):
         for ex in exchanges:
             if not isinstance(ex, dict):
                 continue
-            uses = ex.get("tool_uses") or []
-            results = ex.get("tool_results") or []
-            if skip_tools:
-                names = {u.get("id", ""): u.get("name", "") for u in uses if isinstance(u, dict)}
-                uses = [u for u in uses if not (isinstance(u, dict) and u.get("name") in skip_tools)]
-                results = [
-                    r for r in results
-                    if not (isinstance(r, dict) and names.get(r.get("tool_use_id", "")) in skip_tools)
-                ]
+            uses, results = AgentCore._exchange_without(ex, skip_tools)
             if not uses or not results:
                 continue
             use_blocks: list[ToolUseBlock] = []
@@ -2824,6 +2964,33 @@ class AgentCore(AgentCoreBase):
             out.append(Message(role="assistant", content=use_blocks))
             out.append(Message(role="user", content=result_blocks))
         return out
+
+    @staticmethod
+    def _exchange_without(ex: dict, tools: frozenset | set) -> tuple[list, list]:
+        """Return an exchange's tool uses and results with ``tools`` dropped pairwise."""
+        uses = ex.get("tool_uses") or []
+        results = ex.get("tool_results") or []
+        if not tools:
+            return uses, results
+        names = {u.get("id", ""): u.get("name", "") for u in uses if isinstance(u, dict)}
+        uses = [u for u in uses if not (isinstance(u, dict) and u.get("name") in tools)]
+        results = [
+            r for r in results
+            if not (isinstance(r, dict) and names.get(r.get("tool_use_id", "")) in tools)
+        ]
+        return uses, results
+
+    @staticmethod
+    def _drop_tool_exchanges(exchanges, tools: list[str]) -> list[dict]:
+        """Return the stored exchanges with every use and result of ``tools`` removed."""
+        kept = []
+        for ex in exchanges if isinstance(exchanges, list) else []:
+            if not isinstance(ex, dict):
+                continue
+            uses, results = AgentCore._exchange_without(ex, set(tools))
+            if uses and results:
+                kept.append({**ex, "tool_uses": uses, "tool_results": results})
+        return kept
 
     @staticmethod
     def _truncate_tool_result_content(content: str, max_chars: int) -> str:
@@ -3291,9 +3458,76 @@ class AgentCore(AgentCoreBase):
         )
         return already, payload, step
 
+    def _register_bg_task(self, task: "asyncio.Task", name: str, session_id: str) -> None:
+        """Hold a background task and log its outcome when it finishes.
+
+        ``add_done_callback(self._bg_tasks.discard)`` on its own never retrieves
+        the exception, so a failure surfaces only as asyncio's "Task exception
+        was never retrieved" at garbage-collection time — with no operation,
+        session or error attached, and nothing tying it to the turn.
+
+        Args:
+            task: The task to hold.
+            name: Short operation name for the log record.
+            session_id: Session the task belongs to.
+        """
+        self._bg_tasks.add(task)
+
+        def _done(t: "asyncio.Task") -> None:
+            self._bg_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.error(
+                    "orchestrator.bg_task_failed",
+                    extra={"operation": f"orchestrator.{name}", "status": "failure",
+                           "session_id": session_id, "error": f"{type(exc).__name__}: {exc}"},
+                )
+
+        task.add_done_callback(_done)
+
+    @staticmethod
+    def _handoff_record_unheard(session_id: str, user_id: str, task: "asyncio.Task") -> None:
+        """Log that a handoff completed for a turn the caller never heard.
+
+        The session's ``delivered`` state is still correct — the handoff really
+        did reach the team — so it is deliberately not rewritten here. What was
+        missing is any record that the caller never heard the confirmation
+        line, which is the part a later ``already`` reply silently assumes.
+
+        Deliberately log-only: this runs from a cancelled turn's done-callback,
+        where issuing another write would repeat the late-write problem it
+        exists to surface.
+
+        Args:
+            session_id: Session the handoff belonged to.
+            user_id: Caller id, for correlation.
+            task: The completed escalate task.
+        """
+        if task.cancelled() or task.exception() is not None:
+            return          # failure already logged by _register_bg_task
+        logger.warning(
+            "orchestrator.handoff_line_unheard",
+            extra={"operation": _OP_HANDOFF, "status": "skipped",
+                   "session_id": session_id, "user_id": user_id,
+                   "reason": "turn_cancelled_before_delivery"},
+        )
+
     @staticmethod
     def _handoff_already(bundle) -> bool:
-        """True when this call already has a delivered handoff, or one still pending (< 30 s old)."""
+        """True when this call already has a delivered handoff, or one still pending (< 30 s old).
+
+        The pending age is clamped the same way carryover ages are: a marker up
+        to ``_CARRYOVER_CLOCK_SKEW_MS`` in the future counts as age 0, and
+        anything beyond that is malformed. Without the clamp a future
+        ``handoff_pending_at`` (clock skew, or seconds written where ms were
+        meant) makes the raw difference negative, negative is always below the
+        window, and the call is stuck "pending" forever — the caller could
+        never be handed off again. A malformed marker therefore allows a fresh
+        escalate: a duplicate handoff is recoverable, a permanently blocked one
+        is not. A genuinely ``delivered`` handoff still blocks duplicates above.
+        """
         status = bundle.session.get("handoff_status")
         if status == "delivered":
             return True
@@ -3303,7 +3537,17 @@ class AgentCore(AgentCoreBase):
             pending_at = int(float(bundle.session.get("handoff_pending_at") or 0))
         except (TypeError, ValueError):
             return False
-        return int(time.time() * 1000) - pending_at < _HANDOFF_PENDING_WINDOW_MS
+        age_ms = int(time.time() * 1000) - pending_at
+        if -_CARRYOVER_CLOCK_SKEW_MS <= age_ms < 0:
+            age_ms = 0
+        if age_ms < 0:
+            logger.warning(
+                "orchestrator.handoff_pending_marker_discarded",
+                extra={"operation": _OP_HANDOFF, "status": "skipped",
+                       "reason": "malformed_pending_at"},
+            )
+            return False
+        return age_ms < _HANDOFF_PENDING_WINDOW_MS
 
     @staticmethod
     def _handoff_pending_writes(bundle) -> dict:
@@ -3352,7 +3596,7 @@ class AgentCore(AgentCoreBase):
     def _handoff_escalate_failed(session_id: str, exc: Exception) -> None:
         """Log an escalate exception by type only (the message could carry the payload or URL)."""
         logger.warning("orchestrator.handoff_escalate_failed", extra={
-            "operation": "orchestrator.handoff", "status": "failure",
+            "operation": _OP_HANDOFF, "status": "failure",
             "session_id": session_id, "error": type(exc).__name__,
         })
 
@@ -3369,7 +3613,7 @@ class AgentCore(AgentCoreBase):
             "outcome": outcome, "reason": reason, "latency_ms": latency_ms,
         }
         logger.info("orchestrator.handoff", extra={
-            "operation": "orchestrator.handoff",
+            "operation": _OP_HANDOFF,
             "status": "failure" if outcome == "failed" else "success",
             "session_id": session_id, **fields,
         })
@@ -3382,7 +3626,7 @@ class AgentCore(AgentCoreBase):
             await self._async_learning.emit_signal("handoff", data)
         except Exception as exc:  # noqa: BLE001
             logger.warning("orchestrator.handoff_signal_failed", extra={
-                "operation": "orchestrator.handoff", "status": "skipped",
+                "operation": _OP_HANDOFF, "status": "skipped",
                 "session_id": data.get("session_id"), "error": type(exc).__name__})
 
     def _handoff_will_escalate(self, bundle) -> bool:
@@ -3413,9 +3657,17 @@ class AgentCore(AgentCoreBase):
                                for k, v in pending.items()), return_exceptions=True)
         task = asyncio.ensure_future(self._handoff_escalate_async(
             session_id, user_id, bundle, turn_input, lines, payload, step, turn_id=turn_id, caller=caller))
-        self._bg_tasks.add(task)
-        task.add_done_callback(self._bg_tasks.discard)
-        return await asyncio.shield(task)
+        self._register_bg_task(task, "handoff_escalate", session_id)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # The turn was cancelled but the shielded escalate keeps running and
+            # still records its result, so the session can end up marked
+            # "delivered" for a line the caller never heard. Record that, so the
+            # gap is visible rather than silent.
+            task.add_done_callback(
+                lambda t: self._handoff_record_unheard(session_id, user_id, t))
+            raise
 
     async def _handoff_escalate_async(self, session_id: str, user_id: str, bundle, turn_input, lines: dict,
                                       payload: dict, step: str, *, turn_id: str, caller: str) -> str:
@@ -3444,8 +3696,7 @@ class AgentCore(AgentCoreBase):
         data = self._handoff_signal(session_id, turn_id, outcome, result, latency_ms)
         if self._async_learning:
             task = asyncio.create_task(self._emit_handoff_signal(data))
-            self._bg_tasks.add(task)
-            task.add_done_callback(self._bg_tasks.discard)
+            self._register_bg_task(task, "handoff_signal", session_id)
         return line
 
     def _handle_human_request_sync(self, session_id: str, user_id: str, bundle, turn_input,
@@ -3478,7 +3729,7 @@ class AgentCore(AgentCoreBase):
             self._learning.emit_signal("handoff", data)
         except Exception as exc:  # noqa: BLE001
             logger.warning("orchestrator.handoff_signal_failed", extra={
-                "operation": "orchestrator.handoff", "status": "skipped",
+                "operation": _OP_HANDOFF, "status": "skipped",
                 "session_id": session_id, "error": type(exc).__name__})
         return line
 
@@ -3577,6 +3828,15 @@ class AgentCore(AgentCoreBase):
 
         translated = (self._translate_consent_message(termination_message, detected_language)
                       if translate else termination_message)
+
+        # A line that does not end the call is a question the next turn answers.
+        if not end_session and bundle.session.get("current_question") != translated:
+            cq_value = self._sanitize_current_question(
+                prev=bundle.session.get("current_question", "") or "",
+                new=translated, session_id=session_id)
+            bundle.session["current_question"] = cq_value
+            write_tasks.append(self._async_memory.write(
+                session_id, user_id, "session", "current_question", cq_value))
 
         # Best-effort fan-out of routing writes; parallel with the SentenceEvent
         # so the caller hears the goodbye even if Memory Layer is slow.
@@ -4843,6 +5103,11 @@ class AgentCore(AgentCoreBase):
             entity_map: dict = self._config.get("entity_to_profile_field", {})
             await self._apply_understanding_async(session_id, user_id, bundle, understanding,
                                                   turn_input.user_message)
+            if self._abandon_offered(understanding, current_subagent_id, bundle, tool_cache):
+                await self._persist_tool_cache(session_id, user_id, tool_cache)
+                for _k in ABANDON_SESSION_KEYS:
+                    await self._write_memory_async(
+                        session_id, user_id, "session", _k, bundle.session.get(_k))
 
             # ── Language switch — handle before routing ───────────────
             if nlu_result.intent == "language_switch_request":
@@ -4951,6 +5216,13 @@ class AgentCore(AgentCoreBase):
                         )
                     )
                     bundle.session[field_name] = field_val
+            if matched_rule and matched_rule.clear_tool_exchanges:
+                kept = self._drop_tool_exchanges(bundle.session.get("recent_tool_exchanges"),
+                                                 matched_rule.clear_tool_exchanges)
+                routing_writes.append(
+                    self._async_memory.write(session_id, user_id, "session", "recent_tool_exchanges", kept)
+                )
+                bundle.session["recent_tool_exchanges"] = kept
 
             raw_counts = bundle.session.get("subagent_entry_count")
             subagent_entry_count = dict(raw_counts) if isinstance(raw_counts, dict) else {}
@@ -5017,17 +5289,44 @@ class AgentCore(AgentCoreBase):
             if _tmpl:
                 _requires = list(getattr(_sa, "fixed_opening_requires", []) or [])
                 _counts = bundle.session.get("subagent_entry_count") or {}
-                _first_entry = int(
-                    (_counts or {}).get(next_subagent_id, 0) or 0
-                ) <= 1
-                _vals = {
-                    k: str(bundle.session.get(k) or "").strip() for k in _requires
-                }
+                # Re-entry after a detour asks afresh; a self-loop does not.
+                _first_entry = (
+                    next_subagent_id != current_subagent_id
+                    if getattr(_sa, "fixed_opening_on_entry", False)
+                    else int((_counts or {}).get(next_subagent_id, 0) or 0) <= 1
+                )
+                _vals = {k: _first_present(bundle.session, k) for k in _requires}
                 _have_all = bool(_requires) and all(_vals.values())
-                _caller_said_something = bool(nlu_result.entities or {})
-                if _first_entry and _have_all and not _caller_said_something:
+                # A fragment, not a template slot: an empty slot leaves its
+                # punctuation behind and a missing key drops the whole line.
+                _pfx_tmpl = (getattr(_sa, "fixed_opening_prefix", "") or "")
+                _pfx_req = list(getattr(_sa, "fixed_opening_prefix_requires", []) or [])
+                _pfx_skip = {
+                    v.strip().casefold()
+                    for v in (getattr(_sa, "fixed_opening_prefix_unless", []) or [])
+                }
+                _pfx_vals = {
+                    k: str(bundle.session.get(k) or "").strip() for k in _pfx_req
+                }
+                # A stored placeholder would otherwise be spoken as a name.
+                if any(v.casefold() in _pfx_skip for v in _pfx_vals.values()):
+                    _pfx_vals = dict.fromkeys(_pfx_vals, "")
+                _prefix = ""
+                if _pfx_tmpl and _pfx_req and all(_pfx_vals.values()):
                     try:
-                        _line = _tmpl.format(**_vals).strip()
+                        _prefix = _pfx_tmpl.format(**_pfx_vals)
+                    except (KeyError, IndexError):
+                        logger.warning(
+                            "orchestrator.fixed_opening_prefix_placeholder_missing",
+                            extra={"operation": "orchestrator.stream_turn",
+                                   "status": "skipped",
+                                   "subagent_id": next_subagent_id},
+                        )
+                _caller_said_something = bool(nlu_result.entities or {})
+                _even_told = bool(getattr(_sa, "fixed_opening_when_told", False))
+                if _first_entry and _have_all and (_even_told or not _caller_said_something):
+                    try:
+                        _line = (_prefix + _tmpl.format(**_vals)).strip()
                     except (KeyError, IndexError):
                         logger.warning(
                             "orchestrator.fixed_opening_placeholder_missing",
@@ -5190,6 +5489,8 @@ class AgentCore(AgentCoreBase):
             _llm_calls = 0
             sentence_index = 0
             token_buffer = ""
+            # Portion of ``full_response_text`` already replayed to the model.
+            _spoken_sent_to_model = ""
             primary_model = self._llm.get_active_model()
             primary_provider = self._config.get("agent", {}).get("provider", "anthropic")
 
@@ -5400,6 +5701,7 @@ class AgentCore(AgentCoreBase):
                                 self._remember_on_saved(bundle),
                             )
                         else:
+                            self._enforce_session_only(tc, bundle)
                             _spec = (
                                 getattr(self._manager_agent, "_grounded_params", {}) or {}
                             ).get(tc.tool_name) or {}
@@ -5411,7 +5713,7 @@ class AgentCore(AgentCoreBase):
                                 messages=messages,
                                 stored_results=tool_cache.stored_results_by_tool(),
                                 session_grounded=self._session_grounded_values(bundle, _spec),
-                                consent_ok=None,
+                                consent_ok=self._session_consent_ok(tc, bundle),
                                 cache_lookup=tool_cache.lookup,
                             )
                             if _verdict.kind != "go":
@@ -5545,6 +5847,33 @@ class AgentCore(AgentCoreBase):
                         "the only tool of the round"
                     )
                 else:
+                    # Call #2 will answer again, so drop call #1's undelivered
+                    # text. Only on this branch: the skip branch above has no
+                    # second pass and keeps that text as the reply.
+                    _dropped = _trust_batcher.discard_pending()
+                    if _dropped or token_buffer.strip():
+                        logger.info(
+                            "orchestrator.stream_tool_preamble_discarded",
+                            extra={
+                                "operation": "orchestrator.stream_turn",
+                                "status": "success",
+                                "session_id": session_id,
+                                "sentences_discarded": _dropped,
+                                "partial_chars": len(token_buffer.strip()),
+                            },
+                        )
+                    token_buffer = ""
+                    if sentence_index:
+                        # Already streamed; cannot be withdrawn.
+                        logger.warning(
+                            "orchestrator.stream_tool_preamble_delivered",
+                            extra={
+                                "operation": "orchestrator.stream_turn",
+                                "status": "degraded",
+                                "session_id": session_id,
+                                "sentences_delivered": sentence_index,
+                            },
+                        )
                     logger.info(
                         "  [STEP 8] LLM Stream Call #2  →  provider=%s  model=%s"
                         "  message_count=%d",
@@ -5561,16 +5890,26 @@ class AgentCore(AgentCoreBase):
                 while True:
                     if _skip_final_pass:
                         break
+                    # Replay delivered text as assistant content so the model
+                    # sees what it has already said and does not repeat it.
+                    _assistant_blocks: list[Any] = []
+                    _spoken_delta = full_response_text[
+                        len(_spoken_sent_to_model):
+                    ].strip()
+                    if _spoken_delta:
+                        _assistant_blocks.append(TextBlock(text=_spoken_delta))
+                        _spoken_sent_to_model = full_response_text
+                    _assistant_blocks.extend(
+                        ToolUseBlock(
+                            tool_use_id=tc.tool_use_id,
+                            tool_name=tc.tool_name,
+                            input=tc.input_params or {},
+                        )
+                        for tc in _current_tool_calls
+                    )
                     messages.append(Message(
                         role="assistant",
-                        content=[
-                            ToolUseBlock(
-                                tool_use_id=tc.tool_use_id,
-                                tool_name=tc.tool_name,
-                                input=tc.input_params or {},
-                            )
-                            for tc in _current_tool_calls
-                        ],
+                        content=_assistant_blocks,
                     ))
                     messages.append(Message(
                         role="user",
@@ -5640,6 +5979,24 @@ class AgentCore(AgentCoreBase):
                             )
                             break
 
+                        # Another round follows, so drop this one's
+                        # undelivered text. After the max-rounds break, where
+                        # that text is the only reply there is.
+                        _dropped_n = _trust_batcher.discard_pending()
+                        if _dropped_n or token_buffer.strip():
+                            logger.info(
+                                "orchestrator.stream_tool_preamble_discarded",
+                                extra={
+                                    "operation": "orchestrator.stream_turn",
+                                    "status": "success",
+                                    "session_id": session_id,
+                                    "tool_round": _tool_round,
+                                    "sentences_discarded": _dropped_n,
+                                    "partial_chars": len(token_buffer.strip()),
+                                },
+                            )
+                        token_buffer = ""
+
                         _nested_tool_calls = [
                             ToolCall(
                                 tool_name=tu.tool_name,
@@ -5703,6 +6060,7 @@ class AgentCore(AgentCoreBase):
                                         self._remember_on_saved(bundle),
                                     )
                                 else:
+                                    self._enforce_session_only(tc, bundle)
                                     _spec2 = (
                                         getattr(self._manager_agent, "_grounded_params", {}) or {}
                                     ).get(tc.tool_name) or {}
@@ -5715,7 +6073,7 @@ class AgentCore(AgentCoreBase):
                                         stored_results=tool_cache.stored_results_by_tool(),
                                         session_grounded=self._session_grounded_values(
                                             bundle, _spec2),
-                                        consent_ok=None,
+                                        consent_ok=self._session_consent_ok(tc, bundle),
                                         cache_lookup=tool_cache.lookup,
                                     )
                                     if _verdict2.kind != "go":
@@ -5946,6 +6304,7 @@ class AgentCore(AgentCoreBase):
                 "  model=%s  total_latency=%dms  next_subagent=%s  sentences=%d\n"
                 "  llm_ttft=%sms  first_token=%sms  first_sentence=%sms\n"
                 "  llm_calls=%s  predispatch_tool=%s  predispatch_outcome=%s  predispatch_ms=%s\n"
+                "  %s\n"
                 "  response: %r\n"
                 "═══════════════════════════════════════════════════════════════",
                 session_id, nlu_result.intent, was_tool_used,
@@ -5953,6 +6312,7 @@ class AgentCore(AgentCoreBase):
                 _timings["llm_ttft_ms"], _timings["first_token_ms"],
                 _timings["first_sentence_ms"],
                 _llm_calls, _pd.tool, _pd.outcome, _pd.ms,
+                self._nlu_banner(understanding),
                 full_response_text.strip()[:200],
             )
 
@@ -6222,6 +6582,20 @@ class _TrustOutputBatcher:
         if not self._buffer:
             return []
         return await self._flush_now()
+
+    def discard_pending(self) -> int:
+        """Drop buffered sentences without releasing or Trust-checking them.
+
+        For text superseded before it reached the caller.
+
+        Returns:
+            Number of sentences dropped.
+        """
+        dropped = len(self._buffer)
+        self._buffer = []
+        self._batch_start = None
+        self.sentences_added -= dropped
+        return dropped
 
     async def _flush_now(self) -> list[str]:
         """Submit the current buffer to Trust Layer and return release list."""

@@ -1,0 +1,12 @@
+apiVersion: v2
+name: agent-core
+description: DPG Agent Core — orchestrator and LLM caller
+type: application
+version: 0.2.0
+appVersion: "0.1.0"
+dependencies:
+  # Shared templates. charts/dpg-common is a symlink to ../../dpg-common, so no
+  # `helm dependency build` step is needed.
+  - name: dpg-common
+    version: 0.1.0
+    repository: file://../../dpg-common

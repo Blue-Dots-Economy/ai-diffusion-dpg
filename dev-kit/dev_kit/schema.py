@@ -72,6 +72,20 @@ class InvocationRulesConfig(BaseModel):
             "Enforces what must_not_substitute describes in prose."
         ),
     )
+    session_only_params: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Params the model may not supply: param -> session keys to read. "
+            "Taken from session or dropped, so a field never collected cannot be sent."
+        ),
+    )
+    consent_session_fields: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Session fields that must all be true before this tool runs. Stored "
+            "consent satisfies them; otherwise only the consent question does."
+        ),
+    )
     on_empty: str = Field(
         default="",
         description="What the agent says when the tool returns empty results",
@@ -475,6 +489,10 @@ class NLUProcessorConfig(BaseModel):
     examples: list[NLUExampleConfig] = Field(default_factory=list, description="Few-shot examples for the NLU prompt")
     act_intents: list[ActIntentRuleConfig] = Field(default_factory=list, description="Ordered (acts, pending, relation, topic) → intent table")
     termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig, description="When a gated act-intent row may fire")
+    abandons_offered_acts: list[str] = Field(
+        default_factory=list,
+        description="Acts after which the previously offered list is no longer on offer.",
+    )
     off_track: OffTrackConfig = Field(default_factory=OffTrackConfig, description="Off-track threshold and recovery intent")
 
 
@@ -526,6 +544,10 @@ class RoutingRuleSchema(BaseModel):
         default_factory=dict,
         description="Session field/value pairs written when this rule fires. "
                     "Values must be scalars (str, int, float, bool).",
+    )
+    clear_tool_exchanges: list[str] = Field(
+        default_factory=list,
+        description="Tool names whose stored exchanges are dropped when this rule fires.",
     )
 
 
@@ -586,6 +608,27 @@ class SubAgentSchema(BaseModel):
     fixed_opening_requires: list[str] = Field(
         default_factory=list,
         description="Session field names fixed_opening substitutes.",
+    )
+    fixed_opening_prefix: str = Field(
+        default="",
+        description="Optional fragment prepended to fixed_opening, spoken only when "
+                    "every fixed_opening_prefix_requires field has a value.",
+    )
+    fixed_opening_prefix_requires: list[str] = Field(
+        default_factory=list,
+        description="Session field names fixed_opening_prefix substitutes.",
+    )
+    fixed_opening_prefix_unless: list[str] = Field(
+        default_factory=list,
+        description="Values that count as absent, so a stored placeholder is never spoken.",
+    )
+    fixed_opening_when_told: bool = Field(
+        default=False,
+        description="Speak the fixed opening even on a turn where the caller named something.",
+    )
+    fixed_opening_on_entry: bool = Field(
+        default=False,
+        description="Speak the fixed opening on every entry to the phase, not only the first.",
     )
     special_handler: Literal["hitl", "whatsapp_handoff"] | None = Field(
         default=None,

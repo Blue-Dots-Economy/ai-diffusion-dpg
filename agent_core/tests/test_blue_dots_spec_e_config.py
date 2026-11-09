@@ -26,7 +26,7 @@ def test_fetch_jobs_query_from_session():
     s = select(SUB["job_match"]["predispatch"], intent="any_input", state={}, session={"stored_trade": "Welder",
                "location": "Bangalore"}, tables=CFG["predispatch_tables"],
                tool_schemas={"fetch_jobs": {"properties": {"query_text": {"type": "string"}}, "required": ["query_text"]}},
-               write_tools={"apply_job", "save_profile"}, has_fresh=lambda t: False)
+               write_tools={"apply_job", "save_profile"}, has_fresh=lambda t, a: False)
     assert (s.tool, s.args) == ("fetch_jobs", {"query_text": "Welder jobs in Bengaluru"})
 
 

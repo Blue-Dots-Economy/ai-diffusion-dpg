@@ -247,6 +247,18 @@ def test_session_writes_on_routing_rule_parsed(loader, registry):
     assert rule.session_writes == {"user_storage_mode": "anonymous"}
 
 
+def test_clear_tool_exchanges_on_routing_rule_parsed(loader, registry):
+    config = _minimal_config(
+        routing=[
+            {"intent": "greeting", "next_subagent_id": "end", "clear_tool_exchanges": ["apply_job"]},
+            {"intent": "*", "next_subagent_id": "end"},
+        ]
+    )
+    routing = loader.load(config, registry).subagents["start"].routing
+    assert routing[0].clear_tool_exchanges == ["apply_job"]
+    assert routing[1].clear_tool_exchanges == []
+
+
 def test_special_handler_hitl_accepted(loader, registry):
     config = _minimal_config()
     config["agent_workflow"]["subagents"].append({

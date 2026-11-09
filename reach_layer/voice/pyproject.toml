@@ -19,7 +19,7 @@ dependencies = [
     "opentelemetry-instrumentation-httpx>=0.61b0",
     "python-multipart>=0.0.24",
     "pipecat-ai[websocket,silero]>=0.0.108",
-    "pipecat-vobiz>=0.0.2",
+    "pipecat-vobiz>=0.0.2,<0.1",
     "numpy>=1.26",
     "aiobotocore>=3.7.0",
 ]

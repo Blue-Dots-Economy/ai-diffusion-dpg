@@ -179,6 +179,13 @@ groups:
       description: The kernel OOM-killed it in the last 5 minutes; check its memory limit and usage.
       dashboard_url: '{{ externalURL }}d/dpg-containers'
     isPaused: false
+  # Counts turns that ended because the LLM call failed, one log line per turn:
+  # orchestrator.stream_turn_error (streaming) or
+  # orchestration_server.process_turn_error (sync), with exception type
+  # ProviderAPIError. Retried timeouts log at WARNING and do not count, nor do
+  # calls whose caller fell back (NLU, normalisation). Matching any ERROR line
+  # that mentions chat_provider counted one failed turn three times: two
+  # provider lines plus the orchestrator's stack trace.
   - uid: dpg-llm-failing
     title: LLM calls failing
     condition: C
@@ -190,7 +197,7 @@ groups:
         to: 0
       model:
         refId: A
-        expr: sum(count_over_time({job="agent_core", level="ERROR"} |= "chat_provider" [5m]))
+        expr: sum(count_over_time({job="agent_core", level="ERROR"} |= "_turn_error" | json | body=~"orchestrat(or|ion_server)\\.(stream|process)_turn_error" | attributes_exception_type="ProviderAPIError" [5m]))
         queryType: instant
     - refId: B
       datasourceUid: __expr__
@@ -217,7 +224,7 @@ groups:
         - evaluator:
             type: gt
             params:
-            - 5
+            - 2
     noDataState: OK
     execErrState: Error
     for: 0s
@@ -225,8 +232,8 @@ groups:
       severity: critical
       service: agent_core
     annotations:
-      summary: LLM provider calls are failing
-      description: '{{ with $values.B }}{{ .Value }}{{ else }}n/a{{ end }} provider errors in 5 minutes; turns return empty replies. Check the API key and provider status.'
+      summary: Turns are failing on LLM provider errors
+      description: '{{ with $values.B }}{{ .Value }}{{ else }}n/a{{ end }} turns abandoned in 5 minutes after the LLM call failed past its retries. The cause is in agent_core ERROR logs matching "chat_provider.".'
       dashboard_url: '{{ externalURL }}d/dpg-service-traffic'
     isPaused: false
 - orgId: 1

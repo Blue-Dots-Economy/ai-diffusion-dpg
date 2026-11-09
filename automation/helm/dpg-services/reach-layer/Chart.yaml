@@ -1,0 +1,25 @@
+apiVersion: v2
+name: reach-layer
+description: DPG Reach Layer — channel adapters (web, mcp, voice, bridge), one sub-chart per channel
+type: application
+version: 0.2.0
+appVersion: "0.1.0"
+dependencies:
+  # Shared templates. charts/dpg-common is a symlink to ../../dpg-common, so no
+  # `helm dependency build` step is needed.
+  - name: dpg-common
+    version: 0.1.0
+    repository: file://../../dpg-common
+  # Channel sub-charts live in charts/<channel>/; switch each on with <channel>.enabled.
+  - name: web
+    version: 0.2.0
+    condition: web.enabled
+  - name: mcp
+    version: 0.2.0
+    condition: mcp.enabled
+  - name: voice
+    version: 0.2.0
+    condition: voice.enabled
+  - name: bridge
+    version: 0.2.0
+    condition: bridge.enabled

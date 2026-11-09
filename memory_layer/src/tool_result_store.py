@@ -28,6 +28,12 @@ _SCOPE_LETTER = {"session": "s", "user": "u"}
 _TOOL_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _HASH_RE = re.compile(r"^[a-f0-9]{4,64}$")
 
+# Operation names appear in the disabled-report, the success log and the error
+# log for each method; name them once.
+_OP_PUT = "tool_result_store.put"
+_OP_READ = "tool_result_store.read"
+_OP_INVALIDATE = "tool_result_store.invalidate"
+
 
 class ToolResultStore:
     """Stores projected tool results per session or per user.
@@ -44,12 +50,32 @@ class ToolResultStore:
         self._client = client
         self._secret = (secret or "").encode()
         self._max_ttl = {"session": int(session_ttl_seconds), "user": int(max_user_ttl_seconds)}
+        # Reported once per process on FIRST USE, not only here: a startup line
+        # is one among thousands and was missed entirely. A disabled store makes
+        # every cached tool result vanish between turns, which downstream looks
+        # like a model or routing fault, not a missing secret. See the F53
+        # write-up in poc-reports — it cost three wrong root causes.
+        self._disabled_reported = False
         if not self._secret:
-            logger.warning(
+            logger.error(
                 "tool_result_store.disabled",
                 extra={"operation": "tool_result_store.init", "status": "disabled",
-                       "reason": "TOOL_RESULT_KEY_SECRET not set"},
+                       "reason": "TOOL_RESULT_KEY_SECRET not set",
+                       "impact": "tool results are not persisted between turns"},
             )
+
+    def _report_disabled(self, operation: str) -> None:
+        """Log once, at the first point the store is actually needed."""
+        if self._disabled_reported:
+            return
+        self._disabled_reported = True
+        logger.error(
+            "tool_result_store.unavailable",
+            extra={"operation": operation, "status": "failure",
+                   "reason": "TOOL_RESULT_KEY_SECRET not set",
+                   "impact": "tool results are dropped; anything that reads a previous "
+                             "turn's results (e.g. selecting an offered option) will fail"},
+        )
 
     @property
     def enabled(self) -> bool:
@@ -69,7 +95,10 @@ class ToolResultStore:
     def put(self, scope: str, owner_id: str, tool: str, args_hash: str, data: Any,
             ttl_seconds: int, origin: str = "turn", now: float | None = None) -> bool:
         """Store one entry with a TTL fixed now. Returns True when stored."""
-        if (not self.enabled or scope not in _SCOPE_LETTER or not owner_id
+        if not self.enabled:
+            self._report_disabled(_OP_PUT)
+            return False
+        if (scope not in _SCOPE_LETTER or not owner_id
                 or not _TOOL_RE.match(tool or "") or not _HASH_RE.match(args_hash or "")):
             return False
         now = time.time() if now is None else now
@@ -90,19 +119,20 @@ class ToolResultStore:
             pipe.expire(idx, ttl, nx=True)   # first expiry for a new index
             pipe.expire(idx, ttl, gt=True)   # only ever extends it
             pipe.execute()
-            logger.info("tool_result_store.put", extra={
-                "operation": "tool_result_store.put", "status": "success", "tool": tool,
+            logger.info(_OP_PUT, extra={
+                "operation": _OP_PUT, "status": "success", "tool": tool,
                 "scope": scope, "ttl_s": ttl, "latency_ms": int((time.time() - start) * 1000)})
             return True
         except Exception as e:
             logger.error("tool_result_store.put_error", extra={
-                "operation": "tool_result_store.put", "status": "failure", "tool": tool,
+                "operation": _OP_PUT, "status": "failure", "tool": tool,
                 "error": type(e).__name__})
             return False
 
     def read(self, session_id: str, user_id: str, now: float | None = None) -> list[dict]:
         """Return unexpired entries for the session and the user. Cleans dead index members."""
         if not self.enabled:
+            self._report_disabled(_OP_READ)
             return []
         now = time.time() if now is None else now
         idxs = [self._idx("session", session_id), self._idx("user", user_id)]
@@ -138,18 +168,21 @@ class ToolResultStore:
                 for idx, ks in dead.items():
                     pipe.srem(idx, *ks)
                 pipe.execute()
-            logger.info("tool_result_store.read", extra={
-                "operation": "tool_result_store.read", "status": "success", "entries": len(out),
+            logger.info(_OP_READ, extra={
+                "operation": _OP_READ, "status": "success", "entries": len(out),
                 "latency_ms": int((time.time() - start) * 1000)})
             return out
         except Exception as e:
             logger.error("tool_result_store.read_error", extra={
-                "operation": "tool_result_store.read", "status": "failure", "error": type(e).__name__})
+                "operation": _OP_READ, "status": "failure", "error": type(e).__name__})
             return []
 
     def invalidate(self, scope: str, owner_id: str, tool: str) -> int:
         """Delete every entry of ``tool`` for this owner. Returns the count deleted."""
-        if not self.enabled or scope not in _SCOPE_LETTER or not owner_id:
+        if not self.enabled:
+            self._report_disabled(_OP_INVALIDATE)
+            return 0
+        if scope not in _SCOPE_LETTER or not owner_id:
             return 0
         idx = self._idx(scope, owner_id)
         prefix = f"{self._key_prefix(scope, owner_id)}{tool}:"
@@ -160,13 +193,13 @@ class ToolResultStore:
                 pipe.delete(*doomed)
                 pipe.srem(idx, *doomed)
                 pipe.execute()
-            logger.info("tool_result_store.invalidate", extra={
-                "operation": "tool_result_store.invalidate", "status": "success",
+            logger.info(_OP_INVALIDATE, extra={
+                "operation": _OP_INVALIDATE, "status": "success",
                 "tool": tool, "scope": scope, "deleted": len(doomed)})
             return len(doomed)
         except Exception as e:
             logger.error("tool_result_store.invalidate_error", extra={
-                "operation": "tool_result_store.invalidate", "status": "failure",
+                "operation": _OP_INVALIDATE, "status": "failure",
                 "error": type(e).__name__})
             return 0
 

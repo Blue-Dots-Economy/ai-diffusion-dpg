@@ -1,0 +1,43 @@
+# Reach Layer MCP channel: Model Context Protocol server for MCP hosts
+# (Claude Desktop, Cursor, ...), routing tool calls to Agent Core.
+# Config comes from the parent's global.dpgConfig / global.domainConfig, and
+# channels.mcp.enabled must be true in it.
+# Template behaviour and every supported key: automation/helm/dpg-common/templates/_deployment.tpl
+nameSuffix: mcp                 # resources are named reach-layer-mcp
+replicaCount: 1
+
+image:
+  # Images built before the mcp<2 pin (#405) fail with an ImportError on
+  # RequestContext; use a newer tag for this channel.
+  repository: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-mcp
+  tag: "sha-28f0517"
+  pullPolicy: IfNotPresent
+
+# Not exposed outside the cluster until MCP caller auth (#338) lands.
+service:
+  port: 8007
+  type: ClusterIP
+
+# mcp requires $CONFIG_FOLDER/reach_layer.yaml (it fails at startup without it).
+configFile: reach_layer.yaml
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+healthCheck:
+  readiness:
+    initialDelaySeconds: 15
+    periodSeconds: 10
+  liveness:
+    initialDelaySeconds: 90
+    periodSeconds: 20
+
+logLevel: INFO
+
+env:
+  - {name: LOG_LEVEL, key: logLevel}

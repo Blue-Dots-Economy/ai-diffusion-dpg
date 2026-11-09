@@ -635,6 +635,27 @@ def test_session_writes_from_routing_rule_applied():
     )
 
 
+def test_clear_tool_exchanges_from_routing_rule_drops_stored_exchanges():
+    """A matched rule's clear_tool_exchanges removes those tools from the stored replay."""
+    rule = MagicMock()
+    rule.intent = "termination_intent"
+    rule.next_subagent_id = "market_truth"
+    rule.condition = None
+    rule.conditions = None
+    rule.session_writes = {}
+    rule.clear_tool_exchanges = ["apply_job"]
+    stored = [{"tool_uses": [{"type": "tool_use", "id": "a", "name": "apply_job", "input": {}}],
+               "tool_results": [{"type": "tool_result", "tool_use_id": "a", "content": "422"}]}]
+
+    agent = _make_agent(
+        nlu_result=_TERMINATION_NLU,
+        session_data={"current_subagent_id": "market_truth", "recent_tool_exchanges": stored},
+        workflow=_make_workflow(global_routing=[rule]),
+    )
+    agent.process_turn(_turn_input())
+    agent._memory.write.assert_any_call(SESSION_ID, SESSION_ID, "session", "recent_tool_exchanges", [])
+
+
 # ---------------------------------------------------------------------------
 # Trust input failures
 # ---------------------------------------------------------------------------

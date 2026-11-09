@@ -53,6 +53,43 @@ class TestTrustOutputBatcherUnit:
         assert "a." in called_with and "c." in called_with
 
     @pytest.mark.asyncio
+    async def test_discard_pending_drops_without_a_trust_call(self):
+        check = AsyncMock(return_value=TrustCheckResult(passed=True, action="allow"))
+        b = _TrustOutputBatcher(
+            check_output=check,
+            session_id="s",
+            max_sentences=3,
+            max_interval_ms=10_000,
+            fallback_message="fallback",
+        )
+        await b.add("a.")
+        await b.add("b.")
+        assert b.has_pending is True
+
+        assert b.discard_pending() == 2
+
+        assert b.has_pending is False
+        assert b.sentences_added == 0
+        assert check.await_count == 0
+        # A later flush releases only what was added after the discard.
+        await b.add("c.")
+        assert await b.flush() == ["c."]
+
+    @pytest.mark.asyncio
+    async def test_discard_pending_on_an_empty_buffer_is_a_no_op(self):
+        check = AsyncMock(return_value=TrustCheckResult(passed=True, action="allow"))
+        b = _TrustOutputBatcher(
+            check_output=check,
+            session_id="s",
+            max_sentences=3,
+            max_interval_ms=10_000,
+            fallback_message="fallback",
+        )
+        assert b.discard_pending() == 0
+        assert b.sentences_added == 0
+        assert check.await_count == 0
+
+    @pytest.mark.asyncio
     async def test_nine_sentences_with_n3_yields_three_calls(self):
         check = AsyncMock(return_value=TrustCheckResult(passed=True, action="allow"))
         b = _TrustOutputBatcher(

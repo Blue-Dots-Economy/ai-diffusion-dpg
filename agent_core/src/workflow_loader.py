@@ -69,6 +69,8 @@ class RoutingRule:
         session_writes:   Optional dict of session field/value pairs written to session when
                           this rule fires. Allows domain.yaml routing rules to update session
                           state without any domain-specific logic in orchestrator code.
+        clear_tool_exchanges: Tool names whose stored exchanges are dropped when this rule
+                          fires, so the model no longer sees their earlier results.
     """
 
     intent: str
@@ -76,6 +78,7 @@ class RoutingRule:
     condition: RoutingCondition | None = None
     conditions: list[RoutingCondition] = field(default_factory=list)
     session_writes: dict[str, Any] = field(default_factory=dict)
+    clear_tool_exchanges: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -135,6 +138,13 @@ class SubAgent:
                           field in fixed_opening_requires is present in session
                           and the caller's own turn carried no entities.
         fixed_opening_requires: Session field names the template substitutes.
+        fixed_opening_prefix: Fragment prepended to the fixed opening, spoken
+                          only when every fixed_opening_prefix_requires field
+                          has a value.
+        fixed_opening_prefix_requires: Session field names the prefix needs.
+        fixed_opening_prefix_unless: Values that count as absent.
+        fixed_opening_when_told: Speak it even when the caller named something.
+        fixed_opening_on_entry: Speak it on every entry, not only the first.
         predispatch:      Raw pre-dispatch rule dicts in config order (Spec E).
     """
 
@@ -152,6 +162,11 @@ class SubAgent:
     pending: list["PendingQuestion"] = field(default_factory=list)
     fixed_opening: str = ""
     fixed_opening_requires: list[str] = field(default_factory=list)
+    fixed_opening_prefix: str = ""
+    fixed_opening_prefix_requires: list[str] = field(default_factory=list)
+    fixed_opening_prefix_unless: list[str] = field(default_factory=list)
+    fixed_opening_when_told: bool = False
+    fixed_opening_on_entry: bool = False
     predispatch: list[dict] = field(default_factory=list)
 
 
@@ -467,6 +482,7 @@ class AgentWorkflowLoader:
             condition=condition,
             conditions=conditions,
             session_writes=session_writes,
+            clear_tool_exchanges=[str(t) for t in raw.get("clear_tool_exchanges") or []],
         )
 
     def _parse_subagent(self, raw: dict) -> SubAgent:
@@ -549,6 +565,13 @@ class AgentWorkflowLoader:
             pending=pending,
             fixed_opening=str(raw.get("fixed_opening", "") or ""),
             fixed_opening_requires=list(raw.get("fixed_opening_requires", []) or []),
+            fixed_opening_prefix=str(raw.get("fixed_opening_prefix", "") or ""),
+            fixed_opening_prefix_requires=list(
+                raw.get("fixed_opening_prefix_requires", []) or []),
+            fixed_opening_prefix_unless=list(
+                raw.get("fixed_opening_prefix_unless", []) or []),
+            fixed_opening_when_told=bool(raw.get("fixed_opening_when_told", False)),
+            fixed_opening_on_entry=bool(raw.get("fixed_opening_on_entry", False)),
             predispatch=[dict(r) for r in (raw.get("predispatch") or []) if isinstance(r, dict)],
         )
 

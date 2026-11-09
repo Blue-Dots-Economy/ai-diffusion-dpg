@@ -30,6 +30,21 @@ from src.understanding.slot_writer import plan_writes, stored_off_track_count
 logger = logging.getLogger(__name__)
 _counters: dict[str, Any] = {}
 
+# Fallback reasons worth one more attempt. These mean the NLU never got an
+# answer out of its provider — a timeout, a 429, a 5xx — so the caller's words
+# were never actually examined. `schema_violation` and `empty_input` are
+# excluded on purpose: the provider answered, and asking it again the same way
+# produces the same answer.
+_TRANSIENT_FALLBACKS = ("provider_error", "exception")
+
+# Structured-log `operation` for this unit, shared by every entry it emits.
+_OP_UNDERSTAND = "turn_understander.understand"
+
+
+def _is_transient(reason: str) -> bool:
+    """True when a fallback reason describes a failed call rather than a verdict."""
+    return bool(reason) and reason.split(":", 1)[0] in _TRANSIENT_FALLBACKS
+
 
 def _counter(name: str, description: str):
     """Lazily create an OTel counter; a no-op meter when OTel is not configured."""
@@ -140,13 +155,36 @@ class TurnUnderstander(TurnUnderstanderBase):
                                         previous_state=(ctx.previous_user_state
                                                         if self._cfg.user_states else None))
             dialogue, reason, _ = self._nlu.classify(message)
+            if reason and _is_transient(reason):
+                # The caller DID answer; the NLU's own provider call failed.
+                # Falling back here is not "no slots were mentioned", it is
+                # "we never looked" — and the two are indistinguishable
+                # downstream, because the fallback carries entities={}. The
+                # turn then proceeds: the main LLM still sees the raw text and
+                # replies sensibly, so the caller hears a normal answer while
+                # nothing they said was recorded.
+                #
+                # That is unrecoverable when the lost turn carried consent:
+                # every route out of the opening phase requires
+                # consent_response or consent_given, so the caller is re-asked
+                # their age for the rest of the call and no profile is ever
+                # written. Observed end to end on the VM.
+                #
+                # One more attempt, because the failure is transient by
+                # definition — a fresh call gets a fresh retry budget, and the
+                # cost of being wrong is the whole call.
+                logger.warning("nlu.transient_retry", extra={
+                    "operation": _OP_UNDERSTAND, "status": "retry",
+                    "fallback_reason": reason})
+                dialogue, retry_reason, _ = self._nlu.classify(message)
+                reason = retry_reason
             if reason:
                 return self._finish(self._fallback(dialogue, pending, reason), ctx, message, start)
             u = self._post(dialogue, pending, rows, ctx)
             return self._finish(u, ctx, message, start)
         except Exception as e:  # noqa: BLE001 — never raise into the turn
             logger.error("nlu.understanding_error", extra={
-                "operation": "turn_understander.understand", "status": "failure",
+                "operation": _OP_UNDERSTAND, "status": "failure",
                 "error": type(e).__name__, "latency_ms": int((time.time() - start) * 1000)})
             return self._finish(self._fallback(DialogueActResult.fallback(), pending, "exception"),
                                 ctx, message, start)
@@ -211,7 +249,7 @@ class TurnUnderstander(TurnUnderstanderBase):
         """Log the PII-free summary, bump OTel counters and (opt-in) capture the eval case."""
         d = u.dialogue
         extra = {
-            "operation": "turn_understander.understand",
+            "operation": _OP_UNDERSTAND,
             "status": "fallback" if u.fallback_reason else "success",
             "latency_ms": u.latency_ms,
             "subagent_id": ctx.subagent_id,

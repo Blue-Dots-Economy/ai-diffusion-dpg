@@ -33,6 +33,11 @@ state:
       has_age:                 { type: enum,   values: ["true", "false"], default: "false" }
       user_terms:              { type: enum,   values: ["true", "false"], default: "false" }
       user_privacy:            { type: enum,   values: ["true", "false"], default: "false" }
+      profile_consent:         { type: enum,   values: ["true", "false"], default: "false" }
+      fetch_error:             { type: string, default: "" }
+      consent_return_to:       { type: string, default: "" }
+      # Refusals, not visits — a second visit after a grant must not end the call.
+      consent_declines:        { type: int,    default: 0 }
       # Profile data — populated when the user verbalises these and NLU
       # picks them up. Mirrors the profile_1.0 schema returned by
       # fetch_profile so subsequent tool calls (update_profile, apply_job)
@@ -44,7 +49,6 @@ state:
       gender:                  { type: string, default: "" }
       work_experience:         { type: string, default: "" }   # enum: Fresher / Worked before / Returning after a break
       experience_years:        { type: string, default: "" }   # enum: 0, < 1 Year, 1 Year, 2 Years, …
-      qualification:           { type: string, default: "" }   # enum: School / College / ITI Other Vocational Trainings / Certification Learned on the job
       job_nature:              { type: string, default: "" }   # enum: Internship / Apprenticeship / Full-time / Flexible
       help_needed:             { type: string, default: "" }   # enum: Training / Accommodation / Travel / Other
       # Search criteria (confirmed in profile_resolve subagent)
@@ -63,6 +67,11 @@ state:
       # Application outcome
       last_application_id:     { type: string, default: "" }
       applications_submitted:  { type: int,    default: 0 }
+      apply_failed:            { type: int,    default: 0 }
+      services_in_play:          { type: enum, values: ["true", "false"], default: "false" }
+      selected_service_item_id:  { type: string, default: "" }
+      last_enquiry_id:           { type: string, default: "" }
+      service_enquiries_submitted: { type: int,  default: 0 }
 
   persistent:
     backend: memgraph
@@ -106,7 +115,6 @@ state:
             - trade                  # nameOfJobRolesInterestedIn
             - work_experience        # workExperience
             - experience_years       # workExperienceYearsConditional
-            - qualification          # highestQualificationOrSkill
             - job_nature             # natureOfJobsInterestedIn
             - help_needed            # otherHelpNeeded
             # Identity-on-upstream

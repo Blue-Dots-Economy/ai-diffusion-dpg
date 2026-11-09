@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import fakeredis
 import pytest
 
@@ -141,3 +142,40 @@ def test_put_with_none_ttl_returns_false(store, client):
     result = store.put("user", "u1", "t", "aa11", {}, None)
     assert result is False
     assert client.keys("ml:tr:*") == []
+
+
+# --- F53: a disabled store must be loud, not silent -------------------------
+
+def test_disabled_store_reports_an_error_at_first_use(client, caplog):
+    """An unset secret silently dropped every tool result; it must now say so.
+
+    The startup line alone was missed in practice — it is one of thousands, and
+    nothing downstream mentions it. Reporting at first USE ties the error to the
+    feature actually being needed.
+    """
+    s = ToolResultStore(client, "", session_ttl_seconds=3600, max_user_ttl_seconds=86400)
+    with caplog.at_level(logging.ERROR):
+        s.read("s1", "u1")
+    recs = [r for r in caplog.records if r.message == "tool_result_store.unavailable"]
+    assert recs, "a disabled store served a read without reporting it"
+    assert getattr(recs[0], "reason", "") == "TOOL_RESULT_KEY_SECRET not set"
+    assert getattr(recs[0], "status", "") == "failure"
+
+
+def test_disabled_store_reports_only_once(client, caplog):
+    """Once per process, not once per turn — this runs on every read."""
+    s = ToolResultStore(client, "", session_ttl_seconds=3600, max_user_ttl_seconds=86400)
+    with caplog.at_level(logging.ERROR):
+        for _ in range(5):
+            s.read("s1", "u1")
+            s.put("session", "s1", "fetch_jobs", "ab12", {"a": 1}, 60)
+            s.invalidate("session", "s1", "fetch_jobs")
+    assert len([r for r in caplog.records if r.message == "tool_result_store.unavailable"]) == 1
+
+
+def test_enabled_store_never_reports_unavailable(client, caplog):
+    s = ToolResultStore(client, SECRET, session_ttl_seconds=3600, max_user_ttl_seconds=86400)
+    with caplog.at_level(logging.ERROR):
+        s.put("session", "s1", "fetch_jobs", "ab12", {"a": 1}, 60)
+        s.read("s1", "u1")
+    assert not [r for r in caplog.records if r.message == "tool_result_store.unavailable"]

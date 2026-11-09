@@ -7,7 +7,7 @@
 # Both stages are Docker Hardened Images from dhi.io, which refuses anonymous
 # pulls — building needs `docker login dhi.io`.
 #
-# Must be built from the repo root so ../base is in the build context.
+# Must be built from the repo root so ../base and observability_layer are in context.
 #
 #   docker build -f reach_layer/bridge/Dockerfile -t reach_layer_bridge .
 # =============================================================================
@@ -26,6 +26,7 @@ ENV UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never
 
 COPY reach_layer/base /app/reach_layer/base
+COPY observability_layer /app/observability_layer
 COPY reach_layer/bridge/pyproject.toml /app/reach_layer/bridge/
 WORKDIR /app/reach_layer/bridge
 RUN uv sync --no-dev --no-cache

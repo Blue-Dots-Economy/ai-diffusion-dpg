@@ -143,3 +143,49 @@ async def test_no_mapping_declared_means_no_session_values():
          patch("httpx.Client.request", return_value=resp):
         res = await RestApiAdapter(config).execute("plain", {}, "s1", "u1")
     assert res.session_values == {}
+
+
+ERROR_CONFIG = {
+    "id": "thing_create",
+    "type": "rest_api",
+    "base_url": "https://upstream.test",
+    "endpoints": [{"name": "create", "method": "POST", "path": "/thing"}],
+    "response": {
+        "session_mapping": [
+            {"source": "summary.succeeded", "target": "created"},
+            {"source": "summary.failed", "target": "failed", "on_error": True},
+        ],
+    },
+}
+
+
+async def _execute_with(resp: httpx.Response):
+    with patch("httpx.AsyncClient.request", return_value=resp), \
+         patch("httpx.Client.request", return_value=resp):
+        return await RestApiAdapter(ERROR_CONFIG).execute("thing_create", {}, "s1", "u1")
+
+
+@pytest.mark.asyncio
+async def test_an_error_response_applies_only_on_error_mappings():
+    resp = httpx.Response(422, json={"summary": {"succeeded": 0, "failed": 1}},
+                          request=httpx.Request("POST", "https://upstream.test/thing"))
+    res = await _execute_with(resp)
+    assert res.success is False
+    assert res.session_values == {"failed": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_success_response_applies_every_mapping():
+    resp = httpx.Response(200, json={"summary": {"succeeded": 1, "failed": 0}},
+                          request=httpx.Request("POST", "https://upstream.test/thing"))
+    res = await _execute_with(resp)
+    assert res.session_values == {"created": 1, "failed": 0}
+
+
+@pytest.mark.asyncio
+async def test_a_non_json_error_body_writes_no_session_values():
+    resp = httpx.Response(502, text="<html>bad gateway</html>",
+                          request=httpx.Request("POST", "https://upstream.test/thing"))
+    res = await _execute_with(resp)
+    assert res.success is False
+    assert res.session_values == {}

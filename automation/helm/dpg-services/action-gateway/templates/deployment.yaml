@@ -1,0 +1,1 @@
+{{ include "dpg-common.deployment" . }}

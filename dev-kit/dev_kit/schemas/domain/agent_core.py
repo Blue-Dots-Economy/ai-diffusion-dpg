@@ -301,6 +301,8 @@ class NLUProcessorSection(BaseModel):
     examples: list[NLUExampleConfig] = Field(default_factory=list)
     act_intents: list[ActIntentRuleConfig] = Field(default_factory=list)
     termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig)
+    # Mirrors agent_core/src/schema/config.py.
+    abandons_offered_acts: list[str] = Field(default_factory=list)
     off_track: OffTrackConfig = Field(default_factory=OffTrackConfig)
 
     @model_validator(mode="after")
@@ -565,6 +567,10 @@ class InvocationRules(BaseModel):
     must_not_substitute: str = ""
     max_calls_per_turn: Optional[int] = None
     grounded_params: Union[List[str], Dict[str, List[str]]] = Field(default_factory=list)
+    session_only_params: Dict[str, List[str]] = Field(default_factory=dict)
+    """Params the model may not supply: param -> session keys. Mirrors the runtime schema."""
+    consent_session_fields: list[str] = Field(default_factory=list)
+    """Session fields that must all be true before the tool runs. Mirrors the runtime schema."""
     on_empty: str = ""
     on_failure: str = ""
     bridge_line: str = ""
@@ -723,6 +729,7 @@ class RoutingRule(BaseModel):
     next_subagent_id: str = Field(..., min_length=1)
     conditions: list[RoutingCondition] = Field(default_factory=list)
     session_writes: dict[str, Any] = Field(default_factory=dict)
+    clear_tool_exchanges: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def session_writes_must_be_scalars(self) -> "RoutingRule":
@@ -835,6 +842,11 @@ class SubAgent(BaseModel):
     # every fixed_opening_requires field is in session and the turn had no entities.
     fixed_opening: str = ""
     fixed_opening_requires: list[str] = Field(default_factory=list)
+    fixed_opening_prefix: str = ""
+    fixed_opening_prefix_requires: list[str] = Field(default_factory=list)
+    fixed_opening_prefix_unless: list[str] = Field(default_factory=list)
+    fixed_opening_when_told: bool = False
+    fixed_opening_on_entry: bool = False
     predispatch: list[PredispatchRule] = Field(default_factory=list)
     # opening_phrase non-empty enforced by Field(..., min_length=1) above —
     # runtime requires it for ALL subagents (adopted-state callbacks).

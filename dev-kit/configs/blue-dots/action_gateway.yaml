@@ -59,9 +59,7 @@ tools:
       Returning after a break), experience_years
       (workExperienceYearsConditional: 0 / < 1 Year / 1 Year /
       2 Years / 3 Years / 3-5 Years / 5-10 Years / 10-15 Years /
-      15+ Years / Other), qualification
-      (highestQualificationOrSkill: School / College / ITI Other
-      Vocational Trainings / Certification Learned on the job),
+      15+ Years / Other),
       job_nature (natureOfJobsInterestedIn: Internship / Apprenticeship
       / Full-time / Flexible), help_needed (otherHelpNeeded: Training /
       Accommodation / Travel / Other). The trade field may be empty or
@@ -112,6 +110,12 @@ tools:
           target: user_terms
         - source: "compliance[key=user_privacy].value"
           target: user_privacy
+        # Item-level, so it is reported per item and never in `compliance`.
+        - source: "items[lifecycle_status=live].profile_consent_accepted"
+          target: profile_consent
+        - source: "error"
+          target: fetch_error
+          on_error: true
         - source: "items[lifecycle_status=live].item_id"
           target: profile_item_id
         - source: "user_id"
@@ -125,6 +129,8 @@ tools:
           target: stored_trade
         - source: "items[lifecycle_status=live].item_state.location"
           target: stored_location
+        - source: "items[lifecycle_status=live].item_state.name"
+          target: stored_name
       projection:
         fields:
           # Both names map to the same root value. The existing prompts refer
@@ -202,9 +208,11 @@ tools:
             description: >
               How many results to skip. OMIT on a first search. When the caller
               asks for more jobs ("और नौकरियाँ दिखाइए", "और दिखाइए", "कुछ और
-              है?"), pass the number you have ALREADY read out to them, so the
-              next page continues rather than repeating. Re-running the same
-              search with no offset returns the same jobs again.
+              है?"), pass the number of rows the previous search RETURNED —
+              not the number you read aloud. Rows you left out for being the
+              wrong trade or the wrong city were still returned, and skipping
+              only the ones you spoke fetches those same rejects again.
+              Re-running the same search with no offset returns the same jobs.
           - name: query_text
             source: agent
             type: string
@@ -248,16 +256,11 @@ tools:
     type: rest_api
     category: write
     description: >
-      Create a new seeker profile, OR update an existing one. Call this
-      when the user has chosen create_new or update_existing
-      (profile_action in session). For UPDATE, pass the chosen profile's
-      item_id along with the full item_state (existing values with the
-      user's changes overlaid). For CREATE, omit item_id. workExperience
-      MUST be one of "Fresher" / "Worked before" / "Returning after a
-      break". The response returns the affected profile in the items
-      array — for UPDATE it has just the updated profile; for CREATE it
-      has all the user's profiles and the newly-created one is the last
-      by created_at.
+      Create a new seeker profile. Changing an existing one is
+      update_profile's job; omit item_id here. workExperience MUST be
+      one of "Fresher" / "Worked before" / "Returning after a break".
+      The response returns all the user's profiles in the items array,
+      the newly-created one last by created_at.
     base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
     auth:
       type: api_key
@@ -290,19 +293,10 @@ tools:
           # ("age is required with consent on this domain"). item_state.age
           # below is the profile field and does NOT satisfy it.
           age: "{age}"
-          # Consent. `compliance` is the current shape (it replaced the
-          # terms_accepted/privacy_accepted pair, which newer builds ignore).
-          # Both are sent so this works against either build; whichever one a
-          # given cluster does not understand is simply ignored.
           compliance:
-            - key: "user_terms"
-              value: true
-            - key: "user_privacy"
-              value: true
-            - key: "profile_creation"
-              value: true
-          terms_accepted: true
-          privacy_accepted: true
+            - { key: "user_terms",       value: "{user_terms}" }
+            - { key: "user_privacy",     value: "{user_privacy}" }
+            - { key: "profile_creation", value: "{profile_consent}" }
           # channel must be one of bulk/link/voice/self — we're voice.
           channel: "voice"
           # source_id is the Vobiz outbound number — tags every profile
@@ -325,9 +319,13 @@ tools:
             workExperience: "{work_experience}"
             workExperienceYearsConditional: "{experience_years}"
             nameOfJobRolesInterestedIn: "{trade}"
-            highestQualificationOrSkill: "{qualification}"
-            natureOfJobsInterestedIn: "{job_nature}"
-            otherHelpNeeded: "{help_needed}"
+            # Both are `array of string` upstream. Sent as bare strings they
+            # rejected the WHOLE write with 400 INVALID_ITEM_STATE
+            # "must be array", so one optional field the model chose to fill
+            # lost the entire profile. Verified against UAT: "Full-time" -> 400,
+            # ["Full-time"] -> 201.
+            natureOfJobsInterestedIn: ["{job_nature}"]
+            otherHelpNeeded: ["{help_needed}"]
         # `required: true` here is not documentation — it becomes the
         # `required` list of the JSON Schema handed to the LLM, which the
         # provider's function-calling validation enforces. Anything marked
@@ -387,8 +385,29 @@ tools:
             required: false
             description: >
               Caller's age in years, supplied by the framework from turn
-              state. The opening subagent collects it before the journey
-              starts. Not visible to the model.
+              state. The consent subagent collects it before the profile is
+              written. Not visible to the model.
+          - name: user_terms
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: user_privacy
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: profile_consent
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
           - name: work_experience
             source: agent
             type: string
@@ -418,14 +437,6 @@ tools:
             type: string
             required: false
             description: 'nameOfJobRolesInterestedIn (e.g. "Plumber").'
-          - name: qualification
-            source: agent
-            type: string
-            required: false
-            description: >
-              highestQualificationOrSkill. One of: "School", "College",
-              "ITI / Other Vocational Trainings", "Certification /
-              Learned on the job".
           - name: job_nature
             source: agent
             type: string
@@ -438,8 +449,14 @@ tools:
             type: string
             required: false
             description: >
-              otherHelpNeeded. One of: "Training", "Accommodation",
-              "Travel", "Other".
+              otherHelpNeeded. NONE of the earlier values here existed
+              upstream, so every call that used this field was rejected.
+              These seven are the schema's enum, all verified accepted:
+              "Skilling & Vocational Training", "Job Placement Assistance",
+              "Apprenticeship Program", "Career Counseling & Interview Prep",
+              "Financial Aid / Scheme Enrolment",
+              "Other Support (Accommodation / Travel)",
+              "No Other Help Needed".
     response:
       max_size_chars: 4000
       # Lift the new profile's identity into session the moment it exists, so
@@ -468,6 +485,121 @@ tools:
         fields:
           user_id: user_id
           user_existed: user_existed
+          items: items
+
+  # ────────────────────────────────────────────────────────────────────
+  # WRITE — Update an existing seeker profile. item_id makes it an update.
+  # ────────────────────────────────────────────────────────────────────
+  - id: update_profile
+    type: rest_api
+    category: write
+    description: >
+      Update an existing seeker profile. Pass profile_item_id and ONLY the
+      fields that are changing — the upstream merges them into the stored
+      item_state and leaves everything else as it is (verified against UAT
+      on 16 Oct 2026). Never use this to create: without a live profile
+      there is nothing to update, and save_profile is the create path.
+    base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_API_KEY
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: BLUE_DOTS_ORG_ID
+    timeout_ms: 8000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: update_profile
+        method: POST
+        path: /api/v1/admin/participant
+        body_template:
+          # stored_name: the upstream requires a top-level name on an update.
+          name: "{stored_name}"
+          phone_number: "+{user_id}"
+          compliance:
+            - { key: "user_terms",       value: "{user_terms}" }
+            - { key: "user_privacy",     value: "{user_privacy}" }
+            - { key: "profile_creation", value: "{profile_consent}" }
+          channel: "voice"
+          source_id: "919240024229"
+          network: "blue_dot"
+          domain: "seeker"
+          item_type: "profile_1.0"
+          item_id: "{profile_item_id}"
+          item_state:
+            location: "{location}"
+            workExperience: "{work_experience}"
+            workExperienceYearsConditional: "{experience_years}"
+            nameOfJobRolesInterestedIn: "{trade}"
+            natureOfJobsInterestedIn: ["{job_nature}"]
+            otherHelpNeeded: ["{help_needed}"]
+        params:
+          - name: profile_item_id
+            source: session
+            type: string
+            required: true
+            description: "The live profile's item_id. Filled from session, not by the model."
+          - name: stored_name
+            source: session
+            type: string
+            required: false
+          - name: user_terms
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: user_privacy
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: profile_consent
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: location
+            source: agent
+            type: string
+            required: false
+            description: "The caller's city, only when it is changing."
+          - name: trade
+            source: agent
+            type: string
+            required: false
+            description: 'nameOfJobRolesInterestedIn, only when it is changing.'
+          - name: work_experience
+            source: agent
+            type: string
+            required: false
+            description: "Fresher / Worked before / Returning after a break."
+          - name: experience_years
+            source: agent
+            type: string
+            required: false
+          - name: job_nature
+            source: agent
+            type: string
+            required: false
+          - name: help_needed
+            source: agent
+            type: string
+            required: false
+    response:
+      session_mapping:
+        - source: "user_existed"
+          target: update_stage
+      projection:
+        fields:
+          user_id: user_id
           items: items
 
   # ────────────────────────────────────────────────────────────────────
@@ -594,6 +726,10 @@ tools:
           target: applications_submitted
         - source: "results[status=success].action_id"
           target: last_application_id
+        # on_error: a failed apply arrives as HTTP 422; succeeded stays off it so a later failure cannot reset it.
+        - source: "summary.failed"
+          target: apply_failed
+          on_error: true
       # Bulk envelope (Signals-DPG PR #55): { results: [ ... ], summary }.
       # apply_job sends one element, so `results` has one item; list_key
       # projects it into a single-element list the LLM reads.
@@ -613,6 +749,169 @@ tools:
       # surfaces the raw envelope to the LLM. error/message here cover the
       # mixed-success (HTTP 207) path that bypasses that branch — harmless
       # for apply_job's single element today, correct if it ever batches.
+      projection:
+        list_key: results
+        fields:
+          status: status
+          error: error
+          message: message
+          action_id: action_id
+          action_status: action_status
+          source_item_id: source_item_id
+          target_item_id: target_item_id
+
+  - id: fetch_services
+    type: rest_api
+    category: read
+    description: >
+      Support organisations on the network — skilling and vocational
+      training, job placement assistance, career counselling and interview
+      preparation, financial aid and scheme enrolment, and help with
+      accommodation or travel.
+
+      One result is one ORGANISATION, not one service: each offers several
+      things, listed in services_for_seekers. Read out the organisation's
+      name, what it offers, and what it costs.
+
+      cost is one of "Free", "Subsidised / Government-funded" or "Paid" —
+      always say which. Sending
+      someone to a paid course without telling them is the one mistake they
+      cannot undo.
+
+      Contact details are deliberately NOT projected: the upstream masks
+      them ("9***", "b***@yopmail.com"), so there is nothing to read out.
+      Never offer to pass on a phone number or an email.
+    base_url: "${SIGNALS_SEARCH_URL:-https://signals.bluedotseconomy.org/signals-search}"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_SEARCH_API_KEY
+    timeout_ms: 8000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: services_fetch
+        method: POST
+        path: /v1/search
+        body_template:
+          context:
+            messageId: "{session_id}"
+            networkId: "blue_dot"
+            domain: "service_provider"
+            itemType: "profile_1.0"
+          message:
+            intent:
+              textSearch: "{query_text}"
+            pagination:
+              limit: 5
+              offset: "{offset}"
+        params:
+          - name: offset
+            source: agent
+            type: integer
+            required: false
+            description: >
+              How many results to skip. OMIT on a first search. When the
+              caller asks for more, pass the number already read out.
+          - name: query_text
+            source: agent
+            type: string
+            required: true
+            description: >
+              What the caller needs, in an English sentence, naming the city
+              when it is known — the search is semantic, so a phrase works
+              better than a keyword. Examples: "skill training for a welder
+              in Ghaziabad", "interview preparation in Kanpur",
+              "help with travel to work".
+    response:
+      max_size_chars: 3000
+      projection:
+        list_key: message.items
+        fields:
+          item_id: item_id
+          organisation_name: item_state.organisationName
+          service_description: item_state.serviceDescription
+          cost: item_state.costToBeneficiary
+          service_areas: item_state.serviceAreas
+          services_for_seekers: item_state.servicesEducationalForSeekers
+          other_support: item_state.servicesNonEducationalForSeekers
+          status: lifecycle_status
+          match_score: score
+
+  - id: connect_service
+    type: rest_api
+    category: write
+    description: >
+      Send the caller's enquiry to the chosen support organisation, linking
+      their seeker profile to that organisation's profile. Call only after a
+      profile exists and the caller has confirmed they want the enquiry sent.
+    base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_API_KEY
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: BLUE_DOTS_ORG_ID
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: connect
+        method: POST
+        path: /api/v1/action/perform
+        body_template:
+          action_type: "connect"
+          source_item:
+            item_network: "blue_dot"
+            item_domain: "seeker"
+            item_type: "profile_1.0"
+            item_id: "{profile_item_id}"
+          target_item:
+            item_network: "blue_dot"
+            item_domain: "service_provider"
+            item_type: "profile_1.0"
+            item_id: "{service_item_id}"
+            item_instance_url: "{instance_url}"
+          acting_as_user_id: "{acting_as_user_id}"
+          consent:
+            acknowledged: true
+            version: 1
+        params:
+          - name: instance_url
+            source: static
+            type: string
+            value: "${SIGNALS_INSTANCE_URL:-https://signals.bluedotseconomy.org}"
+          - name: profile_item_id
+            source: agent
+            type: string
+            required: true
+            description: >
+              The caller's profile item_id — from fetch_profile or from
+              save_profile's response.
+          - name: acting_as_user_id
+            source: session
+            type: string
+            required: true
+            description: >
+              The seeker's user UUID. Injected from session state by the
+              adapter — do NOT supply it.
+          - name: service_item_id
+            source: agent
+            type: string
+            required: true
+            format: uuid
+            description: >
+              The chosen organisation's item_id from the prior
+              fetch_services result, copied verbatim — the full hyphenated
+              UUID, never the caller's words for which one they picked.
+    response:
+      max_size_chars: 1000
+      session_mapping:
+        - source: "summary.succeeded"
+          target: service_enquiries_submitted
+        - source: "results[status=success].action_id"
+          target: last_enquiry_id
       projection:
         list_key: results
         fields:

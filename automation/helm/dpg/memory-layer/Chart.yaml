@@ -1,6 +1,0 @@
-apiVersion: v2
-name: memory-layer
-description: DPG Memory Layer — session state management
-type: application
-version: 0.1.0
-appVersion: "0.1.0"

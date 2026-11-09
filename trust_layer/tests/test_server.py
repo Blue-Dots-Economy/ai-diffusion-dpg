@@ -30,6 +30,11 @@ MINIMAL_CONFIG = {
         "policy_packs": {},
         "consent": {"consent_phrases": [], "decline_phrases": []},
         "hitl": {"queue_backend": "log", "holding_message": "", "notification_webhook": None},
+        # Isolated per test run. Without this the store falls back to the shared
+        # /tmp/dpg_consent.db, so a consent recorded by ANY earlier test or any
+        # earlier run of the suite leaks in here and this test's expected
+        # "no consent yet" is silently already granted.
+        "consent_store": {"db_path": ":memory:"},
     }
 }
 
@@ -241,6 +246,10 @@ FULL_CONFIG = {
             "holding_message": "Advisor ko connect kar rahe hain.",
             "notification_webhook": None,
         },
+        # Isolated: see the note on MINIMAL_CONFIG. These tests DO grant consent,
+        # so without this they write a real record into the shared
+        # /tmp/dpg_consent.db and leak it into every later run.
+        "consent_store": {"db_path": ":memory:"},
     }
 }
 

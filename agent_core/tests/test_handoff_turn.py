@@ -497,3 +497,131 @@ def test_sync_human_request_turn_does_not_predispatch():
     result = t.sync()
     assert result.response_text == SPOKEN["delivered"]
     t.agent._predispatch_sync.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# #446 hardening: clock-skew clamp, task-exception retrieval, unheard line
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pending_marker_in_the_near_future_is_still_pending():
+    """Small clock skew must not invalidate a genuinely in-flight handoff."""
+    t = _Turn()
+    t.session.update(handoff_status="pending", handoff_pending_at=str(_now_ms() + 2_000))
+    text, _ = await t.stream()
+    assert text == HANDOFF_LINES["already"]
+    assert t.escalate_calls == []
+
+
+@pytest.mark.asyncio
+async def test_pending_marker_far_in_the_future_allows_a_fresh_escalate():
+    """A malformed marker must not strand the caller.
+
+    Without the clamp the raw age is negative, negative is always below the
+    window, and the call reads "pending" forever — the caller could never be
+    handed off again for the rest of the call.
+    """
+    t = _Turn()
+    t.session.update(handoff_status="pending", handoff_pending_at=str(_now_ms() + 86_400_000))
+    text, _ = await t.stream()
+    assert text == SPOKEN["delivered"]
+    assert len(t.escalate_calls) == 1
+
+
+def test_sync_pending_marker_far_in_the_future_allows_a_fresh_escalate():
+    t = _Turn()
+    t.session.update(handoff_status="pending", handoff_pending_at=_now_ms() + 86_400_000)
+    assert t.sync().response_text == SPOKEN["delivered"]
+    assert len(t.escalate_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_pending_marker_seconds_instead_of_ms_is_treated_as_stale_not_pending():
+    """Epoch SECONDS where ms were meant is far in the past, so it must retry, not stick."""
+    t = _Turn()
+    t.session.update(handoff_status="pending", handoff_pending_at=str(int(time.time())))
+    text, _ = await t.stream()
+    assert text == SPOKEN["delivered"]
+    assert len(t.escalate_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_delivered_still_blocks_a_duplicate_regardless_of_marker_age():
+    """The clamp must not weaken the real duplicate guard."""
+    t = _Turn()
+    t.session.update(handoff_status="delivered", handoff_pending_at=str(_now_ms() + 86_400_000))
+    text, _ = await t.stream()
+    assert text == HANDOFF_LINES["already"]
+    assert t.escalate_calls == []
+
+
+@pytest.mark.asyncio
+async def test_background_task_exception_is_retrieved_and_logged(caplog):
+    """A failing background task must log, not surface as 'never retrieved' at GC."""
+    core = _Turn().agent
+
+    async def boom():
+        raise RuntimeError("escalate exploded")
+
+    task = asyncio.ensure_future(boom())
+    with caplog.at_level(logging.ERROR):
+        core._register_bg_task(task, "handoff_escalate", "sess-1")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    assert task.done()
+    assert task.exception() is not None
+    rec = [r for r in caplog.records if r.message == "orchestrator.bg_task_failed"]
+    assert rec, "a failing background task produced no log record"
+    assert getattr(rec[0], "session_id", None) == "sess-1"
+    assert "RuntimeError" in getattr(rec[0], "error", "")
+    assert task not in core._bg_tasks
+
+
+@pytest.mark.asyncio
+async def test_successful_background_task_logs_nothing_and_is_discarded(caplog):
+    core = _Turn().agent
+
+    async def fine():
+        return "ok"
+
+    task = asyncio.ensure_future(fine())
+    with caplog.at_level(logging.ERROR):
+        core._register_bg_task(task, "handoff_signal", "sess-2")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    assert not [r for r in caplog.records if r.message == "orchestrator.bg_task_failed"]
+    assert task not in core._bg_tasks
+
+
+@pytest.mark.asyncio
+async def test_unheard_handoff_is_recorded_when_the_turn_was_cancelled(caplog):
+    """A cancelled turn still completes the escalate; the caller never hears the line."""
+    core = _Turn().agent
+
+    async def done_line():
+        return SPOKEN["delivered"]
+
+    task = asyncio.ensure_future(done_line())
+    await task
+    with caplog.at_level(logging.WARNING):
+        core._handoff_record_unheard("sess-3", "919900000000", task)
+    rec = [r for r in caplog.records if r.message == "orchestrator.handoff_line_unheard"]
+    assert rec, "a cancelled handoff turn left no record that the line was unheard"
+    assert getattr(rec[0], "reason", None) == "turn_cancelled_before_delivery"
+
+
+@pytest.mark.asyncio
+async def test_unheard_is_not_logged_when_the_escalate_itself_failed(caplog):
+    """_register_bg_task already logged that failure; don't double-report it as unheard."""
+    core = _Turn().agent
+
+    async def boom():
+        raise RuntimeError("nope")
+
+    task = asyncio.ensure_future(boom())
+    with pytest.raises(RuntimeError):
+        await task
+    with caplog.at_level(logging.WARNING):
+        core._handoff_record_unheard("sess-4", "919900000000", task)
+    assert not [r for r in caplog.records if r.message == "orchestrator.handoff_line_unheard"]

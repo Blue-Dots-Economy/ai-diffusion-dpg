@@ -328,3 +328,58 @@ def test_served_ignores_miss_and_entry_respects_expiry():
     served = cache.served()
     served["x"] = "y"                                                   # a copy, not the internal map
     assert cache.served() == {}
+
+
+# ── has_fresh_for: freshness keyed on the arguments, not the tool name ──────
+
+def test_has_fresh_for_is_true_only_for_the_same_args():
+    from src.models import ToolCall, ToolResult
+    from src.tool_results import ToolResultPolicies, TurnToolCache
+    pol = ToolResultPolicies.from_config({"connectors": {"read": [
+        {"name": "fetch_jobs", "cache": {"scope": "session", "ttl_seconds": 600}}]}})
+    cache = TurnToolCache(pol, [], {})
+    call = ToolCall(tool_name="fetch_jobs", tool_use_id="1",
+                    input_params={"query_text": "Welder jobs in Bengaluru"})
+    stored = cache.after_call(call, ToolResult(
+        tool_use_id="1", tool_name="fetch_jobs", result={}, success=True,
+        result_text="[]", projected=True))
+    assert stored is not None, "the result must actually be cached for this test to mean anything"
+    assert cache.has_fresh_for("fetch_jobs", {"query_text": "Welder jobs in Bengaluru"}) is True
+    assert cache.has_fresh_for("fetch_jobs", {"query_text": "Welder jobs in Lucknow"}) is False
+
+
+def test_has_fresh_for_is_false_for_an_uncached_tool():
+    from src.tool_results import ToolResultPolicies, TurnToolCache
+    cache = TurnToolCache(ToolResultPolicies.from_config({}), [], {})
+    assert cache.has_fresh_for("fetch_jobs", {"query_text": "anything"}) is False
+
+
+def test_abandon_drops_the_tools_entries():
+    h = args_hash({})
+    cache = TurnToolCache(POL, [entry("fetch_jobs", {"items": [1, 2]}, h, scope="session")],
+                          {}, clock())
+    assert cache.latest_entry("fetch_jobs") is not None
+
+    assert cache.abandon("fetch_jobs") is True
+
+    assert cache.latest_entry("fetch_jobs") is None
+    assert cache.entry("fetch_jobs", h) is None
+
+
+def test_abandon_leaves_other_tools_alone():
+    h = args_hash({})
+    cache = TurnToolCache(
+        POL,
+        [entry("fetch_jobs", {"items": [1]}, h, scope="session"),
+         entry("fetch_profile", {"items": [9]}, h)],
+        {}, clock())
+
+    cache.abandon("fetch_jobs")
+
+    assert cache.latest_entry("fetch_jobs") is None
+    assert cache.latest_entry("fetch_profile") is not None
+
+
+def test_abandon_reports_false_when_there_was_nothing_on_offer():
+    cache = TurnToolCache(POL, [], {}, clock())
+    assert cache.abandon("fetch_jobs") is False

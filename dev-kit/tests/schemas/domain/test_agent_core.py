@@ -445,6 +445,16 @@ def test_routing_rule_session_writes_scalars_ok():
     assert r.session_writes["key1"] == "string_val"
 
 
+def test_routing_rule_clear_tool_exchanges():
+    r = RoutingRule(intent="x", next_subagent_id="y", clear_tool_exchanges=["apply_job"])
+    assert r.clear_tool_exchanges == ["apply_job"]
+
+
+def test_routing_rule_clear_tool_exchanges_rejects_a_string():
+    with pytest.raises(ValidationError):
+        RoutingRule(intent="x", next_subagent_id="y", clear_tool_exchanges="apply_job")
+
+
 def test_routing_rule_session_writes_rejects_dict():
     with pytest.raises(ValidationError, match="scalar"):
         RoutingRule(
@@ -879,3 +889,35 @@ def test_predispatch_on_subagent_timeout_and_tables():
     tables.model_validate({"city_canonical": {"Bangalore": "Bengaluru"}, "placeholders": ["unknown"]})
     with pytest.raises(ValidationError):
         tables.model_validate({"t": "not a table"})
+
+
+def test_subagent_fixed_opening_when_told_defaults_off():
+    assert SubAgent(**_subagent_kwargs()).fixed_opening_when_told is False
+    assert SubAgent(**_subagent_kwargs(fixed_opening_when_told=True)).fixed_opening_when_told is True
+
+
+def test_subagent_fixed_opening_on_entry_defaults_off():
+    assert SubAgent(**_subagent_kwargs()).fixed_opening_on_entry is False
+    assert SubAgent(**_subagent_kwargs(fixed_opening_on_entry=True)).fixed_opening_on_entry is True
+
+
+def test_subagent_fixed_opening_when_told_rejects_a_non_boolean():
+    with pytest.raises(ValidationError):
+        SubAgent(**_subagent_kwargs(fixed_opening_when_told="sometimes"))
+
+
+def test_invocation_rules_accepts_consent_session_fields():
+    r = InvocationRules(consent_session_fields=["user_terms", "profile_consent"])
+    assert r.consent_session_fields == ["user_terms", "profile_consent"]
+    assert InvocationRules().consent_session_fields == []
+
+
+def test_invocation_rules_rejects_non_list_consent_session_fields():
+    with pytest.raises(ValidationError):
+        InvocationRules(consent_session_fields={"user_terms": True})
+
+
+def test_flat_schema_accepts_consent_session_fields():
+    from dev_kit.schema import InvocationRulesConfig
+    r = InvocationRulesConfig(consent_session_fields=["user_terms"])
+    assert r.consent_session_fields == ["user_terms"]

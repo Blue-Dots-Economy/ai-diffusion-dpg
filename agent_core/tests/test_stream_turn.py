@@ -372,6 +372,119 @@ class TestStreamTurnToolUse:
         assert done_events[0].was_tool_used is True
 
     @pytest.mark.asyncio
+    async def test_prose_from_a_tool_call_is_not_spoken_twice(self):
+        """Call #1's undelivered prose is dropped when it also requests a tool."""
+        agent = _make_agent_core()
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield "आपकी जानकारी सेव नहीं की जाएगी। "
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="search", tool_use_id="tu_1", input={"q": "x"})
+                ])
+            else:
+                yield "आपकी जानकारी सेव नहीं होगी। "
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute.return_value = ToolResult(
+            tool_use_id="tu_1", tool_name="search",
+            result={"items": []}, success=True, result_text="[]"
+        )
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "hindi")
+        agent._understander = fake_understander(NLUResult(
+            intent="search", entities={}, confidence=0.9
+        ))
+
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+
+        assert "सेव नहीं होगी" in spoken
+        assert "सेव नहीं की जाएगी" not in spoken
+
+    @pytest.mark.asyncio
+    async def test_prose_from_a_nested_tool_round_is_not_spoken_twice(self):
+        """The same discard applies to rounds 2..N of a tool chain."""
+        agent = _make_agent_core()
+        calls = {"n": 0}
+
+        async def mock_stream(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                yield "first draft. "
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="search", tool_use_id="tu_1", input={})
+                ])
+            if calls["n"] == 2:
+                yield "second draft. "
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="search", tool_use_id="tu_2", input={})
+                ])
+            yield "the real answer. "
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute.return_value = ToolResult(
+            tool_use_id="tu_1", tool_name="search",
+            result={"answer": "42"}, success=True, result_text="42"
+        )
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "english")
+        agent._understander = fake_understander(NLUResult(
+            intent="search", entities={}, confidence=0.9
+        ))
+
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+
+        assert "the real answer" in spoken
+        assert "first draft" not in spoken
+        assert "second draft" not in spoken
+
+    @pytest.mark.asyncio
+    async def test_already_spoken_text_is_replayed_to_the_model(self):
+        """Delivered text is replayed to call #2 as assistant content."""
+        agent = _make_agent_core()
+        calls = {"n": 0}
+        seen: dict = {}
+
+        async def mock_stream(request, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Three sentences: enough to cross the batcher's size trigger,
+                # so they are released to the caller before the tool call.
+                yield "One. Two. Three. "
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="search", tool_use_id="tu_1", input={})
+                ])
+            seen["messages"] = list(request.messages)
+            yield "Final answer. "
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute.return_value = ToolResult(
+            tool_use_id="tu_1", tool_name="search",
+            result={"answer": "42"}, success=True, result_text="42"
+        )
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "english")
+        agent._understander = fake_understander(NLUResult(
+            intent="search", entities={}, confidence=0.9
+        ))
+
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = [e.text for e in events if isinstance(e, SentenceEvent)]
+        assert any("One." in t for t in spoken), "precondition: call #1 was heard"
+
+        assistant = [m for m in seen["messages"] if m.role == "assistant"]
+        replayed = " ".join(
+            b.text for m in assistant for b in m.content if b.type == "text"
+        )
+        assert "One." in replayed
+        assert "Three." in replayed
+
+    @pytest.mark.asyncio
     async def test_tool_start_names_the_tools_being_run(self):
         """Channels turn tool_start into caller-facing status ("looking up
         jobs"), so the signal must say which tool — not just that one runs."""
@@ -555,6 +668,119 @@ class TestFixedOpening:
         )
 
     @pytest.mark.asyncio
+    async def test_the_spoken_line_becomes_current_question(self):
+        """A fixed opening is a QUESTION; the next turn's pending resolves on it."""
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad"})
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        await _collect_events(agent, _make_turn_input())
+        written = {
+            c.args[3]: c.args[4]
+            for c in agent._async_memory.write.call_args_list
+            if len(c.args) >= 5 and c.args[2] == "session"
+        }
+        assert "Welder in Ghaziabad" in (written.get("current_question") or ""), (
+            "the caller cannot answer a question the session never recorded"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_optional_prefix_is_spoken_when_its_field_is_present(self):
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad",
+                             "stored_name": "Ravi"})
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening_prefix = "Hello {stored_name}. "
+            sa.fixed_opening_prefix_requires = ["stored_name"]
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert spoken.startswith("Hello Ravi.")
+        assert "Welder in Ghaziabad" in spoken
+
+    @pytest.mark.asyncio
+    async def test_the_prefix_leaves_no_trace_when_its_field_is_missing(self):
+        """The rest of the line must be unchanged, not left with a gap."""
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad"})
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening_prefix = "Hello {stored_name}. "
+            sa.fixed_opening_prefix_requires = ["stored_name"]
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert spoken.startswith("I found your details")
+        assert "Hello" not in spoken
+
+    @pytest.mark.asyncio
+    async def test_a_placeholder_value_is_treated_as_absent(self):
+        """A stored placeholder must never be spoken as if it were real."""
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad",
+                             "stored_name": "Unknown"})
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening_prefix = "Hello {stored_name}. "
+            sa.fixed_opening_prefix_requires = ["stored_name"]
+            sa.fixed_opening_prefix_unless = ["Unknown", "caller"]
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Unknown" not in spoken
+        assert spoken.startswith("I found your details")
+
+    @pytest.mark.asyncio
+    async def test_the_placeholder_check_ignores_case(self):
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad",
+                             "stored_name": "CALLER"})
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening_prefix = "Hello {stored_name}. "
+            sa.fixed_opening_prefix_requires = ["stored_name"]
+            sa.fixed_opening_prefix_unless = ["caller"]
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "CALLER" not in spoken
+
+    @pytest.mark.asyncio
+    async def test_a_bad_prefix_placeholder_drops_only_the_prefix(self):
+        """A prefix naming a field it never required must not cost the line."""
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad",
+                             "stored_name": "Ravi"})
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening_prefix = "Hello {not_required_anywhere}. "
+            sa.fixed_opening_prefix_requires = ["stored_name"]
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert spoken.startswith("I found your details")
+        assert "Hello" not in spoken
+
+    @pytest.mark.asyncio
     async def test_the_callers_own_words_win(self):
         """If they named a trade themselves, the model handles the turn."""
         agent = self._agent(
@@ -582,6 +808,59 @@ class TestFixedOpening:
         events = await _collect_events(agent, _make_turn_input())
         spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
         assert "Which city?" in spoken
+
+    @pytest.mark.asyncio
+    async def test_when_told_speaks_it_anyway(self):
+        """The authorising question must be asked on the turn they answered with a value."""
+        agent = self._agent(
+            {"stored_trade": "Welder", "stored_location": "Ghaziabad"},
+            entities={"location": "Ghaziabad"},
+        )
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening_when_told = True
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Welder in Ghaziabad" in spoken
+
+    @pytest.mark.asyncio
+    async def test_when_told_still_respects_the_first_entry_gate(self):
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad",
+                             "subagent_entry_count": {"start": 2}})
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening_when_told = True
+
+        async def mock_stream(*a, **k):
+            yield "Anything else?"
+
+        agent._llm.stream = mock_stream
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Anything else?" in spoken
+        assert "I found your details" not in spoken
+
+    @pytest.mark.asyncio
+    async def test_a_fallback_placeholder_takes_the_first_value_present(self):
+        agent = self._agent({"stored_trade": "Welder", "location": "Hubli",
+                             "stored_location": "31, 6th Main, Bengaluru 560010"})
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening = "I found your details — {stored_trade} in {location|stored_location}."
+            sa.fixed_opening_requires = ["stored_trade", "location|stored_location"]
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Welder in Hubli" in spoken
+        assert "6th Main" not in spoken
 
 
 class TestTerminalPhaseFixedCopy:
@@ -1255,6 +1534,25 @@ class TestRecentToolExchangesHelpers:
         msgs = agent._build_tool_exchange_messages(ex, skip_tools={"fetch_profile"})
         assert len(msgs) == 2                                  # second exchange dropped entirely
         assert [b.tool_use_id for b in msgs[1].content] == ["b"]
+
+    def test_drop_tool_exchanges_removes_only_the_listed_tools(self):
+        agent = _make_agent_core()
+        ex = [{"tool_uses": [{"type": "tool_use", "id": "a", "name": "apply_job", "input": {}},
+                             {"type": "tool_use", "id": "b", "name": "fetch_jobs", "input": {}}],
+               "tool_results": [{"type": "tool_result", "tool_use_id": "a", "content": "422"},
+                                {"type": "tool_result", "tool_use_id": "b", "content": "J"}],
+               "delivered": True},
+              {"tool_uses": [{"type": "tool_use", "id": "c", "name": "apply_job", "input": {}}],
+               "tool_results": [{"type": "tool_result", "tool_use_id": "c", "content": "422"}]}]
+        kept = agent._drop_tool_exchanges(ex, ["apply_job"])
+        assert len(kept) == 1
+        assert [u["id"] for u in kept[0]["tool_uses"]] == ["b"]
+        assert [r["tool_use_id"] for r in kept[0]["tool_results"]] == ["b"]
+        assert kept[0]["delivered"] is True
+
+    @pytest.mark.parametrize("stored", [None, "x", [], [None, {}]])
+    def test_drop_tool_exchanges_tolerates_missing_or_malformed_state(self, stored):
+        assert _make_agent_core()._drop_tool_exchanges(stored, ["apply_job"]) == []
 
     def test_truncate_tool_result_content(self):
         agent = _make_agent_core()

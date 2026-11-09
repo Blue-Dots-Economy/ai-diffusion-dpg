@@ -11,6 +11,7 @@ restriction is the only control.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any, AsyncIterator
@@ -24,6 +25,7 @@ from src.translate import (
     SSE_DONE,
     RequestError,
     StreamTranslator,
+    call_id_of,
     is_tool_result_followup,
     offered_hangup_tool,
     sse,
@@ -32,6 +34,8 @@ from src.translate import (
 )
 
 logger = logging.getLogger(__name__)
+
+_STREAM_OPERATION = "server.stream"
 
 def _error_response(status: int, message: str, err_type: str,
                      param: str | None = None) -> JSONResponse:
@@ -130,7 +134,7 @@ def create_app(config: dict) -> FastAPI:
             A ``chat.completion`` JSON body, a ``text/event-stream`` of
             ``chat.completion.chunk`` events, or an OpenAI error envelope.
         """
-        start = time.time()
+        start = time.monotonic()
         try:
             body: dict[str, Any] = await request.json()
         except Exception as exc:
@@ -181,9 +185,10 @@ def create_app(config: dict) -> FastAPI:
                 (body.get("stream_options") or {}).get("include_usage")
             )
             hangup_tool = offered_hangup_tool(body, hangup_tool_name)
-            return StreamingResponse(
+            return _ClosingStreamingResponse(
                 _stream(client, turn, model, terminal_word, include_usage,
-                        hangup_tool, tool_status_phrases),
+                        hangup_tool, tool_status_phrases,
+                        call_id=call_id_of(body), received=start),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
@@ -195,7 +200,7 @@ def create_app(config: dict) -> FastAPI:
                 "bridge.turn_failed",
                 extra={"operation": "server.chat_completions", "status": "failure",
                        "error": exc.kind,
-                       "latency_ms": int((time.time() - start) * 1000)},
+                       "latency_ms": int((time.monotonic() - start) * 1000)},
             )
             return _error_response(502, "The AI service is unavailable.", "api_error")
 
@@ -204,7 +209,7 @@ def create_app(config: dict) -> FastAPI:
                 "bridge.turn_error",
                 extra={"operation": "server.chat_completions", "status": "failure",
                        "error": str(data.get("error_type")),
-                       "latency_ms": int((time.time() - start) * 1000)},
+                       "latency_ms": int((time.monotonic() - start) * 1000)},
             )
             return _error_response(502, "The AI service could not complete the turn.",
                                     "api_error")
@@ -212,7 +217,7 @@ def create_app(config: dict) -> FastAPI:
         logger.info(
             "bridge.turn_complete",
             extra={"operation": "server.chat_completions", "status": "success",
-                   "latency_ms": int((time.time() - start) * 1000)},
+                   "latency_ms": int((time.monotonic() - start) * 1000)},
         )
         return JSONResponse(content=to_completion(data, model))
 
@@ -235,10 +240,84 @@ async def _empty_stream(model: str) -> AsyncIterator[str]:
     yield SSE_DONE
 
 
+class _ClosingStreamingResponse(StreamingResponse):
+    """A streaming response that closes its body stream as soon as the request ends."""
+
+    async def __call__(self, scope, receive, send) -> None:
+        """Serve the response, then close the body stream whatever happened."""
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # A disconnect during a write cancels the write, not the stream, so close it here.
+            await self.body_iterator.aclose()
+
+
+class _TurnTiming:
+    """Timing marks for one streamed turn, measured from when the request reached the bridge."""
+
+    def __init__(self, received: float, call_id: str | None) -> None:
+        """Start timing a turn.
+
+        Args:
+            received: ``time.monotonic()`` reading when the request reached the bridge.
+            call_id: The client's call id, or None when it sent none.
+        """
+        self._received = received
+        self._call_id = call_id
+        self.turn_id: str | None = None
+        self.outcome = "error"
+        self._first_reply_ms: int | None = None
+        self._first_reply_kind: str | None = None
+        self._first_sentence_ms: int | None = None
+        self._sentences = 0
+
+    def _elapsed_ms(self) -> int:
+        return int((time.monotonic() - self._received) * 1000)
+
+    def reply_sent(self, kind: str) -> None:
+        """Record a reply chunk handed to the client.
+
+        Args:
+            kind: ``"sentence"`` for Agent Core's reply, ``"tool_status"`` for
+                the line spoken while a tool runs, ``"closing"`` for the
+                terminal word spoken when the session ends.
+        """
+        if self._first_reply_ms is None:
+            self._first_reply_ms = self._elapsed_ms()
+            self._first_reply_kind = kind
+        if kind == "sentence":
+            self._sentences += 1
+            if self._first_sentence_ms is None:
+                self._first_sentence_ms = self._elapsed_ms()
+
+    @property
+    def answered(self) -> bool:
+        """True once a sentence of Agent Core's answer has been handed to the client."""
+        return self._first_sentence_ms is not None
+
+    def log(self) -> None:
+        """Emit the turn's timing record, leaving out marks that never happened."""
+        fields = {
+            "operation": _STREAM_OPERATION,
+            "status": "success" if self.outcome in ("completed", "disconnected_after_reply") else "failure",
+            "outcome": self.outcome,
+            "call_id": self._call_id,
+            "turn_id": self.turn_id,
+            "first_reply_kind": self._first_reply_kind,
+            "first_reply_ms": self._first_reply_ms,
+            "first_sentence_ms": self._first_sentence_ms,
+            "sentences": self._sentences,
+            "latency_ms": self._elapsed_ms(),
+        }
+        logger.info("bridge.turn_timing",
+                    extra={k: v for k, v in fields.items() if v is not None})
+
+
 async def _stream(client: AgentCoreClient, turn: dict, model: str,
                    terminal_word: str, include_usage: bool,
                    hangup_tool: str | None = None,
                    tool_status_phrases: dict[str, str] | None = None,
+                   *, call_id: str | None, received: float,
                    ) -> AsyncIterator[str]:
     """Render one Agent Core event stream as OpenAI SSE chunks.
 
@@ -258,6 +337,8 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
         hangup_tool: Client-offered tool to call when the turn ends the
             session, or None to just stop.
         tool_status_phrases: Tool name to the line spoken while it runs.
+        call_id: The client's call id, or None when it sent none.
+        received: ``time.monotonic()`` reading when the request reached the bridge.
 
     Yields:
         SSE-framed ``chat.completion.chunk`` payloads, ending in the
@@ -265,28 +346,33 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
     """
     translator = StreamTranslator(model, terminal_word, hangup_tool,
                                   tool_status_phrases)
-    start = time.time()
+    timing = _TurnTiming(received, call_id)
     try:
         yield sse(translator.opening())
         async for event in client.stream_turn(turn):
+            if timing.turn_id is None and event.get("turn_id"):
+                timing.turn_id = event["turn_id"]
             kind = event.get("type")
             if kind == "sentence":
-                yield sse(translator.sentence(event.get("text", "")))
+                text = event.get("text", "")
+                chunk = translator.sentence(text)
+                if isinstance(text, str) and text.strip():
+                    timing.reply_sent("sentence")
+                yield sse(chunk)
             elif kind == "done":
                 if event.get("error_type"):
                     logger.error(
                         "bridge.stream_turn_error",
-                        extra={"operation": "server.stream", "status": "failure",
+                        extra={"operation": _STREAM_OPERATION, "status": "failure",
                                "error": str(event.get("error_type"))},
                     )
-                for chunk in translator.finish(event, include_usage=include_usage):
+                timing.outcome = "failed" if event.get("error_type") else "completed"
+                closing = translator.finish(event, include_usage=include_usage)
+                if translator.closing_spoken:
+                    timing.reply_sent("closing")
+                for chunk in closing:
                     yield sse(chunk)
                 yield SSE_DONE
-                logger.info(
-                    "bridge.stream_complete",
-                    extra={"operation": "server.stream", "status": "success",
-                           "latency_ms": int((time.time() - start) * 1000)},
-                )
                 return
             elif kind == "signal" and event.get("stage") == "tool_start":
                 # The one signal worth voicing: the caller is otherwise silent
@@ -294,6 +380,7 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
                 # progress with no place in the OpenAI contract, and dropped.
                 status = translator.tool_status(event.get("tools"))
                 if status is not None:
+                    timing.reply_sent("tool_status")
                     yield sse(status)
 
         # The event stream ended without a terminal `done` event — Agent
@@ -302,9 +389,9 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
         # truncation.
         logger.warning(
             "bridge.stream_ended_without_done",
-            extra={"operation": "server.stream", "status": "failure",
-                   "latency_ms": int((time.time() - start) * 1000)},
+            extra={"operation": _STREAM_OPERATION, "status": "failure"},
         )
+        timing.outcome = "ended_without_done"
         for chunk in translator.finish({"session_ended": False},
                                         include_usage=include_usage):
             yield sse(chunk)
@@ -315,11 +402,17 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
         # [DONE] rather than truncating it mid-event.
         logger.error(
             "bridge.stream_failed",
-            extra={"operation": "server.stream", "status": "failure",
-                   "error": exc.kind,
-                   "latency_ms": int((time.time() - start) * 1000)},
+            extra={"operation": _STREAM_OPERATION, "status": "failure",
+                   "error": exc.kind},
         )
+        timing.outcome = "failed"
         for chunk in translator.finish({"session_ended": False},
                                         include_usage=include_usage):
             yield sse(chunk)
         yield SSE_DONE
+    except (GeneratorExit, asyncio.CancelledError):
+        if timing.outcome == "error":
+            timing.outcome = "disconnected_after_reply" if timing.answered else "disconnected_before_reply"
+        raise
+    finally:
+        timing.log()

@@ -265,6 +265,23 @@ class TurnToolCache:
             self._invalidated.append(tool)
         _log("invalidate", tool)
 
+    def abandon(self, tool: str) -> bool:
+        """Drop a tool's cached results because the caller has turned away.
+
+        Leaves nothing for an ordinal to point at, so the next list has to be
+        fetched and read out before anything can be picked from it.
+
+        Args:
+            tool: Tool whose results are no longer on offer.
+
+        Returns:
+            True when something was dropped.
+        """
+        had = any(t == tool for t, _ in self._entries)
+        if had:
+            self._invalidate(tool)
+        return had
+
     def fresh_tools(self) -> set[str]:
         """Tools with at least one unexpired entry (their exchanges leave the replay)."""
         return {tool for tool, _ in self._fresh()}
@@ -298,6 +315,31 @@ class TurnToolCache:
             A copy of the map; empty when nothing was served.
         """
         return dict(self._served)
+
+    def has_fresh_for(self, tool: str, input_params: dict | None) -> bool:
+        """True when a fresh entry exists for this tool **with these arguments**.
+
+        ``latest_entry`` answers "has this tool run at all this turn", which is
+        the wrong question for predispatch freshness: a caller who changes city
+        or trade needs a NEW search, and the previous city's result is exactly
+        what must not satisfy the check. Keyed on the same ``(tool, args_hash)``
+        the store itself uses, so "fresh" means fresh *for this ask*.
+
+        A tool with no cache policy is never fresh — it is not cached, so there
+        is nothing to reuse.
+
+        Args:
+            tool: Tool name.
+            input_params: The arguments the call would be made with.
+
+        Returns:
+            True when an unexpired entry exists for exactly those arguments.
+        """
+        pol = self._p.cache.get(tool)
+        if pol is None:
+            return False
+        h = args_hash(input_params, {k: self._session.get(k) for k in pol.vary_on})
+        return (tool, h) in self._fresh()
 
     def entry(self, tool: str, args_hash_value: str) -> dict | None:
         """Return a copy of the fresh entry for ``(tool, args_hash)``, or None.

@@ -75,6 +75,22 @@ _MINTED_SESSIONS_MAX = 1000
 _CALL_IDLE_GAP_S = 120.0
 
 
+def call_id_of(body: dict) -> Optional[str]:
+    """Return the client's ``metadata.call_id``, stripped.
+
+    Args:
+        body: Parsed chat-completions request body.
+
+    Returns:
+        The call id, or None when it is absent, not a string, or blank.
+    """
+    metadata = body.get("metadata")
+    call_id = metadata.get("call_id") if isinstance(metadata, dict) else None
+    if isinstance(call_id, str) and call_id.strip():
+        return call_id.strip()
+    return None
+
+
 def session_id_for(
     body: dict, phone: str, now: float | None = None
 ) -> tuple[str, bool]:
@@ -110,9 +126,9 @@ def session_id_for(
         is exactly the state that must not survive a hang-up.
     """
     now = time.time() if now is None else now
-    call_id = (body.get("metadata") or {}).get("call_id")
-    if isinstance(call_id, str) and call_id.strip():
-        session = f"{phone}:{call_id.strip()}"
+    call_id = call_id_of(body)
+    if call_id:
+        session = f"{phone}:{call_id}"
         seen = _MINTED_SESSIONS.get(phone)
         is_new = seen is None or seen[0] != session
         _MINTED_SESSIONS[phone] = (session, now)
@@ -318,6 +334,7 @@ class StreamTranslator:
         self._id = new_completion_id()
         self._created = int(time.time())
         self._emitted_content = False
+        self.closing_spoken = False
 
     def _chunk(self, **kwargs) -> dict:
         return build_chunk(self._id, self._created, self._model, **kwargs)
@@ -394,6 +411,7 @@ class StreamTranslator:
         ended = bool(done.get("session_ended"))
         if ended and self._terminal_word:
             out.append(self.sentence(self._terminal_word))
+            self.closing_spoken = True
         if ended and not self._hangup_tool:
             # Agent Core ended the session but nothing will hang the call
             # up: either the domain configured no hangup tool, or the

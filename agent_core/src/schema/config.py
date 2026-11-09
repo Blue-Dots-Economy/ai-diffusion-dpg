@@ -366,6 +366,31 @@ class InvocationRules(BaseModel):
     context are the case that needs it — a fabricated one is well-formed, so
     only checking it against what upstreams actually returned catches it.
     """
+    session_only_params: dict[str, list[str]] = Field(default_factory=dict)
+    """Params the model may not supply itself: param -> session keys to read.
+
+    ``grounded_params`` checks a value against earlier tool results, which suits
+    identifiers. This covers the other case: optional fields the framework
+    collects from the user. The model sees them in the tool schema and will fill
+    plausible-looking values for a user who never gave one — measured on a live
+    call, a write went out carrying three optional fields the user never
+    mentioned and which were empty in session.
+
+    Each listed param is REPLACED by the first non-empty session value among its
+    keys, and DROPPED when none has one. The model's own value is never used, so
+    invention is structurally impossible rather than merely discouraged. Use it
+    for optional fields only: dropping a required param guarantees an upstream
+    rejection.
+    """
+    consent_session_fields: list[str] = Field(default_factory=list)
+    """Session fields that must all be ``true`` before this tool may run.
+
+    A write needs the caller's consent. A returning caller whose consent is
+    already on file has these fields from the lookup that loads their profile,
+    so they are not asked again. A first-time caller, or one who never gave
+    consent, gets them only by answering the consent question. Until then the
+    call is refused before it leaves Agent Core. Empty means no session check.
+    """
     on_empty: str = ""
     on_failure: str = ""
     bridge_line: str = ""
@@ -673,6 +698,8 @@ class NLUProcessorConfig(BaseModel):
     examples: list[NLUExampleConfig] = Field(default_factory=list)
     act_intents: list[ActIntentRuleConfig] = Field(default_factory=list)
     termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig)
+    # Acts after which the offered list is no longer on offer.
+    abandons_offered_acts: list[str] = Field(default_factory=list)
     off_track: OffTrackConfig = Field(default_factory=OffTrackConfig)
 
 
@@ -721,6 +748,7 @@ class RoutingRule(BaseModel):
     condition: Optional[RoutingCondition] = None
     conditions: list[RoutingCondition] = Field(default_factory=list)
     session_writes: dict[str, Any] = Field(default_factory=dict)
+    clear_tool_exchanges: list[str] = Field(default_factory=list)
 
 
 class OptionsFromConfig(BaseModel):
@@ -828,6 +856,16 @@ class SubAgent(BaseModel):
     # handles that turn as before.
     fixed_opening: str = ""
     fixed_opening_requires: list[str] = Field(default_factory=list)
+    # Fragment prepended to `fixed_opening`, spoken only when every
+    # `fixed_opening_prefix_requires` field has a value.
+    fixed_opening_prefix: str = ""
+    fixed_opening_prefix_requires: list[str] = Field(default_factory=list)
+    # Values that count as absent, so a stored placeholder is never spoken.
+    fixed_opening_prefix_unless: list[str] = Field(default_factory=list)
+    # Speak the fixed opening even on a turn where the caller named something.
+    fixed_opening_when_told: bool = False
+    # Speak it on every entry to the phase, not only the first.
+    fixed_opening_on_entry: bool = False
     routing: list[RoutingRule] = Field(default_factory=list)
     pending: list[PendingQuestionConfig] = Field(default_factory=list)
     predispatch: list[PredispatchRule] = Field(default_factory=list)
@@ -1240,6 +1278,14 @@ class MergedConfig(BaseModel):
             raise ValueError(
                 f"preprocessing.nlu_processor.off_track.intent '{nlu.off_track.intent}' "
                 f"is not used by any routing rule")
+
+        connectors = {c.name for c in (*self.connectors.read, *self.connectors.write, *self.connectors.identity)}
+        for s in wf.subagents:
+            for r in s.routing:
+                unknown = set(r.clear_tool_exchanges) - connectors
+                if unknown:
+                    raise ValueError(f"subagent '{s.id}' routing intent '{r.intent}': "
+                                     f"clear_tool_exchanges names unknown tools {sorted(unknown)}")
 
         cached = {c.name for c in self.connectors.read if c.cache is not None}
         state_keys = {self.entity_to_profile_field.get(n, n) for n in nlu.slots}

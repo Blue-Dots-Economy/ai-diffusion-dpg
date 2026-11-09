@@ -6,6 +6,10 @@ metadata:
   labels:
     app: {{ .Release.Name }}
 spec:
+  # Recreate: single Memgraph instance per data dir; a rolling update would start a
+  # second pod against the same ReadWriteOnce volume.
+  strategy:
+    type: Recreate
   replicas: 1
   selector:
     matchLabels:

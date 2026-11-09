@@ -135,3 +135,19 @@ async def test_language_switch_unsupported_language_yields_message():
     texts = [getattr(e, "text", "") for e in events]
     assert any("english, hindi" in t for t in texts)
     agent._manager_agent.build_system_prompt.assert_not_called()
+
+
+async def test_clear_tool_exchanges_on_the_matched_rule_drops_them_before_replay():
+    from src.workflow_loader import RoutingRule
+    stored = [{"tool_uses": [{"type": "tool_use", "id": "a", "name": "apply_job", "input": {}}],
+               "tool_results": [{"type": "tool_result", "tool_use_id": "a", "content": "422"}]}]
+    agent = _agent(_understanding())
+    agent._async_memory.context_bundle.return_value = ContextBundle(
+        session={"current_subagent_id": "start", "recent_tool_exchanges": stored}, profile={})
+    agent._workflow.subagents["start"].routing.append(
+        RoutingRule(intent="*", next_subagent_id="start", clear_tool_exchanges=["apply_job"]))
+    await _collect_events(agent, _make_turn_input())
+    written = {c.args[3]: c.args[4] for c in agent._async_memory.write.call_args_list}
+    assert written["recent_tool_exchanges"] == []
+    replayed = agent._manager_agent.build_messages.return_value
+    assert all(m.role == "user" for m in replayed)

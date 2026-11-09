@@ -108,3 +108,82 @@ def check_tool_call(
     if hit is not None:
         return GuardVerdict("hit", hit)
     return GuardVerdict("go")
+
+
+def apply_session_only(tc: Any, spec: dict | None, session: dict | None) -> list[str]:
+    """Force ``session_only_params`` to their session value; drop what session lacks.
+
+    The model sees every optional field in the tool schema and will fill
+    plausible values for a caller who never gave one. Checking the model's value
+    is not enough — the fix is to stop using it. Each listed param is replaced by
+    the first non-empty session value among its keys, and removed entirely when
+    none has one, so a field that was never collected cannot be sent.
+
+    Args:
+        tc: The pending ToolCall; ``input_params`` is mutated in place.
+        spec: ``session_only_params`` for this tool (param -> session keys).
+        session: The session dict.
+
+    Returns:
+        Names of params that were dropped, for logging. Empty when nothing changed.
+    """
+    if not spec or not isinstance(getattr(tc, "input_params", None), dict):
+        return []
+    session = session or {}
+    dropped: list[str] = []
+    for param, keys in spec.items():
+        value = _first_session_value(session, keys or [param])
+        if value is None:
+            if tc.input_params.pop(param, _MISSING) is not _MISSING:
+                dropped.append(param)
+        else:
+            tc.input_params[param] = value
+    return dropped
+
+
+_MISSING = object()
+
+
+def session_consent_ok(fields: list[str] | None, session: dict | None) -> bool | None:
+    """Whether the consent a tool needs is recorded as given in session.
+
+    Args:
+        fields: ``consent_session_fields`` for this tool.
+        session: The values the tool call is resolved against.
+
+    Returns:
+        None when the tool lists no fields (no session check); True when every
+        listed field is ``true``; False otherwise, including when one is absent.
+    """
+    if not fields:
+        return None
+    session = session or {}
+    return all(_is_true(session.get(f)) for f in fields)
+
+
+def combine_consent(*decisions: bool | None) -> bool | None:
+    """Combine consent decisions: any False refuses; None means not required.
+
+    Args:
+        *decisions: Each is None (not required), True or False.
+
+    Returns:
+        False if any decision is False, True if any is True, else None.
+    """
+    if any(d is False for d in decisions):
+        return False
+    return True if any(d is True for d in decisions) else None
+
+
+def _is_true(value: Any) -> bool:
+    """True for a boolean true or the string "true" (any case)."""
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
+
+
+def _first_session_value(session: dict, keys: list) -> Any | None:
+    """First non-empty session value among ``keys``, or None when none has one."""
+    for key in keys:
+        v = session.get(key)
+        if v not in (None, "", []):
+            return v
+    return None
