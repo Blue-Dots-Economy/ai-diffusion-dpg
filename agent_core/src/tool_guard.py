@@ -144,6 +144,42 @@ def apply_session_only(tc: Any, spec: dict | None, session: dict | None) -> list
 _MISSING = object()
 
 
+def session_consent_ok(fields: list[str] | None, session: dict | None) -> bool | None:
+    """Whether the consent a tool needs is recorded as given in session.
+
+    Args:
+        fields: ``consent_session_fields`` for this tool.
+        session: The values the tool call is resolved against.
+
+    Returns:
+        None when the tool lists no fields (no session check); True when every
+        listed field is ``true``; False otherwise, including when one is absent.
+    """
+    if not fields:
+        return None
+    session = session or {}
+    return all(_is_true(session.get(f)) for f in fields)
+
+
+def combine_consent(*decisions: bool | None) -> bool | None:
+    """Combine consent decisions: any False refuses; None means not required.
+
+    Args:
+        *decisions: Each is None (not required), True or False.
+
+    Returns:
+        False if any decision is False, True if any is True, else None.
+    """
+    if any(d is False for d in decisions):
+        return False
+    return True if any(d is True for d in decisions) else None
+
+
+def _is_true(value: Any) -> bool:
+    """True for a boolean true or the string "true" (any case)."""
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
+
+
 def _first_session_value(session: dict, keys: list) -> Any | None:
     """First non-empty session value among ``keys``, or None when none has one."""
     for key in keys:

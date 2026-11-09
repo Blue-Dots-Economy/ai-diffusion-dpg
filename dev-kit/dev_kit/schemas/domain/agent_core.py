@@ -569,6 +569,8 @@ class InvocationRules(BaseModel):
     grounded_params: Union[List[str], Dict[str, List[str]]] = Field(default_factory=list)
     session_only_params: Dict[str, List[str]] = Field(default_factory=dict)
     """Params the model may not supply: param -> session keys. Mirrors the runtime schema."""
+    consent_session_fields: list[str] = Field(default_factory=list)
+    """Session fields that must all be true before the tool runs. Mirrors the runtime schema."""
     on_empty: str = ""
     on_failure: str = ""
     bridge_line: str = ""

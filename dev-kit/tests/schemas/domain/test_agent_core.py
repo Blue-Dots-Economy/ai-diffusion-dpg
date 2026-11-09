@@ -904,3 +904,20 @@ def test_subagent_fixed_opening_on_entry_defaults_off():
 def test_subagent_fixed_opening_when_told_rejects_a_non_boolean():
     with pytest.raises(ValidationError):
         SubAgent(**_subagent_kwargs(fixed_opening_when_told="sometimes"))
+
+
+def test_invocation_rules_accepts_consent_session_fields():
+    r = InvocationRules(consent_session_fields=["user_terms", "profile_consent"])
+    assert r.consent_session_fields == ["user_terms", "profile_consent"]
+    assert InvocationRules().consent_session_fields == []
+
+
+def test_invocation_rules_rejects_non_list_consent_session_fields():
+    with pytest.raises(ValidationError):
+        InvocationRules(consent_session_fields={"user_terms": True})
+
+
+def test_flat_schema_accepts_consent_session_fields():
+    from dev_kit.schema import InvocationRulesConfig
+    r = InvocationRulesConfig(consent_session_fields=["user_terms"])
+    assert r.consent_session_fields == ["user_terms"]

@@ -64,7 +64,7 @@ The framework assembles AI-powered voice/chat systems from **7 standardised DPG 
 
 **Trust Layer** — mandatory safety gate. Runs **twice per turn**: once on input before the LLM, once on output before delivery. Never skipped. Four sub-blocks: ContentBlock, GuardrailsBlock, ConsentBlock, HiTLBlock. Exposes endpoints: `/check/input`, `/assemble_constraints`, `/check/output`, `/consent/verify`, `/check/consent`, `/escalate`. Enforces content rules, output rules, consent rules (DPDP Act), escalation rules, and topic firewall.
 
-**Action Gateway** — sole interface with external systems. Executes tool calls expressed by the LLM; the LLM never calls APIs directly. Returns normalised results to Agent Core. Write/identity connectors require Trust Layer consent before execution.
+**Action Gateway** — sole interface with external systems. Executes tool calls expressed by the LLM; the LLM never calls APIs directly. Returns normalised results to Agent Core. Write/identity connectors require consent before execution: Trust Layer `check_consent`, and/or the session fields named in the connector's `invocation_rules.consent_session_fields` (all must be `true`). Consent already on file — lifted into session when the caller's profile is fetched — satisfies the session check, so a returning caller is not asked again; a first-time caller, or one who never consented, is refused until the consent phase records it.
 
 **Reach Layer** — normalises inbound channels (VOIP, WhatsApp, Web, Mobile SDK, MCP) and delivers responses. Manages outbound campaigns and cross-channel handoffs. Channel and assembly mode are independent: Voice is constrained to `session` mode (VAD-driven multi-segment input); CLI uses `direct` mode and does not need TurnAssembler; Web defaults to `direct` and can be configured for `session`; MCP defaults to `session` mode for tool call aggregation. Also includes approved direct calls — see "Module interaction rules" below.
 
@@ -106,7 +106,7 @@ Other blocks may call each other directly **only under the approved scopes liste
 | Caller | Callee | Purpose |
 |---|---|---|
 | Agent Core | Memory Layer | Read state at turn start; write state after response (async) |
-| Agent Core | Memory Layer | `POST /tool_results/apply` — persist/invalidate cached tool results (config-driven `cache` / `invalidates`; needs `TOOL_RESULT_KEY_SECRET`) |
+| Agent Core | Memory Layer | `POST /tool_results/apply` — persist/invalidate cached tool results (config-driven `cache` / `invalidates`; needs `TOOL_RESULT_KEY_SECRET`, which the dev and shared-VM compose files require) |
 | Agent Core | Trust Layer | Check input; check output; assemble constraints; consent verify |
 | Agent Core | Knowledge Engine | `POST /retrieve` — ranked chunks, called only via the `knowledge_retrieval` internal tool |
 | Agent Core | Action Gateway | Execute LLM-requested external tool calls |
@@ -200,7 +200,7 @@ ASR/TTS pipeline, model training, infrastructure provisioning, multi-tenancy, te
 5. **Agent Core is stateless.** All state lives in Memory Layer. Instances scale horizontally.
 6. **Observability Layer is always async.** Never in the response path.
 7. **Config drives all runtime behaviour.** No hardcoded domain values in Python source.
-8. **Write connectors require consent.** Gate `write`/`identity` connectors via Trust Layer before execution.
+8. **Write connectors require consent.** Gate `write`/`identity` connectors before execution — via Trust Layer, or via `consent_session_fields` where consent is collected in the conversation (Blue Dots). Ask only when consent is not already on file.
 9. **Keep blocks loosely coupled.** Call through the defined interface only; never reach into internals.
 10. **Stubs honour the same interface as real implementations.** Signatures and return types must match.
 

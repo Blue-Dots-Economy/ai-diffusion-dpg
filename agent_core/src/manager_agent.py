@@ -279,6 +279,7 @@ class ManagerAgent:
         max_tool_rounds: int = 1,
         grounded_params: dict[str, list[str]] | None = None,
         session_only_params: dict[str, dict[str, list[str]]] | None = None,
+        consent_session_fields: dict[str, list[str]] | None = None,
         tool_call_caps: dict[str, int] | None = None,
         zero_seed_fields: frozenset[str] = frozenset(),
         identity: dict | None = None,
@@ -327,6 +328,11 @@ class ManagerAgent:
         # Params the model may not supply at all: taken from session or dropped.
         # See SessionOnly in the schema — this is what stops invented profile data.
         self._session_only_params = _normalise_session_only(session_only_params)
+        # tool name -> session fields that must be true before it runs (consent).
+        self._consent_session_fields: dict[str, list[str]] = {
+            str(k): [str(f) for f in (v or [])]
+            for k, v in (consent_session_fields or {}).items() if v
+        }
         # GH-137: Per-turn flag set when the LLM invokes the end_session internal tool.
         self._session_ended_flag: bool = False
         # Number of self._llm.call invocations the last run_turn made.
@@ -431,7 +437,7 @@ class ManagerAgent:
         # Per-TURN, not per-round: a capped tool must not slip through by
         # being requested again in a later tool round of the same turn.
         # Imported here: tool_guard imports this module's guard primitives.
-        from src.tool_guard import check_tool_call
+        from src.tool_guard import check_tool_call, session_consent_ok
 
         self.last_llm_calls = 0
         counts: dict[str, int] = turn_tool_counts if turn_tool_counts is not None else {}
@@ -515,7 +521,7 @@ class ManagerAgent:
                     # One decision shared with the streaming loops: cap, then
                     # grounding (a fabricated id reaches the upstream as a
                     # well-formed value and comes back as a generic "not
-                    # found"), then the stored-result cache. Consent stays in
+                    # found"), then the stored-result cache. Trust Layer consent stays in
                     # _execute_tool for this path.
                     _so = self._session_only_params.get(tool_call.tool_name) or {}
                     if _so:
@@ -529,7 +535,9 @@ class ManagerAgent:
                         messages=messages,
                         stored_results=tool_cache.stored_results_by_tool() if tool_cache else None,
                         session_grounded=session_grounded,
-                        consent_ok=None,
+                        consent_ok=session_consent_ok(
+                            self._consent_session_fields.get(tool_call.tool_name),
+                            session_values),
                         cache_lookup=tool_cache.lookup if tool_cache else (lambda _tc: None),
                         ungrounded_error="UNGROUNDED_PARAMETER",
                     )

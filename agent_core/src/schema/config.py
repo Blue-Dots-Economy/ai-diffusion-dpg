@@ -382,6 +382,15 @@ class InvocationRules(BaseModel):
     for optional fields only: dropping a required param guarantees an upstream
     rejection.
     """
+    consent_session_fields: list[str] = Field(default_factory=list)
+    """Session fields that must all be ``true`` before this tool may run.
+
+    A write needs the caller's consent. A returning caller whose consent is
+    already on file has these fields from the lookup that loads their profile,
+    so they are not asked again. A first-time caller, or one who never gave
+    consent, gets them only by answering the consent question. Until then the
+    call is refused before it leaves Agent Core. Empty means no session check.
+    """
     on_empty: str = ""
     on_failure: str = ""
     bridge_line: str = ""

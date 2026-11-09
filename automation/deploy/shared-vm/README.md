@@ -74,6 +74,10 @@ Two notes:
   only two parameters are stored. It must still be set — Action Gateway calls
   `sys.exit(1)` when a connector credential is unset *or empty*.
 - `BLUE_DOTS_ORG_ID` is an organisation UUID, not a credential. Plain `.env`.
+- `TOOL_RESULT_KEY_SECRET` is required in `.env`; `docker compose` refuses to
+  start without it. Generate one per deployment with `openssl rand -hex 32` and
+  keep it across redeploys. Without it the voice flow cannot carry a job list
+  from one turn to the next, so no profile or application is ever created.
 
 ### Prerequisite: IMDSv2 hop limit
 
@@ -96,7 +100,8 @@ customer-managed key rather than `alias/aws/ssm`.
 git clone https://github.com/Blue-Dots-Economy/ai-diffusion-dpg.git
 cd ai-diffusion-dpg/automation/deploy/shared-vm
 
-cp env.example .env     # AWS_REGION, SSM_PREFIX, BLUE_DOTS_ORG_ID, DPG_IMAGE_TAG
+cp env.example .env     # AWS_REGION, SSM_PREFIX, BLUE_DOTS_ORG_ID, DPG_IMAGE_TAG,
+                        # TOOL_RESULT_KEY_SECRET, GF_SECURITY_ADMIN_PASSWORD
 chmod 600 .env
 
 docker compose up -d

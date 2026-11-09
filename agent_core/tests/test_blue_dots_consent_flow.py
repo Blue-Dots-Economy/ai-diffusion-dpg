@@ -726,3 +726,45 @@ def test_the_shared_flow_description_matches_the_phases_that_exist():
     shared = cfg["agent_workflow"]["agent_system_prompt"]
     for stale in ("Under 19", "Five phases", "a refusal goes to ended"):
         assert stale not in shared, f"stale flow text still reaches every phase: {stale!r}"
+
+
+# --- the consent gate on every write -----------------------------------------
+
+AC = yaml.safe_load((BD / "agent_core.yaml").read_text(encoding="utf-8"))
+_WRITE_TOOLS = ["save_profile", "update_profile", "apply_job", "connect_service"]
+
+
+def _rules(tool):
+    for conns in (AC.get("connectors") or {}).values():
+        for c in conns or []:
+            if isinstance(c, dict) and c.get("name") == tool:
+                return c.get("invocation_rules") or {}
+    raise AssertionError(f"{tool} not found")
+
+
+@pytest.mark.parametrize("tool", _WRITE_TOOLS)
+def test_every_write_is_gated_on_the_flags_the_consent_phase_writes(tool):
+    from src.tool_guard import session_consent_ok
+    fields = _rules(tool)["consent_session_fields"]
+    assert sorted(fields) == ["profile_consent", "user_privacy", "user_terms"]
+    # A first-time caller is refused until the consent phase has run...
+    assert session_consent_ok(fields, {"user_terms": False, "user_privacy": False,
+                                       "profile_consent": False}) is False
+    # ...and the flags it writes are exactly what lets the write through.
+    _, rule = _route("consent", {"current_question": _ASKED_CONSENT,
+                                 "consent_response": "granted", "has_age": True,
+                                 "consent_return_to": "profile_setup"})
+    assert session_consent_ok(fields, dict(rule.session_writes)) is True
+
+
+@pytest.mark.parametrize("tool", _WRITE_TOOLS)
+def test_a_returning_caller_with_consent_on_file_is_not_asked_again(tool):
+    from src.tool_guard import session_consent_ok
+    m = _seeker_mappings()
+    body = {"compliance": [{"key": "user_terms", "value": True},
+                           {"key": "user_privacy", "value": True}],
+            "items": [{"item_id": "a", "lifecycle_status": "live",
+                       "profile_consent_accepted": True}]}
+    lifted = {f: resolve(body, m[f]["source"])
+              for f in ("user_terms", "user_privacy", "profile_consent")}
+    assert session_consent_ok(_rules(tool)["consent_session_fields"], lifted) is True

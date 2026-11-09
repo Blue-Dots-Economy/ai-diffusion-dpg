@@ -79,6 +79,13 @@ class InvocationRulesConfig(BaseModel):
             "Taken from session or dropped, so a field never collected cannot be sent."
         ),
     )
+    consent_session_fields: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Session fields that must all be true before this tool runs. Stored "
+            "consent satisfies them; otherwise only the consent question does."
+        ),
+    )
     on_empty: str = Field(
         default="",
         description="What the agent says when the tool returns empty results",
