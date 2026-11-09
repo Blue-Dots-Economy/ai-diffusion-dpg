@@ -59,6 +59,11 @@ docker compose -f docker-compose.dev.yml --profile web up -d reach_layer_web
 A `DOMAIN` exported in your shell overrides the one in `.env`, so unset it if
 you want the `.env` value.
 
+`docker-compose.dev.yml` requires `TOOL_RESULT_KEY_SECRET` in `.env`
+(`openssl rand -hex 32`); compose refuses to start without it. Memory Layer
+uses it to store tool results between turns, which the Blue Dots voice flow
+needs to save a profile or apply.
+
 ---
 
 ## Two Compose Files

@@ -1342,3 +1342,45 @@ def test_run_turn_reports_last_llm_calls():
     agent2, *_ = _make_manager(llm_responses=[plain])
     agent2.run_turn(list(MESSAGES), SESSION_ID, plain)
     assert agent2.last_llm_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# consent_session_fields: consent recorded in session gates the write
+# ---------------------------------------------------------------------------
+
+_CONSENT_FIELDS = {"get_balance": ["user_terms", "profile_consent"]}
+
+
+def _consent_gated_manager():
+    tc = _tool_call()
+    initial = _tool_response(tc)
+    agent, _llm, _reg, gateway, _trust = _make_manager(
+        llm_responses=[initial, _text_response("ok")],
+        tool_result=ToolResult("tu_abc", "get_balance", {}, True),
+    )
+    agent._consent_session_fields = dict(_CONSENT_FIELDS)
+    return agent, gateway, initial
+
+
+def test_write_without_consent_in_session_is_refused_before_the_gateway():
+    agent, gateway, initial = _consent_gated_manager()
+    _, _, results = agent.run_turn(list(MESSAGES), SESSION_ID, initial,
+                                   session_values={"user_terms": True})
+    gateway.execute.assert_not_called()
+    assert results[0].error == "consent_required"
+
+
+def test_write_with_consent_on_file_goes_through_without_asking_again():
+    agent, gateway, initial = _consent_gated_manager()
+    _, _, results = agent.run_turn(list(MESSAGES), SESSION_ID, initial,
+                                   session_values={"user_terms": True, "profile_consent": True})
+    gateway.execute.assert_called_once()
+    assert results[0].success is True
+
+
+def test_consent_session_fields_constructor_arg_is_normalised():
+    llm, reg, gw, ke, trust = (MagicMock() for _ in range(5))
+    agent = ManagerAgent(chat_provider=llm, tool_registry=reg, action_gateway=gw,
+                         knowledge_engine=ke, trust_layer=trust,
+                         consent_session_fields={"save_profile": ["user_terms"], "x": []})
+    assert agent._consent_session_fields == {"save_profile": ["user_terms"]}

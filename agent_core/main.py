@@ -209,6 +209,18 @@ def _build_app():
     if session_only_params:
         logger.info("startup.session_only_params %s", session_only_params)
 
+    # connectors.<category>[].invocation_rules.consent_session_fields -> {tool: [fields]}
+    consent_session_fields: dict[str, list[str]] = {}
+    for _conns in (config.get("connectors") or {}).values():
+        for _conn in _conns or []:
+            if not isinstance(_conn, dict):
+                continue
+            _fields = ((_conn.get("invocation_rules") or {}).get("consent_session_fields")) or []
+            if isinstance(_fields, list) and _fields:
+                consent_session_fields[str(_conn.get("name"))] = [str(f) for f in _fields]
+    if consent_session_fields:
+        logger.info("startup.consent_session_fields %s", consent_session_fields)
+
     # connectors.<category>[].invocation_rules.max_calls_per_turn -> {tool: n}
     tool_call_caps: dict[str, int] = {}
     for _conns in (config.get("connectors") or {}).values():
@@ -230,6 +242,7 @@ def _build_app():
         max_tool_rounds=agent_cfg.get("max_tool_rounds", 1),
         grounded_params=grounded_params,
         session_only_params=session_only_params,
+        consent_session_fields=consent_session_fields,
         tool_call_caps=tool_call_caps,
         identity=config.get("identity"),
         zero_seed_fields=zero_seed_fields(

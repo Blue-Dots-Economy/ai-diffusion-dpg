@@ -58,7 +58,9 @@ from src.interfaces.trust_layer import TrustLayerBase
 from src.http_clients.trust_layer import TrustLayerConstraintError
 from src.preprocessing.language_normalisation import LanguageNormaliser
 from src.manager_agent import ManagerAgent, zero_seed_fields
-from src.tool_guard import apply_session_only, check_tool_call
+from src.tool_guard import (
+    apply_session_only, check_tool_call, combine_consent, session_consent_ok,
+)
 from src.predispatch.rules import Selection, select
 from src.predispatch.runner import PREDISPATCH_ID, PredispatchResult, run_async, run_sync
 from src.models import (
@@ -717,6 +719,25 @@ class AgentCore(AgentCoreBase):
                 "operation": "orchestrator.session_only", "status": "success",
                 "tool": tc.tool_name, "dropped": sorted(dropped)})
 
+    def _session_consent_ok(self, tc, bundle) -> bool | None:
+        """Consent recorded in session for this call's ``consent_session_fields``.
+
+        A returning caller's stored consent arrives in session from the profile
+        lookup; anyone else's only from the consent phase. Checked on every
+        dispatch path, model-initiated calls included.
+
+        Returns:
+            None when the tool lists no fields, else whether all are true.
+        """
+        spec = (getattr(self._manager_agent, "_consent_session_fields", None) or {}).get(
+            getattr(tc, "tool_name", ""))
+        ok = session_consent_ok(spec, self._tool_session_values(bundle))
+        if ok is False:
+            logger.warning("orchestrator.consent_not_in_session", extra={
+                "operation": "orchestrator.consent_gate", "status": "skipped",
+                "tool": tc.tool_name})
+        return ok
+
     def _predispatch_guard(self, tc, bundle, tool_cache, counts: dict, consent_ok: bool | None):
         """The shared guard (consent, cap, grounding, cache) for a pre-dispatch call.
 
@@ -739,7 +760,8 @@ class AgentCore(AgentCoreBase):
             used=counts.get(tc.tool_name, 0), grounded_spec=spec, messages=[],
             stored_results=tool_cache.stored_results_by_tool(),
             session_grounded=self._session_grounded_values(bundle, spec),
-            consent_ok=consent_ok, cache_lookup=tool_cache.lookup)
+            consent_ok=combine_consent(consent_ok, self._session_consent_ok(tc, bundle)),
+            cache_lookup=tool_cache.lookup)
 
     @staticmethod
     def _predispatch_error(operation: str, session_id: str, e: Exception) -> PredispatchResult:
@@ -5691,7 +5713,7 @@ class AgentCore(AgentCoreBase):
                                 messages=messages,
                                 stored_results=tool_cache.stored_results_by_tool(),
                                 session_grounded=self._session_grounded_values(bundle, _spec),
-                                consent_ok=None,
+                                consent_ok=self._session_consent_ok(tc, bundle),
                                 cache_lookup=tool_cache.lookup,
                             )
                             if _verdict.kind != "go":
@@ -6051,7 +6073,7 @@ class AgentCore(AgentCoreBase):
                                         stored_results=tool_cache.stored_results_by_tool(),
                                         session_grounded=self._session_grounded_values(
                                             bundle, _spec2),
-                                        consent_ok=None,
+                                        consent_ok=self._session_consent_ok(tc, bundle),
                                         cache_lookup=tool_cache.lookup,
                                     )
                                     if _verdict2.kind != "go":

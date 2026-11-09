@@ -73,3 +73,51 @@ def test_cache_hit_after_guards():
 def test_cap_beats_cache_hit():
     v = check_tool_call(_tc("fetch_jobs"), **{**BASE, "cap": 1, "used": 1, "cache_lookup": _hit})
     assert v.kind == "refuse"
+
+
+# --- consent recorded in session (consent_session_fields) -------------------
+
+from src.tool_guard import combine_consent, session_consent_ok  # noqa: E402
+
+FIELDS = ["user_terms", "user_privacy", "profile_consent"]
+ALL_TRUE = {"user_terms": True, "user_privacy": True, "profile_consent": True}
+
+
+def test_no_fields_means_no_session_check():
+    assert session_consent_ok([], {}) is None
+    assert session_consent_ok(None, ALL_TRUE) is None
+
+
+def test_consent_on_file_passes_without_asking_again():
+    assert session_consent_ok(FIELDS, ALL_TRUE) is True
+
+
+def test_string_true_from_an_upstream_counts():
+    assert session_consent_ok(FIELDS, {k: "True" for k in FIELDS}) is True
+
+
+def test_a_first_time_caller_with_nothing_in_session_is_refused():
+    assert session_consent_ok(FIELDS, {}) is False
+    assert session_consent_ok(FIELDS, None) is False
+
+
+def test_any_one_flag_missing_or_false_refuses():
+    for f in FIELDS:
+        assert session_consent_ok(FIELDS, {**ALL_TRUE, f: False}) is False
+        assert session_consent_ok(FIELDS, {k: v for k, v in ALL_TRUE.items() if k != f}) is False
+    # Truthy but not true is not consent.
+    assert session_consent_ok(FIELDS, {**ALL_TRUE, "profile_consent": "yes"}) is False
+
+
+def test_session_refusal_reaches_the_guard_as_consent_required():
+    v = check_tool_call(_tc("save_profile"),
+                        **{**BASE, "consent_ok": session_consent_ok(FIELDS, {})})
+    assert v.kind == "refuse" and v.result.error == "consent_required"
+
+
+def test_combine_consent():
+    assert combine_consent(None, None) is None
+    assert combine_consent(True, None) is True
+    assert combine_consent(None, True) is True
+    assert combine_consent(True, False) is False
+    assert combine_consent(False, None) is False

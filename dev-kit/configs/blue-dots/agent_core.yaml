@@ -542,6 +542,10 @@ connectors:
         # the model used last. Two of four test runs produced a second live
         # profile under a name the caller never gave.
         max_calls_per_turn: 1
+        # Consent gate, enforced before the call leaves Agent Core. A returning
+        # caller whose consent is on file has these from fetch_profile and is
+        # not asked again; anyone else has them only after the consent phase.
+        consent_session_fields: [user_terms, user_privacy, profile_consent]
         grounded_params:
           # Same guard apply_job carries, for the same reason. Measured on
           #
@@ -638,6 +642,7 @@ connectors:
           अभी प्रोफ़ाइल अपडेट नहीं कर पा रही हूँ।
         bridge_line: "मैं आपकी प्रोफ़ाइल अपडेट करती हूँ।"
         max_calls_per_turn: 1
+        consent_session_fields: [user_terms, user_privacy, profile_consent]
       # An update changes what fetch_profile returns, so drop its stored result.
       invalidates: [fetch_profile]
 
@@ -674,6 +679,7 @@ connectors:
         # an application at an employer the caller never chose, sent to a real
         # hiring manager with their name and number on it.
         max_calls_per_turn: 1
+        consent_session_fields: [user_terms, user_privacy, profile_consent]
         # ENFORCED, not just described. Each of these must appear verbatim in a
         # tool result from this conversation or the call is refused before it
         # leaves us. `must_not_substitute` below has always asked for this in
@@ -721,6 +727,7 @@ connectors:
           said yes in the current turn.
         required_before_calling: [profile_item_id, selected_service_item_id]
         max_calls_per_turn: 1
+        consent_session_fields: [user_terms, user_privacy, profile_consent]
         grounded_params:
           service_item_id: [fetch_services]
           profile_item_id: [fetch_profile, save_profile]

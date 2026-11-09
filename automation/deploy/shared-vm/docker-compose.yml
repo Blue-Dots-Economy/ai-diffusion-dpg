@@ -467,8 +467,10 @@ services:
       - MEMGRAPH_USER=memgraph
       - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-}
       - OTEL_PYTHON_FASTAPI_EXCLUDED_URLS=/health
-      # Pseudonymises ids in stored tool results. Unset disables storage.
-      - TOOL_RESULT_KEY_SECRET=${TOOL_RESULT_KEY_SECRET:-}
+      # Pseudonymises ids in stored tool results. Required: without it tool
+      # results do not survive between turns and the voice flow cannot save a
+      # profile or apply (see env.example).
+      - TOOL_RESULT_KEY_SECRET=${TOOL_RESULT_KEY_SECRET:?set TOOL_RESULT_KEY_SECRET in .env (openssl rand -hex 32)}
     volumes:
       - ../../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
       - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
