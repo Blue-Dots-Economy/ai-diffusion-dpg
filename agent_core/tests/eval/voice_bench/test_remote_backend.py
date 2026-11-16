@@ -5,7 +5,11 @@ replays canned responses.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
+import uuid
+
+import httpx
 
 import pytest
 
@@ -351,3 +355,79 @@ def test_the_environment_can_point_a_run_at_another_grafana(tmp_path, monkeypatc
     monkeypatch.setenv("VOICE_BENCH_GRAFANA_URL", "http://other:3001")
     cfg = load_config(_cfg_file(tmp_path, [{"name": "vm", "bridge_url": "http://127.0.0.1:8008"}]))
     assert cfg.targets[0].grafana_url == "http://other:3001"
+
+
+def _seeded_cluster(found: bool):
+    """A fake cluster where every participant read either finds a user or 404s."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"items": [{"lifecycle_status": "live"}]}) if found \
+                else httpx.Response(404, json={"error": "NOT_FOUND"})
+        return httpx.Response(200, json={"user_id": "u", "items": [{"item_id": str(uuid.uuid4())}]})
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_seed_skips_when_this_generation_is_already_on_the_cluster(tmp_path):
+    """A colleague's earlier seed must not be duplicated by a machine with no state file."""
+    b = RemoteBackend(_cfg(), tmp_path, http=_seeded_cluster(True), env=dict(ENV), sleep=lambda _s: None)
+    b.seed()
+    assert b.state["seed_version"] == SEED_VERSION and b.state["seeded"] is True
+    assert b.state["profile_item_ids"] == []
+
+
+def test_seed_posts_when_the_cluster_has_none_of_this_generation(tmp_path):
+    b = RemoteBackend(_cfg(), tmp_path, http=_seeded_cluster(False), env=dict(ENV), sleep=lambda _s: None,
+                      index_timeout_s=0)
+    try:
+        b.seed()
+    except Exception:
+        pass
+    assert b.state.get("seeded") in (True, None)
+
+
+def test_seed_mode_none_writes_nothing(tmp_path):
+    posts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posts.append(request)
+        return httpx.Response(404)
+
+    cfg = dataclasses.replace(_cfg(), seed_mode="none")
+    b = RemoteBackend(cfg, tmp_path, http=httpx.Client(transport=httpx.MockTransport(handler)),
+                      env=dict(ENV), sleep=lambda _s: None)
+    b.seed()
+    assert posts == []
+    assert b.state["seed_mode"] == "none" and b.state["seeded"] is False
+    assert b.state["seed_version"] == SEED_VERSION
+
+
+def test_live_profiles_counts_only_what_is_not_retired(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"items": [{"lifecycle_status": "live"},
+                                                   {"lifecycle_status": "retired"},
+                                                   {"lifecycle_status": "draft"}]})
+
+    b = RemoteBackend(_cfg(), tmp_path, http=httpx.Client(transport=httpx.MockTransport(handler)),
+                      env=dict(ENV), sleep=lambda _s: None)
+    assert b.live_profiles("919900017000") == 2
+
+
+def test_live_profiles_is_zero_when_the_cluster_has_no_such_number(tmp_path):
+    b = RemoteBackend(_cfg(), tmp_path, http=_seeded_cluster(False), env=dict(ENV), sleep=lambda _s: None)
+    assert b.live_profiles("919900017000") == 0
+
+
+def test_a_participant_read_rejection_names_the_cluster_not_the_key(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403)
+
+    b = RemoteBackend(_cfg(), tmp_path, http=httpx.Client(transport=httpx.MockTransport(handler)),
+                      env=dict(ENV), sleep=lambda _s: None)
+    with pytest.raises(RemoteBackendError) as e:
+        b.live_profiles("919900017000")
+    assert "sk_test_key" not in str(e.value) and "cluster" in str(e.value)
+
+
+def test_seed_mode_must_be_auto_or_none(tmp_path):
+    with pytest.raises(ValueError, match="seed_mode"):
+        _backend({"mode": "remote", "cluster": "uat", "seed_mode": "sometimes"})

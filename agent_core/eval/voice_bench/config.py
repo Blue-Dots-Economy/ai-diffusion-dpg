@@ -105,6 +105,7 @@ class BackendCfg:
     instance_url: str | None = None
     credentials_env_prefix: str = ""
     cluster: str | None = None
+    seed_mode: str = "auto"
     tap_port: int = 18742
     postgres_container: str | None = "signals-postgres"
     env_file: Path | None = None
@@ -192,8 +193,13 @@ def _backend(b: dict) -> BackendCfg:
         b.pop("credentials_env_prefix", None)
         if not signals_url or not search_url:
             raise ValueError("backend.mode=remote needs signals_url and search_url")
+        seed_mode = str(os.environ.get("VOICE_BENCH_SEED_MODE") or b.pop("seed_mode", None) or "auto").strip().lower()
+        if seed_mode not in ("auto", "none"):
+            raise ValueError(f"backend.seed_mode must be 'auto' or 'none', got {seed_mode!r}")
     else:
         b.pop("cluster", None)
+        b.pop("seed_mode", None)
+        seed_mode = "auto"
         creds_prefix = b.pop("credentials_env_prefix", "")
         signals_url = os.environ.get("VOICE_BENCH_SIGNALS_URL") or b.pop("signals_url", "http://localhost:2742")
         search_url = os.environ.get("VOICE_BENCH_SEARCH_URL") or b.pop("search_url", "http://localhost:3100")
@@ -205,7 +211,7 @@ def _backend(b: dict) -> BackendCfg:
 
     return BackendCfg(mode=mode, signals_dir=Path(signals_dir) if signals_dir else None,
                       signals_url=signals_url, search_url=search_url, instance_url=instance_url,
-                      credentials_env_prefix=str(creds_prefix or ""), cluster=cluster,
+                      credentials_env_prefix=str(creds_prefix or ""), cluster=cluster, seed_mode=seed_mode,
                       postgres_container=postgres_container, env_file=env_file, network_json=network_json,
                       **{k: v for k, v in b.items()})
 

@@ -9,7 +9,7 @@ import pytest
 
 from eval.voice_bench.backend import Backend
 from eval.voice_bench.config import BackendCfg
-from eval.voice_bench.seed import (SEED_VERSION, cleanup_sql, job_rows, load_seed, participant_body, places,
+from eval.voice_bench.seed import (seed_phone, SEED_VERSION, cleanup_sql, job_rows, load_seed, participant_body, places,
                                    profile_item_state, restore_sql)
 
 
@@ -34,7 +34,8 @@ def test_job_rows_use_network_json_enum_values():
     r = rows[1 * 6 + 2]                                         # trade 1 (Plumber), city 2 (Noida)
     assert r["item_state"]["jobProviderName"] == load_seed()["employers"][(1 * 3 + 2) % 8]
     assert r["item_state"]["salaryMin"] == 9000 + 1000 * ((1 + 4) % 8) and r["item_state"]["salaryMax"] == 18000
-    assert "title" not in r["item_state"] and r["phone"] == "919900081200"   # up-gzb job_posting_1.0 has no title
+    assert "title" not in r["item_state"] and r["phone"] == seed_phone(1, 2)  # up-gzb job_posting_1.0 has no title
+    assert r["phone"].endswith(f"{SEED_VERSION:02d}")
 
 
 def test_places_lexicon_has_aliases():

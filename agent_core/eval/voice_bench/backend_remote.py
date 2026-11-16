@@ -29,7 +29,8 @@ from pathlib import Path
 import httpx
 
 from eval.voice_bench.config import BackendCfg
-from eval.voice_bench.seed import SEED_VERSION, job_rows, load_seed, participant_body, profile_item_state
+from eval.voice_bench.seed import (SEED_VERSION, job_rows, load_seed, participant_body, profile_item_state,
+                                   seed_phone)
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,7 @@ class RemoteBackend:
         same three variables out of the environment so everything downstream
         (TargetStack, compose_override, redact) is unchanged.
         """
+        self.dir.mkdir(parents=True, exist_ok=True)
         fd = os.open(self._env_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.fchmod(fd, 0o600)                            # also tighten a pre-existing file
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -204,6 +206,19 @@ class RemoteBackend:
             return
         seed_start = time.time()
         api_key, search_key, org_id = self._creds()
+        if self.cfg.seed_mode == "none":
+            self._write_env(api_key, search_key, org_id)
+            self._record_state(seeded=False, elapsed_s=0)
+            logger.info("remote_backend.seed", extra={
+                "operation": "remote_backend.seed", "status": "skipped", "reason": "seed_mode=none"})
+            return
+        if self.seed_present():
+            self._write_env(api_key, search_key, org_id)
+            self._record_state(seeded=True, elapsed_s=0)
+            logger.info("remote_backend.seed", extra={
+                "operation": "remote_backend.seed", "status": "skipped",
+                "reason": "this seed generation is already on the cluster"})
+            return
         self.dir.mkdir(parents=True, exist_ok=True)
         self._write_env(api_key, search_key, org_id)
         headers = {"x-api-key": api_key, "x-acting-org-id": org_id}
@@ -223,25 +238,42 @@ class RemoteBackend:
             profile_item_ids.append(str(uuid.UUID(str(body["items"][0]["item_id"]))))
 
         self._wait_index(search_key, baseline + len(jobs))
+        self._record_state(seeded=True, elapsed_s=time.time() - seed_start,
+                           provider_baseline=baseline, profile_item_ids=profile_item_ids)
+        logger.info("remote_backend.seed", extra={
+            "operation": "remote_backend.seed", "status": "success", "jobs": len(jobs),
+            "profiles": len(profile_item_ids), "provider_baseline": baseline,
+            "latency_ms": int((time.time() - seed_start) * 1000)})
+
+    def _record_state(self, seeded: bool, elapsed_s: float, provider_baseline: int = 0,
+                      profile_item_ids: list[str] | None = None) -> None:
+        """Persist what this backend did, so a later run need not ask the cluster again.
+
+        Args:
+            seeded: Whether this seed generation is on the cluster at all.
+            elapsed_s: How long seeding took; 0 when nothing was posted.
+            provider_baseline: Provider items the index held before seeding.
+            profile_item_ids: Item ids of the seeded profiles.
+        """
+        self.dir.mkdir(parents=True, exist_ok=True)
         state = {
             "mode": "remote",
             "seed_version": SEED_VERSION,
+            "seed_mode": self.cfg.seed_mode,
+            "seeded": seeded,
             "api_key_env_file": str(self._env_path),
             "signals_url": self.cfg.signals_url,
             "search_url": self.cfg.search_url,
             "instance_url": self.cfg.apply_instance_url,
-            "provider_baseline": baseline,
-            "profile_item_ids": profile_item_ids,
+            "provider_baseline": provider_baseline,
+            "profile_item_ids": profile_item_ids or [],
+            "seed_latency_ms": int(elapsed_s * 1000),
             # Present so callers that read state["watermark"] to mean "seeded"
             # keep working; remote mode has no watermark to clean up to.
             "watermark": None,
             "cleanup": "disabled: shared cluster",
         }
         self._state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        logger.info("remote_backend.seed", extra={
-            "operation": "remote_backend.seed", "status": "success", "jobs": len(jobs),
-            "profiles": len(profile_item_ids), "provider_baseline": baseline,
-            "latency_ms": int((time.time() - seed_start) * 1000)})
 
     def _post(self, body: dict, headers: dict) -> dict:
         url = self.cfg.signals_url.rstrip("/") + "/api/v1/admin/participant"
@@ -250,6 +282,47 @@ class RemoteBackend:
             raise RemoteBackendError(
                 f"POST /api/v1/admin/participant ({body['domain']}) failed: HTTP {r.status_code}")
         return r.json()
+
+    # ---- reads ---------------------------------------------------------------------------------------------
+    def _participant(self, phone: str, headers: dict) -> dict | None:
+        """One participant's record by phone, or None when the cluster has no such user.
+
+        Raises:
+            RemoteBackendError: The read failed for any reason other than "not found".
+        """
+        url = self.cfg.signals_url.rstrip("/") + "/api/v1/admin/participant"
+        try:
+            r = self._http.get(url, params={"phone_number": f"+{phone}"}, headers=headers)
+        except httpx.HTTPError as exc:
+            raise RemoteBackendError(f"GET /api/v1/admin/participant failed: {type(exc).__name__}") from exc
+        if r.status_code == 404:
+            return None
+        if r.status_code in (401, 403):
+            raise RemoteBackendError(self._wrong_cluster_hint(r.status_code, "participant read"))
+        if not 200 <= r.status_code < 300:
+            raise RemoteBackendError(f"GET /api/v1/admin/participant failed: HTTP {r.status_code}")
+        return r.json()
+
+    def live_profiles(self, phone: str) -> int:
+        """How many non-retired items the cluster holds for this number. 0 when there is no such user."""
+        api_key, _search_key, org_id = self._creds()
+        data = self._participant(phone, {"x-api-key": api_key, "x-acting-org-id": org_id})
+        items = (data or {}).get("items") or []
+        return sum(1 for i in items if i.get("lifecycle_status") != "retired")
+
+    def seed_present(self) -> bool:
+        """Whether this seed generation is already on the cluster.
+
+        Probes the first, middle and last poster numbers of the generation rather
+        than all sixty. They are posted in order, so a complete seed has all three
+        and a half-written one is reported absent and completed.
+        """
+        api_key, _search_key, org_id = self._creds()
+        headers = {"x-api-key": api_key, "x-acting-org-id": org_id}
+        seed = load_seed()
+        last_trade, last_city = len(seed["trades"]) - 1, len(seed["cities"]) - 1
+        probes = (seed_phone(0, 0), seed_phone(last_trade // 2, last_city // 2), seed_phone(last_trade, last_city))
+        return all(self._participant(p, headers) for p in probes)
 
     # ---- index ---------------------------------------------------------------------------------------------
     def _search(self, search_key: str, limit: int = 1):

@@ -75,7 +75,9 @@ backend:
   # Pick a cluster by name. The name carries BOTH the URLs and the credential
   # variable names, because each cluster has its own key set:
   #
-  #   cluster: uat    (default)  https://signals.bluedotseconomy.org
+  #   # seed_mode: auto    # auto = seed once per SEED_VERSION, skipping when the cluster already has it
+  #                    # none = never write seed data; returning-caller scenarios report unscored instead
+  cluster: uat    (default)  https://signals.bluedotseconomy.org
   #                              reads UAT_BLUE_DOTS_API_KEY / _SEARCH_API_KEY / _ORG_ID
   #                              real curated provider data near Delhi and Bengaluru
   #

@@ -8,7 +8,8 @@ from eval.voice_bench.records import CallRecord, Verdict
 from eval.voice_bench.suite import Persona, applicable_tcs
 
 JUDGED = ("TC01", "TC10", "TC12", "TC14", "TC16", "TC17")
-UNSCORED_VOIDS = {"broken_twice": "persona broken twice", "broken_after_retry": "persona broken after retry"}
+UNSCORED_VOIDS = {"broken_twice": "persona broken twice", "broken_after_retry": "persona broken after retry",
+                  "no_profile_on_cluster": "this cluster holds no profile for the persona's number"}
 
 
 def score_call(rec: CallRecord, persona: Persona, judge_llm, places: dict, no_idle_handling: bool) -> dict[str, Verdict]:

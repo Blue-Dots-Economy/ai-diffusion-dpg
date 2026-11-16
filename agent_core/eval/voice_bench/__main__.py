@@ -31,10 +31,13 @@ from eval.voice_bench.backend_remote import RemoteBackend
 from eval.voice_bench.bridge import BridgeClient
 from eval.voice_bench.caller import Caller
 from eval.voice_bench.config import BenchConfig, load_config
+from datetime import datetime, timezone
+
 from eval.voice_bench.drive import DriveDeps, drive_call
 from eval.voice_bench.llm import OpenAIJsonLLM
 from eval.voice_bench.nlu import run_nlu
 from eval.voice_bench.observe import LocalObserver, LogScraper, reset_session
+from eval.voice_bench.records import CallRecord
 from eval.voice_bench.observe_loki import LokiClient, LokiObserver
 from eval.voice_bench.redact import redact
 from eval.voice_bench.report import comparable, render_markdown, summarise
@@ -139,6 +142,26 @@ def _make_observer(t, tap):
     return LocalObserver(tap, t.redis_container, LogScraper(t.agent_container))
 
 
+def _skipped_record(persona, run_idx: int, meta: dict, reason: str) -> CallRecord:
+    """A call that was never placed, recorded so the report shows it unscored rather than missing."""
+    return CallRecord(target=meta["target"], target_commit=meta["target_commit"], scenario=persona.id, run=run_idx,
+                      phone=persona.seeded_phone or "", suite_version=meta["suite_version"],
+                      seed_version=meta["seed_version"], caller_model=meta["caller_model"],
+                      judge_model=meta["judge_model"], legs=[], attempts=0, voided=True, error=None,
+                      started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"), void_reason=reason)
+
+
+def _missing_profile(backend, persona) -> bool:
+    """Whether a returning-caller persona has no profile on a cluster the bench must not create one on."""
+    if not persona.seeded_phone or not hasattr(backend, "live_profiles"):
+        return False
+    try:
+        return backend.live_profiles(persona.seeded_phone) == 0
+    except Exception as e:  # noqa: BLE001 - a probe failure must not fail the run
+        _say(f"could not check {persona.id}'s profile: {type(e).__name__}")
+        return False
+
+
 def _status(rec) -> str:
     if rec.harness_error:
         return "harness-error"
@@ -168,24 +191,50 @@ def _run_target(t, stack, cfg: BenchConfig, store: ResultStore, plan, personas, 
                       caller_model=cfg.caller.model, judge_model=cfg.judge.model,
                       backend_mode=cfg.backend.mode, phone_salt=phone_salt,
                       image_tag=getattr(stack, "image_tag", None))
+    used_phones: set[str] = set()
     for pid, runs in plan:
         persona = personas[pid]
         for run in range(runs):
             if store.has(commit, pid, run):
                 _say(f"{t.name} {pid} r{run} cached")
                 continue
+            if t.is_deployed and _missing_profile(backend, persona):
+                rec = _skipped_record(persona, run, drive_meta, "no_profile_on_cluster")
+                score_call(rec, persona, judge_llm, seed_places, t.no_idle_handling)
+                store.save(rec)
+                _say(f"{t.name} {pid} r{run} skipped: no profile for {persona.seeded_phone}")
+                continue
             phone = persona.seeded_phone or phone_for(cfg.phone_prefix, pid, run, phone_salt)
             call_deps = dataclasses.replace(deps, cleanup=_call_cleanup(backend, t, phone))
+            used_phones.add(phone)
             rec = drive_call(call_deps, persona, run, phone, cfg.max_turns, drive_meta)
             score_call(rec, persona, judge_llm, seed_places, t.no_idle_handling)
             store.save(rec)
             _say(f"{t.name} {pid} r{run} {_status(rec)} {_turns(rec)} turns")
+    _record_footprint(t, backend, store, commit, used_phones, cfg)
     if t.git_ref:          # also on --dry-run, so the target's NLU worker path is exercised before a full run
         nlu = store.read_meta(commit).get("nlu")
         if not nlu or nlu.get("unmeasurable"):
             nlu = run_nlu(stack.worktree, _NLU_CASES, 1, store.target_dir(commit) / "nlu.json", env_file=env_file)
             _merge_meta(store, commit, {"nlu": nlu})
             _say(f"{t.name} nlu " + ("unmeasurable" if nlu.get("unmeasurable") else "ok"))
+
+
+def _record_footprint(t, backend, store, commit: str, phones: set[str], cfg: BenchConfig) -> None:
+    """Count what this run left on a shared cluster, since nothing deletes it.
+
+    Best effort: a probe failure is reported and the run still finishes.
+    """
+    if not (t.is_deployed and phones and hasattr(backend, "live_profiles")):
+        return
+    try:
+        profiles = sum(backend.live_profiles(p) for p in sorted(phones))
+    except Exception as e:  # noqa: BLE001 - class name only; the run is already done
+        _say(f"{t.name} footprint unknown: {type(e).__name__}")
+        return
+    _merge_meta(store, commit, {"footprint": {"numbers": len(phones), "live_profiles": profiles,
+                                              "signals_url": cfg.backend.signals_url}})
+    _say(f"{t.name} left {profiles} profile(s) on {cfg.backend.signals_url} across {len(phones)} number(s)")
 
 
 def cmd_run(cfg: BenchConfig, args) -> int:

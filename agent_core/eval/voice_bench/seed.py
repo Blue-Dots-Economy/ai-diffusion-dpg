@@ -26,11 +26,22 @@ def load_seed() -> dict:
     return json.loads(_SEED_FILE.read_text(encoding="utf-8"))
 
 
+def seed_phone(trade_idx: int, city_idx: int) -> str:
+    """Reserved poster number for one seeded job: prefix + trade + city + seed version.
+
+    The last two digits carry SEED_VERSION, so one generation's rows can be found
+    on a shared cluster without reading anything else, and two generations never
+    collide on the same number.
+    """
+    return f"9199000{80 + trade_idx:02d}{city_idx}{SEED_VERSION:02d}"
+
+
 def job_rows(seed: dict) -> list[dict]:
     """60 deterministic job postings: one per (trade, city).
 
     Returns:
-        Rows of ``{"phone", "name", "item_state"}``. ``phone`` is the poster's (reserved range, unique per job),
+        Rows of ``{"phone", "name", "item_state"}``. ``phone`` is the poster's (reserved range, unique per job
+        and per seed version, so a version bump posts a fresh generation instead of stacking on the old one),
         ``name`` the employer, ``item_state`` a job_posting_1.0 payload. up-gzb job_posting_1.0 has
         ``additionalProperties: false`` and no ``title``; ``jobCategory`` is set only for trades whose category
         enum value clearly fits (seed ``job_category``), and ``typeOfJob`` is omitted (no clean per-trade fit).
@@ -42,7 +53,7 @@ def job_rows(seed: dict) -> list[dict]:
             salary_min = 9000 + 1000 * ((i + 2 * j) % 8)
             employer = employers[(i * 3 + j) % len(employers)]
             rows.append({
-                "phone": f"9199000{80 + i:02d}{j}00",
+                "phone": seed_phone(i, j),
                 "name": employer,
                 "item_state": {
                     "jobProviderName": employer,
