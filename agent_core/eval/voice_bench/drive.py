@@ -133,4 +133,5 @@ def drive_call(deps: DriveDeps, persona: Persona, run_idx: int, phone: str, max_
                       attempts=attempts, voided=void_reason is not None, error=None if harness_error else err,
                       started_at=started, void_reason=void_reason, harness_error=harness_error,
                       prior_legs=prior_legs, prior_error=prior_error,
-                      observes_session=deps.observer.sees_session)
+                      observes_session=deps.observer.sees_session,
+                      observes_tool_bodies=deps.observer.sees_tool_bodies)

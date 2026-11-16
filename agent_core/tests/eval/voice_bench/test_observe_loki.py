@@ -173,3 +173,23 @@ def test_the_query_is_scoped_to_this_call():
     assert all(SID in q for q in reader.queries)
     assert reader.queries[0].startswith('{job="agent_core"}')
     assert reader.queries[1].startswith('{job="action_gateway"}')
+
+
+def test_bodies_are_claimed_only_when_they_were_logged():
+    obs = _observer([[(1, BANNER)], [(2, _request("fetch_jobs", "https://s/x", {})),
+                                     (3, _response("fetch_jobs", '{"items":[]}')),
+                                     (4, _execute("fetch_jobs"))]])
+    obs.turn("919060601102", "br-n2", 0)
+    assert obs.sees_tool_bodies is True
+
+
+def test_a_deployment_left_at_the_default_level_admits_it_has_no_bodies():
+    obs = _observer([[(1, BANNER)], [(2, _execute("fetch_jobs"))]])
+    obs.turn("919060601102", "br-n2", 0)
+    assert obs.sees_tool_bodies is False
+
+
+def test_a_call_with_no_tools_at_all_is_not_held_against_the_target():
+    obs = _observer([[(1, BANNER)], []])
+    obs.turn("919060601102", "br-n2", 0)
+    assert obs.sees_tool_bodies is True

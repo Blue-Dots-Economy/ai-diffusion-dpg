@@ -203,9 +203,16 @@ def _tc07_leg(lg: Leg, places: dict[str, list[str]]) -> Verdict:
 
 
 def _tc07(ctx: CheckCtx) -> Verdict:
+    """No place named that the caller did not say and no tool result carried.
+
+    Both halves of that comparison live in the tool response bodies, so without
+    them every place name would read as invented. Unscored, not failed.
+    """
     legs = [lg for lg in ctx.rec.legs if any(_taps(t, "fetch_jobs") for t in lg.turns)]
     if not legs:
         return Verdict("n/a", reason="no fetch_jobs")
+    if not ctx.rec.observes_tool_bodies:
+        return Verdict("unscored", reason="tool responses recorded without their bodies")
     return next((r for r in (_tc07_leg(lg, ctx.places) for lg in legs) if r.status == "fail"), Verdict("pass"))
 
 
@@ -353,14 +360,36 @@ def _tc09(ctx: CheckCtx) -> Verdict:
     return Verdict("pass")
 
 
+def _values_at(obj, key: str) -> list[str]:
+    """Every string value stored under `key` anywhere under obj."""
+    if isinstance(obj, dict):
+        found = [obj[key]] if isinstance(obj.get(key), str) else []
+        return found + [n for v in obj.values() for n in _values_at(v, key)]
+    if isinstance(obj, list):
+        return [n for v in obj for n in _values_at(v, key)]
+    return []
+
+
 def _employers(obj) -> list[str]:
     """jobProviderName values anywhere under obj."""
-    if isinstance(obj, dict):
-        found = [obj["jobProviderName"]] if isinstance(obj.get("jobProviderName"), str) else []
-        return found + [n for v in obj.values() for n in _employers(v)]
-    if isinstance(obj, list):
-        return [n for v in obj for n in _employers(v)]
-    return []
+    return _values_at(obj, "jobProviderName")
+
+
+def observed_places(rec: CallRecord) -> dict[str, list[str]]:
+    """Cities the target's own tool results named, each its own single alias.
+
+    The seeded place list describes a local backend. Against live data it is the
+    wrong vocabulary: a city the search really returns but the seed never held is
+    simply never examined. Adding what came back closes that gap.
+    """
+    out: dict[str, list[str]] = {}
+    for t in _turns(rec):
+        for e in t.tap:
+            for name in _values_at(e.resp_body, "jobProviderLocation"):
+                clean = name.strip()
+                if clean:
+                    out.setdefault(clean, [clean])
+    return out
 
 
 def _offered(leg: Leg) -> list[str]:
@@ -495,8 +524,15 @@ def _tc21_leg(lg: Leg) -> Verdict | None:
 
 
 def _tc21(ctx: CheckCtx) -> Verdict:
+    """What the reply claims about an application matches what the apply returned.
+
+    A status code alone cannot separate a fresh application from one already on
+    file, and the reply has to say which. Without the bodies, unscored.
+    """
     if not any(_taps(t, "apply_job") for t in _turns(ctx.rec)):
         return Verdict("n/a", reason="no apply calls")
+    if not ctx.rec.observes_tool_bodies:
+        return Verdict("unscored", reason="tool responses recorded without their bodies")
     return next((r for r in map(_tc21_leg, ctx.rec.legs) if r), Verdict("pass"))
 
 

@@ -330,3 +330,36 @@ def test_applied_re_matches_hindi_success_forms():
     assert not APPLIED_RE.search("क्या मैं आपका आवेदन भेज दूँ?")
     # Negative: future/purpose form (not a claim of success)
     assert not APPLIED_RE.search("आवेदन भेजने के लिए नाम बताइए")
+
+
+def _bodiless(r):
+    r.observes_tool_bodies = False
+    return r
+
+
+def test_tc07_without_response_bodies_is_unscored_not_failed():
+    """Every place would read as invented, because nothing carries what the tool returned."""
+    turns = [T(0, "लखनऊ", "लखनऊ में काम है", tap=[jobs_tap("X", city="Lucknow")]),
+             T(1, "हाँ", "मेरठ में भी देख लूँ?")]
+    assert v("TC07", rec((turns, "bot"))) == "fail"
+    assert v("TC07", _bodiless(rec((turns, "bot")))) == "unscored"
+
+
+def test_tc21_without_response_bodies_is_unscored():
+    """A status code cannot separate a fresh application from one already on file."""
+    turns = [T(0, "हाँ भेज दीजिए", "आपका आवेदन भेज दिया गया है।", tap=[apply_tap()])]
+    assert v("TC21", rec((turns, "bot"))) == "pass"
+    assert v("TC21", _bodiless(rec((turns, "bot")))) == "unscored"
+
+
+def test_a_city_only_the_live_data_knows_is_still_judged():
+    """Muzaffarnagar is in no seed list; naming it unprompted must still be caught."""
+    from eval.voice_bench.checks import observed_places
+
+    returned = rec(([T(0, "लखनऊ", "ठीक", tap=[jobs_tap("X", city="Muzaffarnagar")])], "bot"))
+    assert observed_places(returned) == {"Muzaffarnagar": ["Muzaffarnagar"]}
+    invented = rec(([T(0, "लखनऊ", "ठीक", tap=[jobs_tap("X", city="Lucknow")]),
+                     T(1, "हाँ", "Muzaffarnagar में काम है")], "bot"))
+    assert observed_places(invented) == {"Lucknow": ["Lucknow"]}
+    ctx = CheckCtx(invented, P["T01"], {**PLACES, **observed_places(returned)}, False)
+    assert DETERMINISTIC["TC07"](ctx).status == "fail"

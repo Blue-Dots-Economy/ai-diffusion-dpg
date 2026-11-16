@@ -152,6 +152,8 @@ class LokiObserver(Observer):
         self._settle_s = settle_s
         self._sleep, self._clock = sleep, clock
         self._seen: set[str] = set()
+        self._tool_calls = 0
+        self._with_body = 0
 
     @staticmethod
     def _session_id(phone: str, call_id: str) -> str:
@@ -182,8 +184,12 @@ class LokiObserver(Observer):
         return TurnObservation(tap=self._new_entries(session_id, since_s), session={}, banner=banner)
 
     def _new_entries(self, session_id: str, start_s: float) -> list[TapEntry]:
-        found = tool_entries(self._read(self._ag_job, session_id, start_s), session_id)
+        lines = self._read(self._ag_job, session_id, start_s)
+        found = tool_entries(lines, session_id)
         fresh = [e for k, e in sorted(found.items(), key=lambda kv: kv[1].t_ms) if k not in self._seen]
+        new_keys = [k for k in found if k not in self._seen]
+        self._tool_calls += len(new_keys)
+        self._with_body += sum(1 for e in fresh if e.resp_body is not None)
         self._seen.update(found)
         return fresh
 
@@ -198,3 +204,13 @@ class LokiObserver(Observer):
     @property
     def sees_session(self) -> bool:
         return False
+
+    @property
+    def sees_tool_bodies(self) -> bool:
+        """True until a tool call is seen whose response body was never logged.
+
+        The agent records request parameters and response bodies only at its most
+        detailed level, so on a deployment left at the default these are absent and
+        the checks that read them must say so rather than grade on what is left.
+        """
+        return self._with_body > 0 or self._tool_calls == 0

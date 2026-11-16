@@ -56,6 +56,10 @@ class FakeObserver(Observer):
     def sees_session(self):
         return True
 
+    @property
+    def sees_tool_bodies(self):
+        return True
+
 
 def _bt(reply, ended=False, error=None):
     return BridgeTurn(reply, None, 800, 800, 1200, ended, error)

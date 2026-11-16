@@ -102,6 +102,11 @@ class Observer(ABC):
     def sees_session(self) -> bool:
         """Whether ``TurnObservation.session`` is real, or always empty here."""
 
+    @property
+    @abstractmethod
+    def sees_tool_bodies(self) -> bool:
+        """Whether the tool responses observed so far carried their bodies."""
+
 
 class LocalObserver(Observer):
     """Evidence from a stack running on this machine: the tap, Redis and docker logs.
@@ -132,6 +137,10 @@ class LocalObserver(Observer):
 
     @property
     def sees_session(self) -> bool:
+        return True
+
+    @property
+    def sees_tool_bodies(self) -> bool:
         return True
 
 

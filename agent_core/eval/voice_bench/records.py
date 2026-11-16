@@ -98,6 +98,7 @@ class CallRecord:
     prior_legs: list[Leg] = field(default_factory=list)   # the discarded first attempt (retry or void re-run)
     prior_error: str | None = None     # that attempt's error, if it was retried because of one
     observes_session: bool = True      # False when the target's session memory was never readable
+    observes_tool_bodies: bool = True  # False when tool responses were recorded without their bodies
 
     def to_json(self) -> str:
         """Serialise (Devanagari kept as-is)."""
