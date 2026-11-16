@@ -75,9 +75,7 @@ backend:
   # Pick a cluster by name. The name carries BOTH the URLs and the credential
   # variable names, because each cluster has its own key set:
   #
-  #   # seed_mode: auto    # auto = seed once per SEED_VERSION, skipping when the cluster already has it
-  #                    # none = never write seed data; returning-caller scenarios report unscored instead
-  cluster: uat    (default)  https://signals.bluedotseconomy.org
+  #   cluster: uat    (default)  https://signals.bluedotseconomy.org
   #                              reads UAT_BLUE_DOTS_API_KEY / _SEARCH_API_KEY / _ORG_ID
   #                              real curated provider data near Delhi and Bengaluru
   #
@@ -89,6 +87,8 @@ backend:
   #
   # mode: remote
   # cluster: uat
+  # seed_mode: auto     # auto = seed once, skipped when the cluster already holds this generation
+  # seed_mode: none     # never write seed data; returning-caller scenarios then report unscored
   # Override individually only if you must; the preset keeps URLs and key names
   # consistent, and mixing them is the 401/403 trap:
   # signals_url:  https://signals.bluedotseconomy.org
