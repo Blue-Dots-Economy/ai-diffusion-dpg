@@ -22,13 +22,16 @@ def _execute(tool: str, sid: str = SID, traceid: str = "aa11", status: str = "su
 
 
 def _request(tool: str, url: str, params: dict, traceid: str = "aa11") -> str:
-    return _line("rest_api_request", {"operation": "RestApiAdapter.execute", "session_id": SID,
-                                      "tool_name": tool, "method": "GET", "url": url, "params": params}, traceid)
+    """The agent interpolates its arguments into this message, so the fake must too."""
+    return _line(f"rest_api_request tool={tool} method=GET url={url} params={params}",
+                 {"operation": "RestApiAdapter.execute", "session_id": SID,
+                  "tool_name": tool, "method": "GET", "url": url, "params": params}, traceid)
 
 
 def _response(tool: str, body, code: int = 200, traceid: str = "aa11") -> str:
-    return _line("rest_api_response", {"operation": "RestApiAdapter.execute", "session_id": SID,
-                                       "tool_name": tool, "status_code": code, "body": body}, traceid)
+    return _line(f"rest_api_response tool={tool} status={code} body={body}",
+                 {"operation": "RestApiAdapter.execute", "session_id": SID,
+                  "tool_name": tool, "status_code": code, "body": body}, traceid)
 
 
 def test_tool_entries_joins_the_three_records_of_one_call():
@@ -39,7 +42,7 @@ def test_tool_entries_joins_the_three_records_of_one_call():
     assert entry.tool == "fetch_jobs"
     assert entry.upstream == "search"
     assert entry.path == "/signals-search/v1/search" and entry.query == "x=1"
-    assert entry.status == 200 and entry.resp_body == '{"items":[]}'
+    assert entry.status == 200 and entry.resp_body == {"items": []} and entry.body_truncated is False
     assert entry.req_body == {"q": "welder"}
 
 
@@ -193,3 +196,18 @@ def test_a_call_with_no_tools_at_all_is_not_held_against_the_target():
     obs = _observer([[(1, BANNER)], []])
     obs.turn("919060601102", "br-n2", 0)
     assert obs.sees_tool_bodies is True
+
+
+def test_a_line_whose_arguments_are_in_the_message_is_still_matched():
+    """Only rest_api_execute logs a bare name; the other two carry their arguments."""
+    lines = [(1000, _request("fetch_jobs", "https://s/x", {"query_text": "welder"})),
+             (1010, _response("fetch_jobs", '{"items":[]}'))]
+    [entry] = list(tool_entries(lines, SID).values())
+    assert entry.req_body == {"query_text": "welder"} and entry.resp_body == {"items": []}
+
+
+def test_a_body_the_agent_cut_short_is_kept_as_text_and_flagged():
+    """The agent truncates a long response before logging it, so it is no longer JSON."""
+    cut = '{"message":{"items":[{"jobProviderName":"Ganga Steel","jobProvider'
+    [entry] = list(tool_entries([(1000, _response("fetch_jobs", cut)), (1001, _execute("fetch_jobs"))], SID).values())
+    assert entry.body_truncated is True and entry.resp_body == cut

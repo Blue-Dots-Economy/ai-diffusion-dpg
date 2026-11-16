@@ -102,6 +102,16 @@ class LokiClient:
         raise LokiError(f"Loki query failed at {self._base}: {type(last).__name__}: {last}")
 
 
+def _kind(body: object) -> str | None:
+    """Which tool log line this is, or None.
+
+    The agent interpolates its arguments into the message, so only the bare
+    operation name at the front is stable.
+    """
+    text = body if isinstance(body, str) else ""
+    return next((k for k in _TOOL_BODIES if text.startswith(k)), None)
+
+
 def _record(line: str) -> dict:
     """The OTLP log record carried in a Loki line; {} when the line is not JSON."""
     try:
@@ -109,6 +119,22 @@ def _record(line: str) -> dict:
     except (ValueError, TypeError):
         return {}
     return rec if isinstance(rec, dict) else {}
+
+
+def _body(raw):
+    """The response body as data, or (text, True) when the agent had already cut it short.
+
+    The agent logs a response as text truncated to a fixed length, so a long one
+    is not valid JSON any more. Returning it as text keeps the checks that search
+    it working, and the flag stops the checks that walk it reading a cut-off list
+    as an empty one.
+    """
+    if not isinstance(raw, str):
+        return raw, False
+    try:
+        return json.loads(raw), False
+    except ValueError:
+        return raw, True
 
 
 def _entry(group: dict) -> TapEntry:
@@ -119,11 +145,12 @@ def _entry(group: dict) -> TapEntry:
     status = resp.get("status_code")
     if status is None:
         status = 200 if ex.get("status") == "success" else 0
+    body, truncated = _body(resp.get("body"))
     return TapEntry(t_ms=group["t_ms"], method=str(req.get("method") or "GET"), path=split.path,
                     query=split.query, req_body=req.get("params"), status=int(status),
-                    resp_body=resp.get("body"),
+                    resp_body=body,
                     upstream="search" if "/signals-search" in url else "signals",
-                    tool_name=_tool_name(ex, resp, req))
+                    tool_name=_tool_name(ex, resp, req), body_truncated=truncated)
 
 
 def _tool_name(*records: dict) -> str:
@@ -138,11 +165,12 @@ def tool_entries(lines: list[tuple[int, str]], session_id: str) -> dict[str, Tap
     for t_ms, line in lines:
         rec = _record(line)
         attrs = rec.get("attributes") or {}
-        if rec.get("body") not in _TOOL_BODIES or attrs.get("session_id") != session_id:
+        kind = _kind(rec.get("body"))
+        if kind is None or attrs.get("session_id") != session_id:
             continue
         key = str(rec.get("traceid") or f"t{t_ms}")
         group = groups.setdefault(key, {"t_ms": t_ms})
-        group[rec["body"]] = attrs
+        group[kind] = attrs
     return {k: _entry(g) for k, g in groups.items()}
 
 

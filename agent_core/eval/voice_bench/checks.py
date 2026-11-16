@@ -415,6 +415,8 @@ def _offered(leg: Leg) -> list[str]:
 def _tc11(ctx: CheckCtx) -> Verdict:
     if len(ctx.rec.legs) != 2:
         return Verdict("n/a", reason="not a two-leg scenario")
+    if any(_truncated(t, "fetch_jobs") for t in ctx.rec.legs[0].turns):
+        return Verdict("unscored", reason="the search response was recorded cut short, so it cannot be read")
     offered = [n.casefold() for n in _offered(ctx.rec.legs[0])]
     if not offered:
         return Verdict("n/a", reason="leg 0 offered no employers")
@@ -627,10 +629,16 @@ def _tc26(ctx: CheckCtx) -> Verdict:
     return Verdict("pass")
 
 
+def _truncated(turn: TurnRecord, tool: str) -> bool:
+    return any(e.body_truncated for e in _taps(turn, tool))
+
+
 def _tc27(ctx: CheckCtx) -> Verdict:
     """An empty search names the city that was asked for before offering anywhere else."""
     if not ctx.rec.observes_tool_bodies:
         return Verdict("unscored", reason="tool responses recorded without their bodies")
+    if any(_truncated(t, "fetch_jobs") for t in _turns(ctx.rec)):
+        return Verdict("unscored", reason="the search response was recorded cut short, so it cannot be read")
     city = (ctx.persona.facts or {}).get("city") or ""
     empty = [t for t in _turns(ctx.rec)
              if any(not _values_at(e.resp_body, "jobProviderName") for e in _taps(t, "fetch_jobs"))]

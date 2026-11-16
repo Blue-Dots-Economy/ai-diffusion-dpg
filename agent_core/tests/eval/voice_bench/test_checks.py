@@ -464,3 +464,11 @@ def test_tc30_an_age_refusal_never_contradicts_the_age_given():
     assert v("TC30", rec((told, "bot")), persona="T19") == "fail"
     assert v("TC30", rec((told, "bot")), persona="T18") == "pass"
     assert v("TC30", rec(([T(0, "अठारह", "ठीक है")], "bot")), persona="T19") == "n/a"
+
+
+def test_tc27_cannot_read_a_search_response_that_was_cut_short():
+    """A truncated list must not read as "the search returned nothing"."""
+    cut = TapEntry(1, "POST", "/v1/search", "", {}, 200, '{"message":{"items":[{"jobProv', "search",
+                   "fetch_jobs", True)
+    turns = [T(0, "लखनऊ", "कोई नौकरी नहीं है।", tap=[cut])]
+    assert v("TC27", rec((turns, "bot")), persona="T01") == "unscored"

@@ -31,6 +31,7 @@ class TapEntry:
     resp_body: Any
     upstream: str             # "signals" | "search"
     tool_name: str | None = None
+    body_truncated: bool = False   # the response was recorded as text the agent had already cut short
 
     @property
     def tool(self) -> str:
