@@ -23,7 +23,7 @@ def test_job_rows_are_deterministic_and_reserved_range():
     st = rows[0]["item_state"]
     assert {"jobProviderName", "role", "jobProviderLocation", "hiringManagerName", "hiringManagerPhoneNumber",
             "positions", "natureOfJob"} <= set(st)
-    assert SEED_VERSION == 1
+    assert SEED_VERSION == 2
 
 
 def test_job_rows_use_network_json_enum_values():
@@ -127,7 +127,7 @@ class FakeRun:
             elif "item_instance_url" in sql:
                 out = "http://signals-api:2742\n"
             elif "created_by" in sql and "json_build_object" not in sql:
-                out = "usr_t13\nusr_t14\nusr_t06\n"
+                out = "usr_t13\nusr_t14\nusr_t06\nusr_t17\n"
             elif "json_build_object" in sql:
                 out = json.dumps(_SNAP) + "\n"
             elif "now()" in sql:
@@ -161,9 +161,9 @@ def test_seed_writes_0600_env_file_and_keeps_key_out_of_state(tmp_path):
     assert _KEY not in state_text
     st = b.state
     assert st["seed_version"] == SEED_VERSION and st["watermark"] == _WATERMARK and st["snapshot"] == _SNAP
-    assert st["seed_user_ids"] == ["usr_t13", "usr_t14", "usr_t06"] and st["service_user_id"] == "usr_svc-1"
+    assert st["seed_user_ids"] == ["usr_t13", "usr_t14", "usr_t06", "usr_t17"] and st["service_user_id"] == "usr_svc-1"
     assert st["instance_url"] == "http://signals-api:2742"
-    assert len(posts) == 63
+    assert len(posts) == 64
     assert {p.headers["x-api-key"] for p in posts} == {_KEY}
     assert {p.headers["x-acting-org-id"] for p in posts} == {"org_abc-123"}
     assert [json.loads(p.content)["domain"] for p in posts].count("provider") == 60
@@ -222,7 +222,7 @@ def test_cleanup_runs_cleanup_then_restore_via_psql_stdin(tmp_path):
     (a1, s1), (a2, s2) = run.calls
     assert a1 == ["docker", "exec", "-i", "signals-postgres", "psql", "-U", "postgres", "-d", "postgresdb", "-At",
                   "-v", "ON_ERROR_STOP=1"] and a2 == a1
-    assert s1 == cleanup_sql(_WATERMARK, ["usr_t13", "usr_t14", "usr_t06", "usr_svc-1"])
+    assert s1 == cleanup_sql(_WATERMARK, ["usr_t13", "usr_t14", "usr_t06", "usr_t17", "usr_svc-1"])
     assert s2 == restore_sql(_SNAP)
 
 

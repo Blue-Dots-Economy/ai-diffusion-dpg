@@ -1,0 +1,21 @@
+id: T22
+title: Applies, then asks about other jobs
+language: hi
+facts:
+  name: प्रकाश
+  age: 27
+  trade: प्लंबर
+  city: नोएडा
+goal: apply to a plumber job, then ask to hear about other jobs in the same call.
+quirks:
+- after the application is confirmed, ask what other jobs there are
+- do not say goodbye until the bot has answered that
+ends_when: when the bot says goodbye after answering about other jobs
+feeds:
+- TC13
+- TC21
+- TC28
+- TC29
+legs:
+- goal: apply to a plumber job in Noida, then ask about other jobs
+  opening_line: नमस्ते

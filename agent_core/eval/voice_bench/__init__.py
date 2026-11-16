@@ -2,4 +2,4 @@
 
 SUITE_VERSION pins the personas, test cases, rubrics and pass criteria. Bump it on any change to them.
 """
-SUITE_VERSION = 1
+SUITE_VERSION = 2

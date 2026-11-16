@@ -6,6 +6,8 @@ import re
 import pytest
 import yaml
 
+from eval.voice_bench import SUITE_VERSION
+from eval.voice_bench.seed import SEED_VERSION
 from eval.voice_bench.records import CallRecord, Leg, TapEntry, TurnRecord, Verdict
 from eval.voice_bench.report import comparable, pct, render_markdown, summarise
 
@@ -80,7 +82,7 @@ class FakeBackend:
     calls = []
 
     def __init__(self, cfg, results_dir):
-        self.state = {"watermark": "w", "seed_version": 1, "api_key_env_file": "/x/blue_dots.env",
+        self.state = {"watermark": "w", "seed_version": SEED_VERSION, "api_key_env_file": "/x/blue_dots.env",
                       "instance_url": "http://signals-api:2742", "snapshot": {}, "seed_user_ids": [],
                       "service_user_id": "s"}
 
@@ -162,7 +164,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "score_call", fake_score)
     monkeypatch.setattr(cli, "_repo_root", lambda: tmp_path)
     results = tmp_path / "results"
-    cfg = {"suite_version": 1, "targets": [{"name": "M0", "git_ref": "a"}, {"name": "M1", "git_ref": "b"}],
+    cfg = {"suite_version": SUITE_VERSION, "targets": [{"name": "M0", "git_ref": "a"}, {"name": "M1", "git_ref": "b"}],
            "models": {"caller": {"provider": "openai", "model": "gpt-4.1", "temperature": 0.3},
                       "judge": {"provider": "openai", "model": "gpt-4.1", "temperature": 0}},
            "backend": {"signals_dir": str(tmp_path)}, "runs": 1, "runs_per_scenario": {"T01": 3},
@@ -256,7 +258,7 @@ def test_report_uses_the_commit_the_ref_resolves_to_and_warns_on_partial(env):
     m0, m1 = data["summaries"]
     assert m0["commit"] == "old0000" and m0["n_calls"] == 4
     md = out.read_text(encoding="utf-8")
-    assert "**Warning (M0):** partial: 4 of 16 planned calls" in md
+    assert "**Warning (M0):** partial: 4 of 24 planned calls" in md
     assert "**Warning (M1):** ref 'b' does not resolve" in md
     FakeStack.commits = {"M0": "nothere"}
     assert cli.main(["report", "--config", env["cfg"], "--targets", "M0", "--out", str(out)]) == 0

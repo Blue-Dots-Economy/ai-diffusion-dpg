@@ -25,6 +25,15 @@ logger = logging.getLogger(__name__)
 
 TOKEN_ENV = "VOICE_BENCH_GRAFANA_TOKEN"
 
+# Each deployment names its tools in its own config; the checks use one vocabulary.
+TOOL_ALIASES = {
+    "job_fetch": "fetch_jobs",
+    "seeker_fetch": "fetch_profile",
+    "apply": "apply_job",
+    "services_fetch": "fetch_services",
+    "connect": "connect_service",
+}
+
 _REQUEST_OP = "rest_api_request"
 _RESPONSE_OP = "rest_api_response"
 _EXECUTE_OP = "rest_api_execute"
@@ -114,7 +123,13 @@ def _entry(group: dict) -> TapEntry:
                     query=split.query, req_body=req.get("params"), status=int(status),
                     resp_body=resp.get("body"),
                     upstream="search" if "/signals-search" in url else "signals",
-                    tool_name=str(ex.get("tool_name") or resp.get("tool_name") or req.get("tool_name") or "other"))
+                    tool_name=_tool_name(ex, resp, req))
+
+
+def _tool_name(*records: dict) -> str:
+    """The check vocabulary's name for the tool these records describe."""
+    raw = next((str(r["tool_name"]) for r in records if r.get("tool_name")), "other")
+    return TOOL_ALIASES.get(raw, raw)
 
 
 def tool_entries(lines: list[tuple[int, str]], session_id: str) -> dict[str, TapEntry]:

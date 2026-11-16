@@ -12,8 +12,9 @@ quirks:
 - still ask what jobs exist
 ends_when: when the bot says goodbye, or when you have what you came for and say thank you
 feeds:
-- TC18
 - TC05
+- TC18
+- TC23
 consents: false
 legs:
 - goal: hear about jobs without giving consent.

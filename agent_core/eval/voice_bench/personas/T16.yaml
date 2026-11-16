@@ -1,0 +1,21 @@
+id: T16
+title: Wants training, asks what it costs and for a phone number
+language: hi
+facts:
+  name: रेखा
+  age: 26
+  trade: सिलाई
+  city: बेंगलुरु
+goal: find a tailoring training course, find out what it costs, and ask for the centre's phone number.
+quirks:
+- ask what the training costs
+- ask for the centre's phone number
+- agree to have your enquiry sent
+ends_when: after the bot confirms the enquiry, or when it says goodbye
+feeds:
+- TC24
+- TC25
+- TC26
+legs:
+- goal: find tailoring training in Bengaluru, ask the cost and for a phone number
+  opening_line: नमस्ते

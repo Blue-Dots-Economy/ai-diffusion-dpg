@@ -1,0 +1,22 @@
+id: T17
+title: Returning caller changes trade and city
+language: hi
+facts:
+  name: कविता
+  age: 31
+  trade: हाउसकीपिंग
+  city: गाज़ियाबाद
+goal: you already have a profile; change your trade and your city, then hear jobs for the new one.
+quirks:
+- say you want to change your details
+- give the new city only when asked for it
+- confirm the change when it is read back to you
+ends_when: after the bot confirms the update, or when it says goodbye
+feeds:
+- TC09
+- TC24
+- TC25
+seeded_phone: '919900017000'
+legs:
+- goal: change the saved trade and city, then hear jobs for the new one
+  opening_line: नमस्ते

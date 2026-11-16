@@ -363,3 +363,104 @@ def test_a_city_only_the_live_data_knows_is_still_judged():
     assert observed_places(invented) == {"Lucknow": ["Lucknow"]}
     ctx = CheckCtx(invented, P["T01"], {**PLACES, **observed_places(returned)}, False)
     assert DETERMINISTIC["TC07"](ctx).status == "fail"
+
+
+from eval.voice_bench.checks import CONSENT_LINE  # noqa: E402
+
+ASK = CONSENT_LINE
+OWN_WORDS = "क्या आपको इसके लिए अनुमति चाहिए ताकि मैं आगे बढ़ सकूँ?"
+
+
+def write_tap(tool="save_profile", status=200, body=None):
+    return TapEntry(1, "POST", "/api/v1/admin/participant", "", {}, status,
+                    body if body is not None else {"ok": True}, "signals", tool)
+
+
+def service_tap(body=None):
+    return TapEntry(1, "GET", "/api/v1/search", "", {}, 200,
+                    body if body is not None else {"items": [{"name": "सिलाई केंद्र"}]}, "signals",
+                    "fetch_services")
+
+
+def profile_tap(consent):
+    return TapEntry(1, "GET", "/api/v1/admin/participant", "", {}, 200,
+                    {"items": [{"profile_consent_accepted": consent}]}, "signals", "fetch_profile")
+
+
+def test_tc23_browsing_must_not_ask_for_permission():
+    browsing = [T(0, "नौकरी", "कौन सा काम?"), T(1, "वेल्डर", ASK)]
+    assert v("TC23", rec((browsing, "bot"))) == "fail"
+    assert v("TC23", rec(([T(0, "नौकरी", "कौन सा काम?")], "bot"))) == "pass"
+    writes = [T(0, "हाँ", ASK), T(1, "हाँ अनुमति है", "ठीक है", tap=[write_tap()])]
+    assert v("TC23", rec((writes, "bot"))) == "n/a"
+
+
+def test_tc24_the_permission_question_is_the_configured_line():
+    assert v("TC24", rec(([T(0, "हाँ भेज दीजिए", ASK)], "bot"))) == "pass"
+    assert v("TC24", rec(([T(0, "हाँ भेज दीजिए", OWN_WORDS)], "bot"))) == "fail"
+    assert v("TC24", rec(([T(0, "नौकरी", "कौन सा काम?")], "bot"))) == "n/a"
+
+
+def test_tc24_accepts_the_line_with_a_recording_sentence_appended():
+    assert v("TC24", rec(([T(0, "हाँ", ASK + " यह बातचीत रिकॉर्ड की जा सकती है।")], "bot"))) == "pass"
+
+
+def test_tc25_a_write_needs_permission_first():
+    unasked = [T(0, "मेरा नाम अजय है", "ठीक है", tap=[write_tap()])]
+    assert v("TC25", rec((unasked, "bot"))) == "fail"
+    granted = [T(0, "हाँ भेज दीजिए", ASK), T(1, "हाँ अनुमति है", "ठीक है", tap=[write_tap()])]
+    assert v("TC25", rec((granted, "bot"))) == "pass"
+    assert v("TC25", rec(([T(0, "नौकरी", "कौन सा काम?")], "bot"))) == "n/a"
+
+
+def test_tc25_a_returning_caller_with_consent_on_file_is_not_asked_again():
+    turns = [T(0, "नमस्ते", "नमस्ते", tap=[profile_tap(True)]),
+             T(1, "हाँ भेज दीजिए", "भेज दिया", tap=[write_tap("apply_job")])]
+    assert v("TC25", rec((turns, "bot")), persona="T14") == "pass"
+    refused = [T(0, "नमस्ते", "नमस्ते", tap=[profile_tap(False)]),
+               T(1, "हाँ भेज दीजिए", "भेज दिया", tap=[write_tap("apply_job")])]
+    assert v("TC25", rec((refused, "bot")), persona="T14") == "fail"
+
+
+def test_tc25_is_unscored_when_consent_on_file_cannot_be_read():
+    turns = [T(0, "नमस्ते", "नमस्ते", tap=[profile_tap(True)]),
+             T(1, "हाँ", "भेज दिया", tap=[write_tap("apply_job")])]
+    assert v("TC25", _bodiless(rec((turns, "bot"))), persona="T14") == "unscored"
+
+
+def test_tc26_every_service_read_out_states_its_cost():
+    priced = [T(0, "ट्रेनिंग", "सिलाई केंद्र है, यह मुफ़्त है।", tap=[service_tap()])]
+    assert v("TC26", rec((priced, "bot"))) == "pass"
+    silent = [T(0, "ट्रेनिंग", "सिलाई केंद्र में ट्रेनिंग है।", tap=[service_tap()])]
+    assert v("TC26", rec((silent, "bot"))) == "fail"
+    assert v("TC26", rec(([T(0, "नौकरी", "कौन सा काम?")], "bot"))) == "n/a"
+
+
+def test_tc27_an_empty_search_names_the_city_that_was_asked_for():
+    empty = TapEntry(1, "POST", "/v1/search", "", {}, 200, {"message": {"items": []}}, "search")
+    named = [T(0, "लखनऊ", "लखनऊ में वेल्डर की नौकरी नहीं है।", tap=[empty])]
+    assert v("TC27", rec((named, "bot")), persona="T01") == "pass"
+    silent = [T(0, "लखनऊ", "कोई नौकरी नहीं है।", tap=[empty])]
+    assert v("TC27", rec((silent, "bot")), persona="T01") == "fail"
+
+
+def test_tc28_the_call_is_still_open_after_an_application():
+    sent = [T(0, "हाँ भेज दीजिए", "आवेदन भेज दिया गया है। और कुछ?", tap=[apply_tap()])]
+    assert v("TC28", rec((sent, "bot"))) == "pass"
+    hung_up = [T(0, "हाँ भेज दीजिए", "आवेदन भेज दिया गया है। धन्यवाद।", tap=[apply_tap()], ended=True)]
+    assert v("TC28", rec((hung_up, "bot"))) == "fail"
+
+
+def test_tc29_an_application_is_only_sent_after_being_offered():
+    offered = [T(0, "पहली वाली", "क्या मैं आवेदन भेज दूँ?"),
+               T(1, "हाँ", "भेज दिया", tap=[apply_tap()])]
+    assert v("TC29", rec((offered, "bot"))) == "pass"
+    unasked = [T(0, "पहली वाली", "ठीक है", tap=[apply_tap()])]
+    assert v("TC29", rec((unasked, "bot"))) == "fail"
+
+
+def test_tc30_an_age_refusal_never_contradicts_the_age_given():
+    told = [T(0, "अठारह", "माफ़ कीजिए, आपकी उम्र अठारह साल से कम है।")]
+    assert v("TC30", rec((told, "bot")), persona="T19") == "fail"
+    assert v("TC30", rec((told, "bot")), persona="T18") == "pass"
+    assert v("TC30", rec(([T(0, "अठारह", "ठीक है")], "bot")), persona="T19") == "n/a"

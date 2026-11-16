@@ -1,4 +1,5 @@
 from eval.voice_bench.records import CallRecord
+from eval.voice_bench import SUITE_VERSION
 from eval.voice_bench.store import ResultStore
 
 
@@ -15,7 +16,7 @@ def test_save_has_load(tmp_path):
     assert st.has("8b39427", "T01", 0)
     assert st.load("8b39427", "T01", 0) == _rec()
     assert st.path("8b39427", "T01", 0).parent.name == "8b39427"
-    assert "suite-v1" in str(st.path("8b39427", "T01", 0))
+    assert f"suite-v{SUITE_VERSION}" in str(st.path("8b39427", "T01", 0))
 
 
 def test_partial_file_is_not_a_cache_hit(tmp_path):

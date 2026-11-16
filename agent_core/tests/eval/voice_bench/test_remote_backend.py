@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from eval.voice_bench import SUITE_VERSION
 from eval.voice_bench.backend_remote import RemoteBackend, RemoteBackendError
 from eval.voice_bench.config import BackendCfg, _backend, load_config
 from eval.voice_bench.seed import SEED_VERSION
@@ -317,7 +318,7 @@ def test_pull_images_is_read_from_the_target():
 
 
 def _cfg_file(tmp_path, targets, backend_mode="remote"):
-    body = {"suite_version": 1, "targets": targets,
+    body = {"suite_version": SUITE_VERSION, "targets": targets,
             "models": {"caller": {"provider": "openai", "model": "m", "temperature": 0.3},
                        "judge": {"provider": "openai", "model": "m", "temperature": 0}},
             "backend": {"mode": backend_mode, "cluster": "uat"}}

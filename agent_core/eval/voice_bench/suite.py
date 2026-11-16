@@ -41,6 +41,14 @@ TCS: dict[str, TCDef] = {t.id: t for t in [
     TCDef("TC20", "per call", "First person is feminine", "det"),
     TCDef("TC21", "per call", "Apply outcome line matches the tool result", "det"),
     TCDef("TC22", "NLU", "NLU intent/slot accuracy on replay cases", "nlu"),
+    TCDef("TC23", "K2", "A call that writes nothing never asks for permission", "det"),
+    TCDef("TC24", "K1", "Every permission ask is the configured line, word for word", "det"),
+    TCDef("TC25", "K4", "No write without consent given in this call or already on file", "det"),
+    TCDef("TC26", "S3", "Every service offered states its cost; contact details refused", "det"),
+    TCDef("TC27", "C8", "An empty search names the city asked for before offering elsewhere", "det"),
+    TCDef("TC28", "C10", "The call continues after an application is sent", "det"),
+    TCDef("TC29", "C10", "A list stops being live once the caller moves on", "det"),
+    TCDef("TC30", "D9", "An age refusal never contradicts the age the caller gave", "det"),
 ]}
 
 ALWAYS_TCS = ("TC02", "TC03", "TC08", "TC19", "TC20")

@@ -1,6 +1,6 @@
 # Copy to voice_bench.yaml and edit. CLI flags override these values.
 # Secrets (OPENAI_API_KEY, Signals service key) come from env or --env-file; never put them here.
-suite_version: 1
+suite_version: 2
 targets:                                    # what to measure
   - name: M0-baseline
     git_ref: edf7ec8                        # build + run this commit

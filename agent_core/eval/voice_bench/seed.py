@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-SEED_VERSION = 1
+SEED_VERSION = 2
 
 _SEED_FILE = Path(__file__).parent / "seed" / f"v{SEED_VERSION}.json"
 _ID_RE = re.compile(r"[A-Za-z0-9_-]+")
