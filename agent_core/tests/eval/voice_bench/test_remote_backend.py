@@ -114,7 +114,8 @@ def test_missing_uat_keys_say_which_names_and_that_clusters_differ(tmp_path):
     with pytest.raises(RemoteBackendError) as e:
         b.up()
     msg = str(e.value)
-    assert "UAT_BLUE_DOTS_API_KEY" in msg and "cluster uat" in msg
+    assert "UAT_BLUE_DOTS_API_KEY" in msg
+    assert "cluster uat" in msg
     assert "OWN keys" in msg
     assert "sk_test_key" not in msg
 
@@ -128,8 +129,10 @@ def test_a_rejected_key_names_the_cluster_and_the_variables(tmp_path):
     with pytest.raises(RemoteBackendError) as e:
         b.up()
     msg = str(e.value)
-    assert "403" in msg and "UAT_BLUE_DOTS_API_KEY" in msg
-    assert "own key set" in msg and "'test'" in msg       # points at the other cluster
+    assert "403" in msg
+    assert "UAT_BLUE_DOTS_API_KEY" in msg
+    assert "own key set" in msg
+    assert "'test'" in msg       # points at the other cluster
 
 
 def test_remote_instance_url_falls_back_to_signals_url():
@@ -150,7 +153,8 @@ def test_local_mode_still_requires_signals_dir():
 
 def test_local_mode_unchanged_when_configured():
     cfg = _backend({"mode": "local", "signals_dir": "../Signals-DPG"})
-    assert not cfg.is_remote and cfg.postgres_container == "signals-postgres"
+    assert not cfg.is_remote
+    assert cfg.postgres_container == "signals-postgres"
     assert cfg.signals_url == "http://localhost:2742"
 
 
@@ -163,7 +167,8 @@ def test_env_overrides_the_file(monkeypatch):
     monkeypatch.setenv("VOICE_BENCH_BACKEND_MODE", "remote")
     monkeypatch.setenv("VOICE_BENCH_SIGNALS_URL", "https://from-env.example")
     cfg = _backend({"mode": "local", "signals_dir": "../Signals-DPG"})
-    assert cfg.is_remote and cfg.signals_url == "https://from-env.example"
+    assert cfg.is_remote
+    assert cfg.signals_url == "https://from-env.example"
 
 
 # ---- credentials -------------------------------------------------------------------------------------------
@@ -172,7 +177,8 @@ def test_missing_credentials_name_the_variables_and_never_a_value(tmp_path):
     with pytest.raises(RemoteBackendError) as e:
         b.up()
     msg = str(e.value)
-    assert "BLUE_DOTS_SEARCH_API_KEY" in msg and "BLUE_DOTS_ORG_ID" in msg
+    assert "BLUE_DOTS_SEARCH_API_KEY" in msg
+    assert "BLUE_DOTS_ORG_ID" in msg
     assert "sk_secret_value" not in msg
 
 
@@ -257,7 +263,8 @@ def test_state_file_never_contains_a_key(tmp_path):
     b = _backend_obj(tmp_path, _FakeHttp(totals=[0, 9_999_999]))
     b.seed()
     raw = (tmp_path / "backend" / "state.json").read_text(encoding="utf-8")
-    assert "sk_test_key" not in raw and "sk_test_search" not in raw
+    assert "sk_test_key" not in raw
+    assert "sk_test_search" not in raw
     assert json.loads(raw)["seed_version"] == SEED_VERSION
 
 
@@ -266,20 +273,23 @@ def test_cleanup_is_a_no_op_on_a_shared_cluster(tmp_path):
     http = _FakeHttp()
     b = _backend_obj(tmp_path, http)
     b.cleanup()
-    assert http.posts == [] and http.gets == []       # nothing was called at all
+    assert http.posts == []       # nothing was called at all
+    assert http.gets == []
 
 
 def test_down_is_a_no_op(tmp_path):
     http = _FakeHttp()
     _backend_obj(tmp_path, http).down(volumes=True)
-    assert http.posts == [] and http.gets == []
+    assert http.posts == []
+    assert http.gets == []
 
 
 # ---- phone salt --------------------------------------------------------------------------------------------
 def test_phone_numbers_stay_twelve_digits_and_keep_the_reserved_prefix():
     for salt in ("00", "07", "99"):
         n = phone_for("9199000", "T14", 2, salt)
-        assert len(n) == 12 and n.isdigit()
+        assert len(n) == 12
+        assert n.isdigit()
         assert n.startswith("9199000")
 
 
@@ -318,7 +328,8 @@ def test_pull_images_is_read_from_the_target():
     from eval.voice_bench.config import _target
     t = _target({"name": "ghcr", "git_ref": "abc1234",
                  "compose": "automation/docker/docker-compose.dev.yml", "pull_images": True})
-    assert t.pull_images is True and t.compose.endswith("docker-compose.dev.yml")
+    assert t.pull_images is True
+    assert t.compose.endswith("docker-compose.dev.yml")
 
 
 def _cfg_file(tmp_path, targets, backend_mode="remote"):
@@ -336,7 +347,9 @@ def test_a_deployed_target_is_read_through_grafana(tmp_path, monkeypatch):
     cfg = load_config(_cfg_file(tmp_path, [{"name": "vm", "bridge_url": "http://127.0.0.1:8008",
                                        "grafana_url": "http://g:3001"}]))
     t = cfg.targets[0]
-    assert t.is_deployed and t.loki_uid == "dpg-loki" and t.agent_job == "agent_core"
+    assert t.is_deployed
+    assert t.loki_uid == "dpg-loki"
+    assert t.agent_job == "agent_core"
 
 
 def test_a_target_the_harness_builds_is_not_deployed(tmp_path, monkeypatch):
@@ -347,8 +360,9 @@ def test_a_target_the_harness_builds_is_not_deployed(tmp_path, monkeypatch):
 
 def test_grafana_url_is_refused_on_a_target_we_build(tmp_path, monkeypatch):
     monkeypatch.delenv("VOICE_BENCH_GRAFANA_URL", raising=False)
+    path = _cfg_file(tmp_path, [{"name": "x", "git_ref": "abc1234", "grafana_url": "http://g:3001"}])
     with pytest.raises(ValueError, match="grafana_url applies to a bridge_url target"):
-        load_config(_cfg_file(tmp_path, [{"name": "x", "git_ref": "abc1234", "grafana_url": "http://g:3001"}]))
+        load_config(path)
 
 
 def test_the_environment_can_point_a_run_at_another_grafana(tmp_path, monkeypatch):
@@ -371,7 +385,8 @@ def test_seed_skips_when_this_generation_is_already_on_the_cluster(tmp_path):
     """A colleague's earlier seed must not be duplicated by a machine with no state file."""
     b = RemoteBackend(_cfg(), tmp_path, http=_seeded_cluster(True), env=dict(ENV), sleep=lambda _s: None)
     b.seed()
-    assert b.state["seed_version"] == SEED_VERSION and b.state["seeded"] is True
+    assert b.state["seed_version"] == SEED_VERSION
+    assert b.state["seeded"] is True
     assert b.state["profile_item_ids"] == []
 
 
@@ -397,7 +412,8 @@ def test_seed_mode_none_writes_nothing(tmp_path):
                       env=dict(ENV), sleep=lambda _s: None)
     b.seed()
     assert posts == []
-    assert b.state["seed_mode"] == "none" and b.state["seeded"] is False
+    assert b.state["seed_mode"] == "none"
+    assert b.state["seeded"] is False
     assert b.state["seed_version"] == SEED_VERSION
 
 
@@ -425,7 +441,8 @@ def test_a_participant_read_rejection_names_the_cluster_not_the_key(tmp_path):
                       env=dict(ENV), sleep=lambda _s: None)
     with pytest.raises(RemoteBackendError) as e:
         b.live_profiles("919900017000")
-    assert "sk_test_key" not in str(e.value) and "cluster" in str(e.value)
+    assert "sk_test_key" not in str(e.value)
+    assert "cluster" in str(e.value)
 
 
 def test_seed_mode_must_be_auto_or_none(tmp_path):

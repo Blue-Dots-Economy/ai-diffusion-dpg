@@ -217,7 +217,8 @@ def test_tap_between_turns_and_after_the_last_turn_is_kept():
     rec = drive_call(deps, p, 0, "919900001000", 14, META)
     t0, t1 = rec.legs[0].turns
     assert t0.tap == [a] and t1.tap == [b, late]
-    assert observer.starts == 1 and observer.reads == 2
+    assert observer.starts == 1
+    assert observer.reads == 2
 
 
 def test_tap_cleared_at_the_start_of_every_attempt():

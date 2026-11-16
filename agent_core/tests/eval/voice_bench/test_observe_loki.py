@@ -41,8 +41,11 @@ def test_tool_entries_joins_the_three_records_of_one_call():
     [entry] = list(tool_entries(lines, SID).values())
     assert entry.tool == "fetch_jobs"
     assert entry.upstream == "search"
-    assert entry.path == "/signals-search/v1/search" and entry.query == "x=1"
-    assert entry.status == 200 and entry.resp_body == {"items": []} and entry.body_truncated is False
+    assert entry.path == "/signals-search/v1/search"
+    assert entry.query == "x=1"
+    assert entry.status == 200
+    assert entry.resp_body == {"items": []}
+    assert entry.body_truncated is False
     assert entry.req_body == {"q": "welder"}
 
 
@@ -59,7 +62,9 @@ def test_tool_entries_ignores_other_sessions():
 def test_tool_entries_without_debug_lines_keeps_the_tool_and_marks_success():
     """INFO only: the call and its outcome are visible, the response body is not."""
     [entry] = list(tool_entries([(1000, _execute("save_profile"))], SID).values())
-    assert entry.tool == "save_profile" and entry.status == 200 and entry.resp_body is None
+    assert entry.tool == "save_profile"
+    assert entry.status == 200
+    assert entry.resp_body is None
 
 
 def test_tool_entries_failed_call_is_not_reported_as_200():
@@ -94,9 +99,11 @@ def test_client_refused_credentials_say_so_without_the_token():
     def handler(request):
         return httpx.Response(403)
 
+    client = _client(handler)
     with pytest.raises(LokiError) as e:
-        _client(handler).lines("{job=\"x\"}", 0, 10)
-    assert "Viewer" in str(e.value) and "glsa_test" not in str(e.value)
+        client.lines("{job=\"x\"}", 0, 10)
+    assert "Viewer" in str(e.value)
+    assert "glsa_test" not in str(e.value)
 
 
 def test_client_retries_then_gives_up():
@@ -106,8 +113,9 @@ def test_client_retries_then_gives_up():
         calls.append(1)
         return httpx.Response(500)
 
+    client = _client(handler)
     with pytest.raises(LokiError):
-        _client(handler).lines("{job=\"x\"}", 0, 10)
+        client.lines("{job=\"x\"}", 0, 10)
     assert len(calls) == 2
 
 
@@ -203,11 +211,13 @@ def test_a_line_whose_arguments_are_in_the_message_is_still_matched():
     lines = [(1000, _request("fetch_jobs", "https://s/x", {"query_text": "welder"})),
              (1010, _response("fetch_jobs", '{"items":[]}'))]
     [entry] = list(tool_entries(lines, SID).values())
-    assert entry.req_body == {"query_text": "welder"} and entry.resp_body == {"items": []}
+    assert entry.req_body == {"query_text": "welder"}
+    assert entry.resp_body == {"items": []}
 
 
 def test_a_body_the_agent_cut_short_is_kept_as_text_and_flagged():
     """The agent truncates a long response before logging it, so it is no longer JSON."""
     cut = '{"message":{"items":[{"jobProviderName":"Ganga Steel","jobProvider'
     [entry] = list(tool_entries([(1000, _response("fetch_jobs", cut)), (1001, _execute("fetch_jobs"))], SID).values())
-    assert entry.body_truncated is True and entry.resp_body == cut
+    assert entry.body_truncated is True
+    assert entry.resp_body == cut
