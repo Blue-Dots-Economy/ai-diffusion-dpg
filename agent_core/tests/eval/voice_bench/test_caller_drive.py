@@ -2,6 +2,7 @@
 from eval.voice_bench.bridge import BridgeTurn
 from eval.voice_bench.caller import Caller, stage_direction
 from eval.voice_bench.drive import DriveDeps, drive_call
+from eval.voice_bench.observe import Observer, TurnObservation
 from eval.voice_bench.suite import load_personas
 
 META = dict(target="M3", target_commit="8b39427", suite_version=1, seed_version=1, caller_model="m", judge_model="m")
@@ -33,23 +34,27 @@ class FakeBridge:
         return self.turns.pop(0)
 
 
-class FakeTap:
-    """take() returns the next scripted batch (default []); clear() is counted."""
+class FakeObserver(Observer):
+    """turn() returns the next scripted tap batch (default []); attempts and leftovers are counted."""
 
-    def __init__(self, script=()):
-        self.script, self.clears, self.takes = list(script), 0, 0
+    def __init__(self, script=(), leftovers=()):
+        self.script, self.leftovers = list(script), list(leftovers)
+        self.starts, self.reads = 0, 0
 
-    def take(self):
-        self.takes += 1
-        return list(self.script.pop(0)) if self.script else []
+    def turn(self, phone, call_id, since_s):
+        self.reads += 1
+        return TurnObservation(tap=list(self.script.pop(0)) if self.script else [],
+                               session={"k": "v"}, banner={})
 
-    def clear(self):
-        self.clears += 1
+    def leftover(self, phone, call_id):
+        return list(self.leftovers.pop(0)) if self.leftovers else []
 
+    def start_attempt(self):
+        self.starts += 1
 
-class NoLogs:
-    def since(self, s):
-        return ""
+    @property
+    def sees_session(self):
+        return True
 
 
 def _bt(reply, ended=False, error=None):
@@ -57,8 +62,8 @@ def _bt(reply, ended=False, error=None):
 
 
 def _deps(bridge, llm, cleanups):
-    return DriveDeps(bridge=bridge, tap=FakeTap(), redis_container="redis", scraper=NoLogs(), caller=Caller(llm),
-                     judge_llm=llm, cleanup=lambda: cleanups.append(1), read_session=lambda *a: {"k": "v"})
+    return DriveDeps(bridge=bridge, observer=FakeObserver(), caller=Caller(llm),
+                     judge_llm=llm, cleanup=lambda: cleanups.append(1))
 
 
 def test_stage_direction_regex():
@@ -202,21 +207,21 @@ def test_tap_between_turns_and_after_the_last_turn_is_kept():
     """I2: take() drains everything; late entries land on the next turn, leftovers on the leg's last turn."""
     p = load_personas()["T01"]
     a, b, late = _tap("/a"), _tap("/b"), _tap("/late")
-    tap = FakeTap([[a], [b], [late]])          # turn 0, turn 1, end-of-leg leftover
+    observer = FakeObserver([[a], [b]], [[late]])
     deps = _deps(FakeBridge(_ok()), FakeLLM(["रमेश"]), [])
-    deps.tap = tap
+    deps.observer = observer
     rec = drive_call(deps, p, 0, "919900001000", 14, META)
     t0, t1 = rec.legs[0].turns
     assert t0.tap == [a] and t1.tap == [b, late]
-    assert tap.clears == 1 and tap.takes == 3
+    assert observer.starts == 1 and observer.reads == 2
 
 
 def test_tap_cleared_at_the_start_of_every_attempt():
     p = load_personas()["T01"]
     deps = _deps(FakeBridge([_bt("", error="http_502")] + _ok()), FakeLLM(["रमेश"]), [])
-    deps.tap = FakeTap()
+    deps.observer = FakeObserver()
     drive_call(deps, p, 0, "919900001000", 14, META)
-    assert deps.tap.clears == 2
+    assert deps.observer.starts == 2
 
 
 def test_retry_keeps_the_first_attempt_in_prior_legs():

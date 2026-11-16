@@ -34,7 +34,8 @@ from eval.voice_bench.config import BenchConfig, load_config
 from eval.voice_bench.drive import DriveDeps, drive_call
 from eval.voice_bench.llm import OpenAIJsonLLM
 from eval.voice_bench.nlu import run_nlu
-from eval.voice_bench.observe import LogScraper, reset_session
+from eval.voice_bench.observe import LocalObserver, LogScraper, reset_session
+from eval.voice_bench.observe_loki import LokiClient, LokiObserver
 from eval.voice_bench.redact import redact
 from eval.voice_bench.report import comparable, render_markdown, summarise
 from eval.voice_bench.score import score_call
@@ -120,12 +121,22 @@ def _call_cleanup(backend, t, phone: str):
     """Per-call cleanup: Signals DB back to the seed, and the target's session memory wiped (C1).
 
     A throwaway git_ref stack owns its Redis, so it is flushed; an external bridge_url Redis only loses this
-    phone's session/user keys. Any failure raises: a call must not run on dirty memory.
+    phone's session/user keys. A deployed target's Redis is not reachable and is not ours to touch, so its
+    session memory is left alone and fresh caller numbers carry the isolation instead. Any failure raises:
+    a call must not run on dirty memory.
     """
     def cleanup() -> None:
         backend.cleanup()
-        reset_session(t.redis_container, phone, flush=bool(t.git_ref))
+        if not t.is_deployed:
+            reset_session(t.redis_container, phone, flush=bool(t.git_ref))
     return cleanup
+
+
+def _make_observer(t, tap):
+    """The evidence source for this target: its own Loki when deployed, the tap and containers when local."""
+    if t.is_deployed:
+        return LokiObserver(LokiClient(t.grafana_url, t.loki_uid), t.action_gateway_job, t.agent_job)
+    return LocalObserver(tap, t.redis_container, LogScraper(t.agent_container))
 
 
 def _status(rec) -> str:
@@ -150,8 +161,8 @@ def _run_target(t, stack, cfg: BenchConfig, store: ResultStore, plan, personas, 
     if getattr(stack, "image_tag", None):
         meta["image_tag"] = stack.image_tag
     _merge_meta(store, commit, meta, drop=("unmeasurable",))
-    deps = DriveDeps(bridge=BridgeClient(url, cfg.status_phrases, cfg.terminal_words), tap=tap,
-                     redis_container=t.redis_container, scraper=LogScraper(t.agent_container), caller=caller,
+    deps = DriveDeps(bridge=BridgeClient(url, cfg.status_phrases, cfg.terminal_words),
+                     observer=_make_observer(t, tap), caller=caller,
                      judge_llm=judge_llm, cleanup=backend.cleanup)
     drive_meta = dict(target=t.name, target_commit=commit, suite_version=SUITE_VERSION, seed_version=seed_version,
                       caller_model=cfg.caller.model, judge_model=cfg.judge.model,
@@ -200,6 +211,11 @@ def cmd_run(cfg: BenchConfig, args) -> int:
         return 2
     # Fresh caller numbers per run in remote mode, where nothing is cleaned up
     # between runs; local keeps its historical fixed numbers.
+    deployed = [t.name for t in targets if t.is_deployed]
+    if deployed and not cfg.backend.is_remote:
+        _say(f"target(s) {', '.join(deployed)} run elsewhere, so the Signals they write to is not this "
+             "harness's to seed or clean: set backend.mode=remote")
+        return 2
     phone_salt = run_salt() if cfg.backend.is_remote else "00"
     if cfg.backend.is_remote:
         _say(f"remote backend: {cfg.backend.signals_url} (no cleanup; phone_salt={phone_salt})")

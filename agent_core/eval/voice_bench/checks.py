@@ -339,7 +339,18 @@ def _tc09_leg(lg: Leg, places: dict[str, list[str]]) -> Verdict | None:
 
 
 def _tc09(ctx: CheckCtx) -> Verdict:
-    return next((r for r in (_tc09_leg(lg, ctx.places) for lg in ctx.rec.legs) if r), Verdict("pass"))
+    """Nothing repeated and nothing re-asked that the session already holds.
+
+    Half of this reads the target's session memory, which a deployed target does
+    not expose. A fail found without it still stands; a clean run does not, so it
+    reports unscored rather than a pass nobody checked.
+    """
+    found = next((r for r in (_tc09_leg(lg, ctx.places) for lg in ctx.rec.legs) if r), None)
+    if found:
+        return found
+    if not ctx.rec.observes_session:
+        return Verdict("unscored", reason="session memory not readable on this target")
+    return Verdict("pass")
 
 
 def _employers(obj) -> list[str]:

@@ -5,12 +5,12 @@ from __future__ import annotations
 import hashlib
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from eval.voice_bench import observe
 from eval.voice_bench.caller import Caller, CallerLLMError, persona_broken, stage_direction
+from eval.voice_bench.observe import Observer
 from eval.voice_bench.records import CallRecord, Leg, TurnRecord
 from eval.voice_bench.suite import Persona
 
@@ -18,13 +18,10 @@ from eval.voice_bench.suite import Persona
 @dataclass
 class DriveDeps:
     bridge: Any
-    tap: Any
-    redis_container: str
-    scraper: Any
+    observer: Observer
     caller: Caller
     judge_llm: Any
     cleanup: Callable[[], None]
-    read_session: Callable = field(default=observe.read_session)
 
 
 def _seed(*parts) -> int:
@@ -54,12 +51,10 @@ def _turns(deps: DriveDeps, persona: Persona, run_idx: int, leg_idx: int, phone:
                 return Leg(call_id, turns, "caller")
         since_s = int(time.time())
         bt = deps.bridge.turn(line, phone, call_id)
-        tap = deps.tap.take()
-        session = deps.read_session(deps.redis_container, phone, call_id)
-        banner = observe.parse_banner(deps.scraper.since(since_s))
+        obs = deps.observer.turn(phone, call_id, since_s)
         turns.append(TurnRecord(idx=i, caller=line, reply=bt.reply, status_phrase=bt.status_phrase,
                                 t_first_content_ms=bt.t_first_content_ms, t_first_reply_ms=bt.t_first_reply_ms,
-                                t_total_ms=bt.t_total_ms, session=session, tap=tap, banner=banner,
+                                t_total_ms=bt.t_total_ms, session=obs.session, tap=obs.tap, banner=obs.banner,
                                 session_ended=bt.session_ended, error=bt.error,
                                 terminal_word=bt.terminal_word))
         history.append((line, bt.reply))
@@ -74,14 +69,14 @@ def _leg(deps: DriveDeps, persona: Persona, run_idx: int, leg_idx: int, phone: s
          attempt: int = 0) -> Leg:
     call_id = f"vb-{persona.id}-{run_idx}-{leg_idx}-{uuid.uuid4().hex[:6]}"
     lg = _turns(deps, persona, run_idx, leg_idx, phone, max_turns, attempt, call_id, [])
-    leftover = deps.tap.take()          # tool calls that landed after the last turn's stream closed
+    leftover = deps.observer.leftover(phone, call_id)
     if leftover and lg.turns:
         lg.turns[-1].tap.extend(leftover)
     return lg
 
 
 def _attempt(deps, persona, run_idx, phone, max_turns, attempt: int = 0) -> list[Leg]:
-    deps.tap.clear()                    # nothing from an earlier attempt or call leaks into this one
+    deps.observer.start_attempt()
     legs = []
     for leg_idx in range(len(persona.legs)):
         lg = _leg(deps, persona, run_idx, leg_idx, phone, max_turns, attempt)
@@ -137,4 +132,5 @@ def drive_call(deps: DriveDeps, persona: Persona, run_idx: int, phone: str, max_
                       caller_model=meta["caller_model"], judge_model=meta["judge_model"], legs=legs,
                       attempts=attempts, voided=void_reason is not None, error=None if harness_error else err,
                       started_at=started, void_reason=void_reason, harness_error=harness_error,
-                      prior_legs=prior_legs, prior_error=prior_error)
+                      prior_legs=prior_legs, prior_error=prior_error,
+                      observes_session=deps.observer.sees_session)

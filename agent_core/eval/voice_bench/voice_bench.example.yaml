@@ -18,6 +18,15 @@ targets:                                    # what to measure
   #   bridge_url: http://127.0.0.1:8008     # an already-running bridge: no build
   #   redis_container: dpg_redis
   #   agent_container: dpg_agent_core
+  # - name: vm-uat
+  #   bridge_url: http://127.0.0.1:8008     # route it yourself: ssh -L 8008:127.0.0.1:8008 <user>@<vm>
+  #   grafana_url: http://10.0.0.1:3001     # set => no tap, no docker: evidence comes from that deployment's Loki
+  #   loki_uid: dpg-loki                    # default; the provisioned datasource uid
+  #   action_gateway_job: action_gateway    # default; the `job` label on its logs
+  #   agent_job: agent_core                 # default
+  #
+  # Needs VOICE_BENCH_GRAFANA_TOKEN (Viewer service account), LOG_LEVEL=DEBUG on
+  # the deployment, and backend.mode: remote on the Signals it writes to.
   #
   # Pull the published images instead of building them. The worktree then
   # supplies config only — the code under test is whatever DPG_IMAGE_TAG

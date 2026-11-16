@@ -36,6 +36,15 @@ class TargetCfg:
     # supplies only config — point `compose` at an image-based file such as
     # automation/docker/docker-compose.dev.yml.
     pull_images: bool = False
+    grafana_url: str | None = None
+    loki_uid: str = "dpg-loki"
+    action_gateway_job: str = "action_gateway"
+    agent_job: str = "agent_core"
+
+    @property
+    def is_deployed(self) -> bool:
+        """Whether this target runs somewhere else, with its evidence read from Loki."""
+        return bool(self.grafana_url)
 
 
 # Remote mode talks to a Signals cluster that is already running and shared with
@@ -202,9 +211,25 @@ def _backend(b: dict) -> BackendCfg:
 
 
 def _target(d: dict) -> TargetCfg:
+    """Build one TargetCfg.
+
+    Args:
+        d: A ``targets[]`` mapping from voice_bench.yaml.
+
+    Returns:
+        TargetCfg.
+
+    Raises:
+        ValueError: Neither or both of git_ref/bridge_url, or a grafana_url on a
+            target the harness builds itself — a stack running here is observed
+            through its tap and containers, never through someone else's Loki.
+    """
     name = d.get("name") or "?"
     if bool(d.get("git_ref")) == bool(d.get("bridge_url")):
         raise ValueError(f"target {name}: set exactly one of git_ref or bridge_url")
+    grafana_url = os.environ.get("VOICE_BENCH_GRAFANA_URL") or d.get("grafana_url")
+    if grafana_url and d.get("git_ref"):
+        raise ValueError(f"target {name}: grafana_url applies to a bridge_url target, not a git_ref one")
     # str(): YAML reads an unquoted all-digit short sha as an int.
     ref = d.get("git_ref")
     return TargetCfg(name=name, git_ref=str(ref) if ref else None, bridge_url=d.get("bridge_url"),
@@ -212,7 +237,11 @@ def _target(d: dict) -> TargetCfg:
                      redis_container=d.get("redis_container") or "redis",
                      agent_container=d.get("agent_container", "agent_core"),
                      no_idle_handling=bool(d.get("no_idle_handling", False)),
-                     pull_images=bool(d.get("pull_images", False)))
+                     pull_images=bool(d.get("pull_images", False)),
+                     grafana_url=grafana_url or None,
+                     loki_uid=d.get("loki_uid") or "dpg-loki",
+                     action_gateway_job=d.get("action_gateway_job") or "action_gateway",
+                     agent_job=d.get("agent_job") or "agent_core")
 
 
 def load_config(path: str | Path, overrides: dict | None = None) -> BenchConfig:

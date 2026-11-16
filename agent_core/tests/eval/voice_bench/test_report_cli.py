@@ -467,3 +467,14 @@ def test_latency_buckets_non_tool_tool_no_search_and_search():
     assert "CPU-emulated TEI (amd64 on Apple Silicon)" in md
     assert "Headline latency claims rest on non-tool turns and tool turns without search." in md
     assert "tool turns hit local emulated TEI" not in md
+
+
+def test_a_deployed_target_refuses_a_local_backend(env, capsys, monkeypatch):
+    """Its Signals is not ours to seed or clean, so the run stops before it starts."""
+    monkeypatch.delenv("VOICE_BENCH_GRAFANA_URL", raising=False)
+    cfg = dict(env["raw_cfg"])
+    cfg["targets"] = [{"name": "vm", "bridge_url": "http://127.0.0.1:8008", "grafana_url": "http://g:3001"}]
+    path = env["tmp"] / "vm.yaml"
+    path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+    assert cli.main(["run", "--config", str(path)]) == 2
+    assert "backend.mode=remote" in capsys.readouterr().out

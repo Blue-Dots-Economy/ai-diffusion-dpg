@@ -10,7 +10,7 @@ import json
 import pytest
 
 from eval.voice_bench.backend_remote import RemoteBackend, RemoteBackendError
-from eval.voice_bench.config import BackendCfg, _backend
+from eval.voice_bench.config import BackendCfg, _backend, load_config
 from eval.voice_bench.seed import SEED_VERSION
 from eval.voice_bench.suite import phone_for, run_salt
 
@@ -314,3 +314,39 @@ def test_pull_images_is_read_from_the_target():
     t = _target({"name": "ghcr", "git_ref": "abc1234",
                  "compose": "automation/docker/docker-compose.dev.yml", "pull_images": True})
     assert t.pull_images is True and t.compose.endswith("docker-compose.dev.yml")
+
+
+def _cfg_file(tmp_path, targets, backend_mode="remote"):
+    body = {"suite_version": 1, "targets": targets,
+            "models": {"caller": {"provider": "openai", "model": "m", "temperature": 0.3},
+                       "judge": {"provider": "openai", "model": "m", "temperature": 0}},
+            "backend": {"mode": backend_mode, "cluster": "uat"}}
+    p = tmp_path / "voice_bench.yaml"
+    p.write_text(json.dumps(body), encoding="utf-8")
+    return p
+
+
+def test_a_deployed_target_is_read_through_grafana(tmp_path, monkeypatch):
+    monkeypatch.delenv("VOICE_BENCH_GRAFANA_URL", raising=False)
+    cfg = load_config(_cfg_file(tmp_path, [{"name": "vm", "bridge_url": "http://127.0.0.1:8008",
+                                       "grafana_url": "http://g:3001"}]))
+    t = cfg.targets[0]
+    assert t.is_deployed and t.loki_uid == "dpg-loki" and t.agent_job == "agent_core"
+
+
+def test_a_target_the_harness_builds_is_not_deployed(tmp_path, monkeypatch):
+    monkeypatch.delenv("VOICE_BENCH_GRAFANA_URL", raising=False)
+    cfg = load_config(_cfg_file(tmp_path, [{"name": "local", "git_ref": "abc1234"}]))
+    assert cfg.targets[0].is_deployed is False
+
+
+def test_grafana_url_is_refused_on_a_target_we_build(tmp_path, monkeypatch):
+    monkeypatch.delenv("VOICE_BENCH_GRAFANA_URL", raising=False)
+    with pytest.raises(ValueError, match="grafana_url applies to a bridge_url target"):
+        load_config(_cfg_file(tmp_path, [{"name": "x", "git_ref": "abc1234", "grafana_url": "http://g:3001"}]))
+
+
+def test_the_environment_can_point_a_run_at_another_grafana(tmp_path, monkeypatch):
+    monkeypatch.setenv("VOICE_BENCH_GRAFANA_URL", "http://other:3001")
+    cfg = load_config(_cfg_file(tmp_path, [{"name": "vm", "bridge_url": "http://127.0.0.1:8008"}]))
+    assert cfg.targets[0].grafana_url == "http://other:3001"
