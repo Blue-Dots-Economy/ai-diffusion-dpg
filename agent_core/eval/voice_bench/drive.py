@@ -95,17 +95,25 @@ def _broken(deps, persona, run_idx, legs) -> bool:
     return any(stage_direction(x) for x in lines) or persona_broken(deps.judge_llm, persona, lines, _seed(persona.id, run_idx, "audit"))
 
 
-def drive_call(deps: DriveDeps, persona: Persona, run_idx: int, phone: str, max_turns: int, meta: dict) -> CallRecord:
+def drive_call(deps: DriveDeps, persona: Persona, run_idx: int, phone: str, max_turns: int, meta: dict,
+               retry_phone: str | None = None) -> CallRecord:
     """Run one (scenario, run): retry once on error, void-and-rerun once on persona break.
 
     The discarded first attempt is kept in ``prior_legs`` (and its error in ``prior_error``); scoring uses the
     final legs only. A retried attempt is persona-audited too: broken → ``void_reason="broken_after_retry"``.
     A final caller-LLM failure is the harness's, not the target's: it goes to ``harness_error``, not ``error``.
+
+    Args:
+        retry_phone: Number for the second attempt. Where nothing is cleaned up
+            between attempts the first attempt may have left a profile behind,
+            which would make the retry a returning caller on the wrong flow.
     """
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     attempts, void_reason = 1, None
     prior_legs: list[Leg] = []
     prior_error: str | None = None
+    used = phone
+    again = retry_phone or phone
     deps.cleanup()
     try:
         legs = _attempt(deps, persona, run_idx, phone, max_turns, 0)
@@ -114,21 +122,23 @@ def drive_call(deps: DriveDeps, persona: Persona, run_idx: int, phone: str, max_
             prior_legs, prior_error = legs, first_err
             deps.cleanup()
             attempts += 1
-            legs = _attempt(deps, persona, run_idx, phone, max_turns, 1)
+            used = again
+            legs = _attempt(deps, persona, run_idx, again, max_turns, 1)
             if not _err(legs) and _broken(deps, persona, run_idx, legs):
                 void_reason = "broken_after_retry"
         elif _broken(deps, persona, run_idx, legs):
             prior_legs = legs
             deps.cleanup()
             attempts += 1
-            legs = _attempt(deps, persona, run_idx, phone, max_turns, 1)
+            used = again
+            legs = _attempt(deps, persona, run_idx, again, max_turns, 1)
             void_reason = "broken_twice" if _broken(deps, persona, run_idx, legs) else "rerun_ok"
     finally:
         deps.cleanup()
     err = _err(legs)
     harness_error = err if err and err.startswith("caller_llm_") else None
     return CallRecord(target=meta["target"], target_commit=meta["target_commit"], scenario=persona.id, run=run_idx,
-                      phone=phone, suite_version=meta["suite_version"], seed_version=meta["seed_version"],
+                      phone=used, suite_version=meta["suite_version"], seed_version=meta["seed_version"],
                       caller_model=meta["caller_model"], judge_model=meta["judge_model"], legs=legs,
                       attempts=attempts, voided=void_reason is not None, error=None if harness_error else err,
                       started_at=started, void_reason=void_reason, harness_error=harness_error,

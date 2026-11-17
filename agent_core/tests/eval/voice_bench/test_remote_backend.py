@@ -16,7 +16,7 @@ import pytest
 from eval.voice_bench import SUITE_VERSION
 from eval.voice_bench.backend_remote import RemoteBackend, RemoteBackendError
 from eval.voice_bench.config import BackendCfg, _backend, load_config
-from eval.voice_bench.seed import SEED_VERSION
+from eval.voice_bench.seed import SEED_VERSION, job_rows, load_seed
 from eval.voice_bench.suite import phone_for, run_salt
 
 ENV = {"BLUE_DOTS_API_KEY": "sk_test_key", "BLUE_DOTS_SEARCH_API_KEY": "sk_test_search",
@@ -136,14 +136,30 @@ def test_a_rejected_key_names_the_cluster_and_the_variables(tmp_path):
 
 
 def test_remote_instance_url_falls_back_to_signals_url():
-    cfg = _backend({"mode": "remote", "signals_url": "https://c.example"})
+    cfg = _backend({"mode": "remote", "signals_url": "https://c.example", "allow_unlisted_cluster": True})
     assert cfg.apply_instance_url == "https://c.example"
 
 
 def test_remote_instance_url_is_used_when_given():
     cfg = _backend({"mode": "remote", "signals_url": "https://c.example",
-                    "instance_url": "https://apply.example"})
+                    "instance_url": "https://apply.example", "allow_unlisted_cluster": True})
     assert cfg.apply_instance_url == "https://apply.example"
+
+
+def test_an_unlisted_host_is_refused_unless_opted_into():
+    with pytest.raises(ValueError, match="not one of the known clusters"):
+        _backend({"mode": "remote", "signals_url": "https://prod.example"})
+
+
+def test_a_preset_cluster_host_needs_no_opt_in():
+    cfg = _backend({"mode": "remote", "cluster": "uat"})
+    assert cfg.signals_url == "https://signals.bluedotseconomy.org"
+
+
+def test_the_opt_in_is_not_readable_from_the_environment(monkeypatch):
+    monkeypatch.setenv("VOICE_BENCH_ALLOW_UNLISTED_CLUSTER", "true")
+    with pytest.raises(ValueError, match="not one of the known clusters"):
+        _backend({"mode": "remote", "signals_url": "https://prod.example"})
 
 
 def test_local_mode_still_requires_signals_dir():
@@ -166,7 +182,7 @@ def test_unknown_mode_is_rejected():
 def test_env_overrides_the_file(monkeypatch):
     monkeypatch.setenv("VOICE_BENCH_BACKEND_MODE", "remote")
     monkeypatch.setenv("VOICE_BENCH_SIGNALS_URL", "https://from-env.example")
-    cfg = _backend({"mode": "local", "signals_dir": "../Signals-DPG"})
+    cfg = _backend({"mode": "local", "signals_dir": "../Signals-DPG", "allow_unlisted_cluster": True})
     assert cfg.is_remote
     assert cfg.signals_url == "https://from-env.example"
 
@@ -390,14 +406,93 @@ def test_seed_skips_when_this_generation_is_already_on_the_cluster(tmp_path):
     assert b.state["profile_item_ids"] == []
 
 
-def test_seed_posts_when_the_cluster_has_none_of_this_generation(tmp_path):
-    b = RemoteBackend(_cfg(), tmp_path, http=_seeded_cluster(False), env=dict(ENV), sleep=lambda _s: None,
-                      index_timeout_s=0)
-    try:
+def _cluster(present: set[str], total_after: int = 1000):
+    """A cluster that holds exactly ``present`` phone numbers and records every POST."""
+    posted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/search"):
+            total = total_after + len(posted)
+            return httpx.Response(200, json={"message": {"items": [], "meta": {"total": total}}})
+        if request.method == "GET":
+            phone = (request.url.params.get("phone_number") or "").lstrip("+")
+            if phone in present:
+                return httpx.Response(200, json={"items": [{"lifecycle_status": "live",
+                                                            "item_id": "11111111-1111-4111-8111-111111111111"}]})
+            return httpx.Response(404, json={"error": "NOT_FOUND"})
+        posted.append(str(json.loads(request.content).get("phone_number", "")).lstrip("+"))
+        return httpx.Response(200, json={"items": [{"item_id": str(uuid.uuid4())}]})
+
+    return httpx.Client(transport=httpx.MockTransport(handler)), posted
+
+
+def test_seed_posts_every_row_when_the_cluster_has_none_of_this_generation(tmp_path):
+    http, posted = _cluster(set())
+    b = RemoteBackend(_cfg(), tmp_path, http=http, env=dict(ENV), sleep=lambda _s: None)
+    b.seed()
+    assert b.state["seeded"] is True
+    assert len(posted) == len(job_rows(load_seed())) + len(load_seed()["profiles"])
+
+
+def test_seed_does_not_repost_rows_the_cluster_already_holds(tmp_path):
+    seed = load_seed()
+    already = {row["phone"] for row in job_rows(seed)}
+    http, posted = _cluster(already)
+    b = RemoteBackend(_cfg(), tmp_path, http=http, env=dict(ENV), sleep=lambda _s: None)
+    b.seed()
+    assert posted == [p["phone"] for p in seed["profiles"]]
+
+
+def test_seed_completes_a_half_written_generation_without_duplicating_it(tmp_path):
+    seed = load_seed()
+    rows = job_rows(seed)
+    http, posted = _cluster({row["phone"] for row in rows[:30]})
+    b = RemoteBackend(_cfg(), tmp_path, http=http, env=dict(ENV), sleep=lambda _s: None)
+    b.seed()
+    assert [row["phone"] for row in rows[:30]] not in posted
+    assert len(posted) == len(rows) - 30 + len(seed["profiles"])
+
+
+def test_seed_posts_a_missing_profile_even_when_every_job_is_present(tmp_path):
+    seed = load_seed()
+    http, posted = _cluster({row["phone"] for row in job_rows(seed)})
+    b = RemoteBackend(_cfg(), tmp_path, http=http, env=dict(ENV), sleep=lambda _s: None)
+    b.seed()
+    assert set(posted) == {p["phone"] for p in seed["profiles"]}
+
+
+def test_a_baseline_the_index_cannot_give_stops_the_seed(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/search"):
+            return httpx.Response(503)
+        return httpx.Response(404, json={"error": "NOT_FOUND"})
+
+    b = RemoteBackend(_cfg(), tmp_path, http=httpx.Client(transport=httpx.MockTransport(handler)),
+                      env=dict(ENV), sleep=lambda _s: None)
+    with pytest.raises(RemoteBackendError, match="baseline"):
         b.seed()
-    except Exception:
-        pass
-    assert b.state.get("seeded") in (True, None)
+
+
+def test_a_search_index_that_refuses_the_key_fails_fast(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/search"):
+            return httpx.Response(401)
+        return httpx.Response(404, json={"error": "NOT_FOUND"})
+
+    b = RemoteBackend(_cfg(), tmp_path, http=httpx.Client(transport=httpx.MockTransport(handler)),
+                      env=dict(ENV), sleep=lambda _s: None)
+    with pytest.raises(RemoteBackendError, match="credentials"):
+        b.seed()
+
+
+def test_state_from_another_cluster_is_refused_rather_than_reused(tmp_path):
+    http, _posted = _cluster(set())
+    RemoteBackend(_cfg(), tmp_path, http=http, env=dict(ENV), sleep=lambda _s: None).seed()
+    other = _cfg(signals_url="https://signals.bluedotseconomy.org",
+                 search_url="https://signals.bluedotseconomy.org/signals-search")
+    b = RemoteBackend(other, tmp_path, http=http, env=dict(ENV), sleep=lambda _s: None)
+    with pytest.raises(RemoteBackendError, match="different cluster"):
+        b.seed()
 
 
 def test_seed_mode_none_writes_nothing(tmp_path):

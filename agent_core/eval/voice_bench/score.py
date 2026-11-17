@@ -1,7 +1,7 @@
 """Per-call scoring: applicable TCs → verdicts (spec §6.5)."""
 from __future__ import annotations
 
-from eval.voice_bench.checks import DETERMINISTIC, CheckCtx, observed_places
+from eval.voice_bench.checks import DETERMINISTIC, CheckCtx, widen_places
 from eval.voice_bench.drive import _seed
 from eval.voice_bench.judge import judge_tc
 from eval.voice_bench.records import CallRecord, Verdict
@@ -31,7 +31,7 @@ def score_call(rec: CallRecord, persona: Persona, judge_llm, places: dict, no_id
     elif rec.void_reason in UNSCORED_VOIDS:
         out = {tc: Verdict("unscored", reason=UNSCORED_VOIDS[rec.void_reason]) for tc in tcs}
     else:
-        ctx = CheckCtx(rec, persona, {**places, **observed_places(rec)}, no_idle_handling)
+        ctx = CheckCtx(rec, persona, widen_places(places, rec), no_idle_handling)
         out = {}
         for tc in tcs:
             if tc in DETERMINISTIC:

@@ -134,7 +134,7 @@ def env(tmp_path, monkeypatch):
     FakeStack.commits = {}
     driven, nlu_calls, resets = [], [], []
 
-    def fake_drive(deps, persona, run_idx, phone, max_turns, meta):
+    def fake_drive(deps, persona, run_idx, phone, max_turns, meta, retry_phone=None):
         deps.cleanup()
         driven.append((meta["target"], persona.id, run_idx, phone))
         turns = [TurnRecord(0, "नमस्ते", "नमस्ते जी", None, 900, 900, 1000, {}, [], {}, True, None)]
@@ -344,7 +344,7 @@ def test_http_error_exits_1_and_redacts(env, monkeypatch, capsys):
 
 
 def _harness_drive(env):
-    def drive(deps, persona, run_idx, phone, max_turns, meta):
+    def drive(deps, persona, run_idx, phone, max_turns, meta, retry_phone=None):
         env["driven"].append((meta["target"], persona.id, run_idx, phone))
         turns = [TurnRecord(0, "नमस्ते", "नमस्ते जी", None, 900, 900, 1000, {}, [], {}, False, None)]
         return CallRecord(meta["target"], meta["target_commit"], persona.id, run_idx, phone, meta["suite_version"],
@@ -480,3 +480,145 @@ def test_a_deployed_target_refuses_a_local_backend(env, capsys, monkeypatch):
     path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
     assert cli.main(["run", "--config", str(path)]) == 2
     assert "backend.mode=remote" in capsys.readouterr().out
+
+
+from eval.voice_bench.config import TargetCfg  # noqa: E402
+
+
+class _Probe:
+    """A cluster probe that answers from a map, or raises for a chosen number."""
+
+    def __init__(self, profiles: dict, boom: str | None = None):
+        self.profiles, self.boom = profiles, boom
+        self.asked = []
+
+    def live_profiles(self, phone: str) -> int:
+        self.asked.append(phone)
+        if phone == self.boom:
+            raise RuntimeError("probe failed")
+        return self.profiles.get(phone, 0)
+
+    def cleanup(self) -> None:
+        pass
+
+
+def _deployed(name="vm"):
+    return TargetCfg(name=name, bridge_url="http://127.0.0.1:8008", grafana_url="http://g:3001")
+
+
+class _Persona:
+    def __init__(self, pid, seeded_phone=None):
+        self.id, self.seeded_phone = pid, seeded_phone
+
+
+def test_a_returning_caller_with_no_profile_is_skipped_not_dialled():
+    assert cli._profile_state(_Probe({}), _Persona("T14", "919900017000")) == "absent"
+
+
+def test_a_returning_caller_with_a_profile_is_dialled():
+    assert cli._profile_state(_Probe({"919900017000": 2}), _Persona("T14", "919900017000")) == "present"
+
+
+def test_a_probe_that_fails_is_not_treated_as_a_first_time_caller():
+    probe = _Probe({}, boom="919900017000")
+    assert cli._profile_state(probe, _Persona("T14", "919900017000")) == "unknown"
+
+
+def test_a_persona_that_is_not_a_returning_caller_is_never_probed():
+    probe = _Probe({})
+    assert cli._profile_state(probe, _Persona("T01")) == "n/a"
+    assert probe.asked == []
+
+
+class _Cfg:
+    phone_prefix = "9199000"
+
+
+def test_a_caller_number_the_cluster_already_holds_is_stepped_over():
+    taken = cli.phone_for("9199000", "T01", 0, "07")
+    probe = _Probe({taken: 1})
+    got = cli._clean_phone(probe, _deployed(), _Cfg(), "T01", 0, "07", set())
+    assert got != taken
+    assert got == cli.phone_for("9199000", "T01", 0, "08")
+
+
+def test_a_clean_caller_number_is_used_as_is():
+    probe = _Probe({})
+    assert cli._clean_phone(probe, _deployed(), _Cfg(), "T01", 0, "07", set()) == \
+        cli.phone_for("9199000", "T01", 0, "07")
+
+
+def test_a_probe_failure_yields_no_caller_number_rather_than_a_dirty_one():
+    first = cli.phone_for("9199000", "T01", 0, "07")
+    assert cli._clean_phone(_Probe({}, boom=first), _deployed(), _Cfg(), "T01", 0, "07", set()) is None
+
+
+def test_a_number_this_run_already_used_is_never_handed_out_twice():
+    first = cli.phone_for("9199000", "T01", 0, "07")
+    second = cli._clean_phone(_Probe({}), _deployed(), _Cfg(), "T01", 0, "07", {first})
+    assert second != first
+
+
+def test_a_deployed_target_leaves_its_session_memory_alone(monkeypatch):
+    resets = []
+    monkeypatch.setattr(cli, "reset_session", lambda c, phone, flush: resets.append(phone))
+    cli._call_cleanup(_Probe({}), _deployed(), "919900001007")()
+    assert resets == []
+
+
+class _FakeRemoteBackend:
+    def __init__(self, cfg, results_dir):
+        self.state = {"seed_version": SEED_VERSION, "seeded": True, "api_key_env_file": "/x/blue_dots.env",
+                      "instance_url": "https://signals.bluedotseconomy.org", "watermark": None}
+
+    def up(self):
+        pass
+
+    def down(self, volumes=False):
+        pass
+
+    def seed(self):
+        pass
+
+    def cleanup(self):
+        pass
+
+    def live_profiles(self, phone):
+        return 0
+
+
+def _deployed_cfg(env, monkeypatch):
+    monkeypatch.delenv("VOICE_BENCH_GRAFANA_URL", raising=False)
+    monkeypatch.setattr(cli, "RemoteBackend", _FakeRemoteBackend)
+    monkeypatch.setattr(cli, "LokiClient", lambda url, uid: object())
+    monkeypatch.setattr(cli, "LokiObserver", lambda client, ag, agent: object())
+    cfg = dict(env["raw_cfg"])
+    cfg["targets"] = [{"name": "vm", "bridge_url": "http://127.0.0.1:8008", "grafana_url": "http://g:3001"}]
+    cfg["backend"] = {"mode": "remote", "cluster": "uat", "seed_mode": "none"}
+    path = env["tmp"] / "vm-run.yaml"
+    path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+    return str(path)
+
+
+def test_a_deployed_target_s_results_are_never_reused(env, monkeypatch):
+    """A URL cannot say which build is behind it, so yesterday's result is not this build's."""
+    path = _deployed_cfg(env, monkeypatch)
+    argv = ["run", "--config", path, "--scenarios", "T02", "--runs", "1"]
+    assert cli.main(argv) == 0
+    assert len(env["driven"]) == 1
+    env["driven"].clear()
+    assert cli.main(argv) == 0
+    assert len(env["driven"]) == 1
+
+
+def test_a_returning_caller_scenario_is_skipped_when_the_cluster_has_no_profile(env, monkeypatch):
+    path = _deployed_cfg(env, monkeypatch)
+    assert cli.main(["run", "--config", path, "--scenarios", "T14", "--runs", "1"]) == 0
+    assert env["driven"] == []
+    [rec] = ResultStore(env["results"]).load_target(_only_commit(env))
+    assert rec.void_reason == "no_profile_on_cluster"
+
+
+def _only_commit(env):
+    root = env["results"] / f"suite-v{SUITE_VERSION}"
+    return next(p.name for p in root.iterdir() if p.is_dir() and p.name != "worktrees")

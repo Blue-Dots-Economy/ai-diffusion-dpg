@@ -23,11 +23,12 @@ REPEAT_REQUEST_RE = re.compile(r"फिर से|दोबारा|repeat|स�
 CORRECTION_MARKERS = ("नहीं", "गलत", "actually", "असल में")
 CONSENT_LINE = ("आगे बढ़ने से पहले एक बात — क्या मुझे आपकी जानकारी सेव करने और "
                 "आपकी ओर से आवेदन भेजने की अनुमति है?")
-CONSENT_ASK_RE = re.compile(r"अनुमति[^।]*\?")
-AFFIRM_RE = re.compile(r"हाँ|हां|जी हाँ|जी|ठीक है|अनुमति है|\b(yes|ok|okay)\b", re.I)
-SEND_ASK_RE = re.compile(r"(भेज|आवेदन)[^।]*\?")
+CONSENT_ASK_RE = re.compile(r"अनुमति[^।?]*\?")
+AFFIRM_RE = re.compile(r"हाँ|हां|ठीक है|अनुमति है|ज़रूर|जरूर|बिल्कुल|\b(yes|ok|okay|sure)\b", re.I)
+SEND_ASK_RE = re.compile(r"(भेज|आवेदन)[^।?]*\?")
 COST_RE = re.compile(r"मुफ़्त|मुफ्त|निःशुल्क|निशुल्क|शुल्क|फ़ीस|फीस|रुपये|रुपए|पैसे|सरकारी सहायता")
 UNDER_AGE_RE = re.compile(r"(\S+)\s*साल\s*से\s*कम")
+DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 WRITE_TOOLS = ("save_profile", "update_profile", "apply_job", "connect_service")
 NUMBER_WORDS = {"सोलह": 16, "सत्रह": 17, "अठारह": 18, "उन्नीस": 19, "बीस": 20, "इक्कीस": 21}
 FIELD_CUES = {
@@ -221,7 +222,7 @@ def _tc07(ctx: CheckCtx) -> Verdict:
     if not legs:
         return Verdict("n/a", reason="no fetch_jobs")
     if not ctx.rec.observes_tool_bodies:
-        return Verdict("unscored", reason="tool responses recorded without their bodies")
+        return Verdict("unscored", reason="the deployment's tool logs for this call were incomplete")
     return next((r for r in (_tc07_leg(lg, ctx.places) for lg in legs) if r.status == "fail"), Verdict("pass"))
 
 
@@ -401,6 +402,20 @@ def observed_places(rec: CallRecord) -> dict[str, list[str]]:
     return out
 
 
+def widen_places(places: dict[str, list[str]], rec: CallRecord) -> dict[str, list[str]]:
+    """Seeded city aliases, plus the cities this call's own results named.
+
+    A city the seed already knows keeps its spellings and gains the live one: a
+    live result that replaced them would strip the Devanagari names the agent
+    actually speaks, and every mention would then read as invented.
+    """
+    out = {k: list(v) for k, v in places.items()}
+    for name, aliases in observed_places(rec).items():
+        bucket = out.setdefault(name, [])
+        bucket.extend(a for a in aliases if a not in bucket)
+    return out
+
+
 def _offered(leg: Leg) -> list[str]:
     names: list[str] = []
     for t in leg.turns:
@@ -543,7 +558,7 @@ def _tc21(ctx: CheckCtx) -> Verdict:
     if not any(_taps(t, "apply_job") for t in _turns(ctx.rec)):
         return Verdict("n/a", reason="no apply calls")
     if not ctx.rec.observes_tool_bodies:
-        return Verdict("unscored", reason="tool responses recorded without their bodies")
+        return Verdict("unscored", reason="the deployment's tool logs for this call were incomplete")
     return next((r for r in map(_tc21_leg, ctx.rec.legs) if r), Verdict("pass"))
 
 
@@ -554,6 +569,23 @@ def _writes(turn: TurnRecord) -> list:
 
 def _asks_permission(reply: str) -> bool:
     return bool(CONSENT_ASK_RE.search(reply))
+
+
+def _asks_to_send(reply: str) -> bool:
+    """Whether a reply asks to send this application.
+
+    The fixed consent line also asks about sending, so a match carrying the word
+    for permission is that question and not an offer to send what was just found.
+    """
+    return any("अनुमति" not in m.group(0) for m in SEND_ASK_RE.finditer(reply or ""))
+
+
+def _age_threshold(word: str) -> int | None:
+    """The age a "<n> साल से कम" phrase names, written as a word or in either digit set."""
+    if word in NUMBER_WORDS:
+        return NUMBER_WORDS[word]
+    digits = word.translate(DEVANAGARI_DIGITS)
+    return int(digits) if digits.isdigit() else None
 
 
 def _tc23(ctx: CheckCtx) -> Verdict:
@@ -618,13 +650,17 @@ def _tc25(ctx: CheckCtx) -> Verdict:
 
 
 def _tc26(ctx: CheckCtx) -> Verdict:
-    """Every turn that offers services says what they cost."""
-    offers = [t for t in _turns(ctx.rec) if _taps(t, "connect_service") or _taps(t, "fetch_services")]
-    named = [t for t in _turns(ctx.rec) if any(_taps(t, "fetch_services"))]
-    if not offers and not named:
+    """Every turn that reads out services says what they cost."""
+    named = [t for t in _turns(ctx.rec) if _taps(t, "fetch_services")]
+    connected = [t for t in _turns(ctx.rec) if _taps(t, "connect_service")]
+    if not named and not connected:
         return Verdict("n/a", reason="no services offered")
+    if not named:
+        return Verdict("unscored", reason="a service was connected without the turn that offered it being recorded")
     for t in named:
-        if t.reply and not COST_RE.search(t.reply):
+        if not t.reply:
+            return Verdict("unscored", reason="a service was read out in a turn whose reply was not recorded")
+        if not COST_RE.search(t.reply):
             return _fail(t, "read out a service without saying what it costs")
     return Verdict("pass")
 
@@ -636,9 +672,11 @@ def _truncated(turn: TurnRecord, tool: str) -> bool:
 def _tc27(ctx: CheckCtx) -> Verdict:
     """An empty search names the city that was asked for before offering anywhere else."""
     if not ctx.rec.observes_tool_bodies:
-        return Verdict("unscored", reason="tool responses recorded without their bodies")
+        return Verdict("unscored", reason="the deployment's tool logs for this call were incomplete")
     if any(_truncated(t, "fetch_jobs") for t in _turns(ctx.rec)):
         return Verdict("unscored", reason="the search response was recorded cut short, so it cannot be read")
+    if any(e.status != 200 or e.resp_body is None for t in _turns(ctx.rec) for e in _taps(t, "fetch_jobs")):
+        return Verdict("unscored", reason="a job search failed, so an empty result cannot be told from an error")
     city = (ctx.persona.facts or {}).get("city") or ""
     empty = [t for t in _turns(ctx.rec)
              if any(not _values_at(e.resp_body, "jobProviderName") for e in _taps(t, "fetch_jobs"))]
@@ -670,7 +708,7 @@ def _tc29(ctx: CheckCtx) -> Verdict:
         for t in lg.turns:
             if _taps(t, "apply_job") and not asked:
                 return _fail(t, "applied without having asked whether to send it")
-            if SEND_ASK_RE.search(t.reply):
+            if _asks_to_send(t.reply):
                 asked = True
     if not any(_taps(t, "apply_job") for t in _turns(ctx.rec)):
         return Verdict("n/a", reason="no apply calls")
@@ -682,16 +720,22 @@ def _tc30(ctx: CheckCtx) -> Verdict:
     age = (ctx.persona.facts or {}).get("age")
     if not isinstance(age, int):
         return Verdict("n/a", reason="persona states no age")
-    said = False
+    said = unreadable = False
     for t in _turns(ctx.rec):
         m = UNDER_AGE_RE.search(t.reply)
         if not m:
             continue
         said = True
-        threshold = NUMBER_WORDS.get(m.group(1).strip())
-        if threshold is not None and age >= threshold:
+        threshold = _age_threshold(m.group(1).strip())
+        if threshold is None:
+            unreadable = True
+        elif age >= threshold:
             return _fail(t, f"told a caller of {age} they are under {threshold}")
-    return Verdict("pass") if said else Verdict("n/a", reason="no age refusal")
+    if not said:
+        return Verdict("n/a", reason="no age refusal")
+    if unreadable:
+        return Verdict("unscored", reason="the refusal names an age in words this check cannot read")
+    return Verdict("pass")
 
 DETERMINISTIC: dict[str, Callable[[CheckCtx], Verdict]] = {
     "TC02": _tc02, "TC03": _tc03, "TC04": _tc04, "TC05": _tc05, "TC06": _tc06, "TC07": _tc07,

@@ -29,8 +29,7 @@ from pathlib import Path
 import httpx
 
 from eval.voice_bench.config import BackendCfg
-from eval.voice_bench.seed import (SEED_VERSION, job_rows, load_seed, participant_body, profile_item_state,
-                                   seed_phone)
+from eval.voice_bench.seed import SEED_VERSION, job_rows, load_seed, participant_body, profile_item_state
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +101,7 @@ class RemoteBackend:
                 f"remote backend needs {', '.join(missing)} in the environment{where} "
                 f"({self.cfg.signals_url}). Each cluster has its OWN keys: the unprefixed "
                 "BLUE_DOTS_* names are the test cluster's and are rejected by UAT. "
-                'Load them with `eval "$(~/.config/kkb/bin/kkb-secrets.sh export)"`.')
+                "Export them before the run.")
         return (self._env[api_n].strip(), self._env[search_n].strip(), self._env[org_n].strip())
 
     def _wrong_cluster_hint(self, status: int, what: str) -> str:
@@ -201,6 +200,11 @@ class RemoteBackend:
             TimeoutError: The seeded jobs did not reach the index in time.
         """
         if self.state.get("seed_version") == SEED_VERSION:
+            mismatch = self._state_mismatch()
+            if mismatch:
+                raise RemoteBackendError(
+                    f"this results dir was seeded against a different cluster ({mismatch}); "
+                    "give each cluster its own results_dir")
             logger.info("remote_backend.seed", extra={
                 "operation": "remote_backend.seed", "status": "skipped", "reason": "already at SEED_VERSION"})
             return
@@ -212,38 +216,59 @@ class RemoteBackend:
             logger.info("remote_backend.seed", extra={
                 "operation": "remote_backend.seed", "status": "skipped", "reason": "seed_mode=none"})
             return
-        if self.seed_present():
-            self._write_env(api_key, search_key, org_id)
-            self._record_state(seeded=True, elapsed_s=0)
-            logger.info("remote_backend.seed", extra={
-                "operation": "remote_backend.seed", "status": "skipped",
-                "reason": "this seed generation is already on the cluster"})
-            return
         self.dir.mkdir(parents=True, exist_ok=True)
         self._write_env(api_key, search_key, org_id)
         headers = {"x-api-key": api_key, "x-acting-org-id": org_id}
 
         seed = load_seed()
         jobs = job_rows(seed)
-        # Baseline first: the cluster already holds other providers, so the
-        # index wait is "grew by at least len(jobs)", not "equals len(jobs)".
+        pending = [row for row in jobs if not self._participant(row["phone"], headers)]
         baseline = self._provider_total(search_key)
+        if baseline is None:
+            raise RemoteBackendError(
+                f"could not read the search index at {self.cfg.search_url} to take a baseline; "
+                "without one the index wait would finish before the seed is searchable")
 
-        for row in jobs:
+        for row in pending:
             self._post(participant_body("provider", row["phone"], row["name"], row["item_state"]), headers)
         profile_item_ids = []
         for p in seed["profiles"]:
-            body = self._post(participant_body("seeker", p["phone"], p["name"], profile_item_state(p),
-                                               age=p.get("age")), headers)
-            profile_item_ids.append(str(uuid.UUID(str(body["items"][0]["item_id"]))))
+            body = self._participant(p["phone"], headers) or self._post(
+                participant_body("seeker", p["phone"], p["name"], profile_item_state(p), age=p.get("age")),
+                headers)
+            item_id = self._first_item_id(body)
+            if item_id:
+                profile_item_ids.append(item_id)
 
-        self._wait_index(search_key, baseline + len(jobs))
+        self._wait_index(search_key, baseline + len(pending))
         self._record_state(seeded=True, elapsed_s=time.time() - seed_start,
                            provider_baseline=baseline, profile_item_ids=profile_item_ids)
         logger.info("remote_backend.seed", extra={
-            "operation": "remote_backend.seed", "status": "success", "jobs": len(jobs),
+            "operation": "remote_backend.seed", "status": "success", "jobs": len(pending),
+            "jobs_already_present": len(jobs) - len(pending),
             "profiles": len(profile_item_ids), "provider_baseline": baseline,
             "latency_ms": int((time.time() - seed_start) * 1000)})
+
+    def _state_mismatch(self) -> str | None:
+        """Which recorded URL disagrees with the configured cluster, or None.
+
+        state.json says a generation is seeded; it does not say where, so without
+        this a change of cluster inherits the other one's "already seeded".
+        """
+        for field, want in (("signals_url", self.cfg.signals_url), ("search_url", self.cfg.search_url)):
+            have = self.state.get(field)
+            if have and have != want:
+                return f"{field} is {have}, not {want}"
+        return None
+
+    @staticmethod
+    def _first_item_id(body: dict | None) -> str | None:
+        """The first item id in a participant record, or None when it has none."""
+        items = (body or {}).get("items") or []
+        try:
+            return str(uuid.UUID(str(items[0]["item_id"])))
+        except (IndexError, KeyError, TypeError, ValueError):
+            return None
 
     def _record_state(self, seeded: bool, elapsed_s: float, provider_baseline: int = 0,
                       profile_item_ids: list[str] | None = None) -> None:
@@ -310,20 +335,6 @@ class RemoteBackend:
         items = (data or {}).get("items") or []
         return sum(1 for i in items if i.get("lifecycle_status") != "retired")
 
-    def seed_present(self) -> bool:
-        """Whether this seed generation is already on the cluster.
-
-        Probes the first, middle and last poster numbers of the generation rather
-        than all sixty. They are posted in order, so a complete seed has all three
-        and a half-written one is reported absent and completed.
-        """
-        api_key, _search_key, org_id = self._creds()
-        headers = {"x-api-key": api_key, "x-acting-org-id": org_id}
-        seed = load_seed()
-        last_trade, last_city = len(seed["trades"]) - 1, len(seed["cities"]) - 1
-        probes = (seed_phone(0, 0), seed_phone(last_trade // 2, last_city // 2), seed_phone(last_trade, last_city))
-        return all(self._participant(p, headers) for p in probes)
-
     # ---- index ---------------------------------------------------------------------------------------------
     def _search(self, search_key: str, limit: int = 1):
         """POST a broad provider query. Returns the response, or None if unreachable."""
@@ -336,21 +347,27 @@ class RemoteBackend:
         except httpx.HTTPError:
             return None
 
-    def _provider_total(self, search_key: str) -> int:
-        """Total live provider job postings the search index reports.
+    def _provider_total(self, search_key: str) -> int | None:
+        """Total live provider job postings the search index reports, or None when the query failed.
 
-        Returns:
-            ``message.meta.total`` for a broad provider query, or 0 when the
-            query fails (so a transient blip reads as "not yet indexed" rather
-            than crashing a seed).
+        Never 0 on failure: the index wait compares against a baseline, and a
+        failed read reported as 0 would put the target below what the shared
+        cluster already holds and end the wait before the seed is searchable.
+
+        Raises:
+            RemoteBackendError: The index refused the credentials.
         """
         r = self._search(search_key)
-        if r is None or r.status_code != 200:
-            return 0
+        if r is None:
+            return None
+        if r.status_code in (401, 403):
+            raise RemoteBackendError(self._wrong_cluster_hint(r.status_code, "search index read"))
+        if r.status_code != 200:
+            return None
         try:
             return int(((r.json().get("message") or {}).get("meta") or {}).get("total") or 0)
         except (ValueError, TypeError, AttributeError):
-            return 0
+            return None
 
     def _wait_index(self, search_key: str, at_least: int) -> None:
         """Poll until the index reports at least ``at_least`` provider items.
@@ -365,12 +382,12 @@ class RemoteBackend:
         deadline = self._clock() + self._index_timeout_s
         while True:
             n = self._provider_total(search_key)
-            if n >= at_least:
+            if n is not None and n >= at_least:
                 return
             if self._clock() >= deadline:
                 raise TimeoutError(
-                    f"search index reports {n} live providers, wanted at least {at_least}, after "
-                    f"{self._index_timeout_s:.0f}s")
+                    f"search index reports {'nothing' if n is None else n} live providers, wanted at "
+                    f"least {at_least}, after {self._index_timeout_s:.0f}s")
             self._sleep(5)
 
     # ---- cleanup -------------------------------------------------------------------------------------------

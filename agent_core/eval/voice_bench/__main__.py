@@ -151,15 +151,44 @@ def _skipped_record(persona, run_idx: int, meta: dict, reason: str) -> CallRecor
                       started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"), void_reason=reason)
 
 
-def _missing_profile(backend, persona) -> bool:
-    """Whether a returning-caller persona has no profile on a cluster the bench must not create one on."""
+def _profile_state(backend, persona) -> str:
+    """Whether a returning-caller persona has a profile on a cluster the bench must not create one on.
+
+    Returns:
+        ``present``, ``absent``, ``unknown`` when the probe itself failed, or
+        ``n/a`` when the persona is not a returning caller. An unknown state must
+        not be dialled: the scenario would be graded on the first-time flow.
+    """
     if not persona.seeded_phone or not hasattr(backend, "live_profiles"):
-        return False
+        return "n/a"
     try:
-        return backend.live_profiles(persona.seeded_phone) == 0
+        return "present" if backend.live_profiles(persona.seeded_phone) else "absent"
     except Exception as e:  # noqa: BLE001 - a probe failure must not fail the run
         _say(f"could not check {persona.id}'s profile: {type(e).__name__}")
-        return False
+        return "unknown"
+
+
+def _clean_phone(backend, t, cfg: BenchConfig, pid: str, run: int, salt: str, used: set[str]) -> str | None:
+    """A caller number the cluster holds nothing for, or None when none could be confirmed.
+
+    The number has room for two salt digits only, so freshness is checked rather
+    than assumed: a number an earlier run already wrote to would arrive as a
+    returning caller and be graded on the wrong flow.
+    """
+    probing = t.is_deployed and hasattr(backend, "live_profiles")
+    for step in range(10):
+        phone = phone_for(cfg.phone_prefix, pid, run, f"{(int(salt) + step) % 100:02d}")
+        if phone in used:
+            continue
+        if not probing:
+            return phone
+        try:
+            if backend.live_profiles(phone) == 0:
+                return phone
+        except Exception as e:  # noqa: BLE001 - a probe failure must not fail the run
+            _say(f"could not check {phone}: {type(e).__name__}")
+            return None
+    return None
 
 
 def _status(rec) -> str:
@@ -195,19 +224,32 @@ def _run_target(t, stack, cfg: BenchConfig, store: ResultStore, plan, personas, 
     for pid, runs in plan:
         persona = personas[pid]
         for run in range(runs):
-            if store.has(commit, pid, run):
+            if not t.is_deployed and store.has(commit, pid, run):
                 _say(f"{t.name} {pid} r{run} cached")
                 continue
-            if t.is_deployed and _missing_profile(backend, persona):
-                rec = _skipped_record(persona, run, drive_meta, "no_profile_on_cluster")
+            state = _profile_state(backend, persona) if t.is_deployed else "n/a"
+            if state in ("absent", "unknown"):
+                reason = "no_profile_on_cluster" if state == "absent" else "profile_probe_failed"
+                rec = _skipped_record(persona, run, drive_meta, reason)
                 score_call(rec, persona, judge_llm, seed_places, t.no_idle_handling)
                 store.save(rec)
-                _say(f"{t.name} {pid} r{run} skipped: no profile for {persona.seeded_phone}")
+                _say(f"{t.name} {pid} r{run} skipped: {reason}")
                 continue
-            phone = persona.seeded_phone or phone_for(cfg.phone_prefix, pid, run, phone_salt)
-            call_deps = dataclasses.replace(deps, cleanup=_call_cleanup(backend, t, phone))
+            phone = persona.seeded_phone or _clean_phone(backend, t, cfg, pid, run, phone_salt, used_phones)
+            if not phone:
+                rec = _skipped_record(persona, run, drive_meta, "no_clean_caller_number")
+                score_call(rec, persona, judge_llm, seed_places, t.no_idle_handling)
+                store.save(rec)
+                _say(f"{t.name} {pid} r{run} skipped: no_clean_caller_number")
+                continue
             used_phones.add(phone)
-            rec = drive_call(call_deps, persona, run, phone, cfg.max_turns, drive_meta)
+            retry_phone = None
+            if t.is_deployed and not persona.seeded_phone:
+                retry_phone = _clean_phone(backend, t, cfg, pid, run, phone_salt, used_phones)
+                if retry_phone:
+                    used_phones.add(retry_phone)
+            call_deps = dataclasses.replace(deps, cleanup=_call_cleanup(backend, t, phone))
+            rec = drive_call(call_deps, persona, run, phone, cfg.max_turns, drive_meta, retry_phone)
             score_call(rec, persona, judge_llm, seed_places, t.no_idle_handling)
             store.save(rec)
             _say(f"{t.name} {pid} r{run} {_status(rec)} {_turns(rec)} turns")
@@ -267,7 +309,11 @@ def cmd_run(cfg: BenchConfig, args) -> int:
         return 2
     phone_salt = run_salt() if cfg.backend.is_remote else "00"
     if cfg.backend.is_remote:
-        _say(f"remote backend: {cfg.backend.signals_url} (no cleanup; phone_salt={phone_salt})")
+        _say(f"remote backend: cluster {cfg.backend.cluster or 'custom'} at {cfg.backend.signals_url} "
+             f"(no cleanup; phone_salt={phone_salt})")
+    if deployed:
+        _say(f"target(s) {', '.join(deployed)} are deployed: results are not reused between runs, "
+             "because the build behind a URL cannot be identified")
     store = ResultStore(cfg.results_dir)
     caller = Caller(OpenAIJsonLLM(cfg.caller.model, cfg.caller.temperature))
     judge_llm = OpenAIJsonLLM(cfg.judge.model, cfg.judge.temperature)

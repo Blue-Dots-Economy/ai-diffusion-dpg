@@ -200,10 +200,11 @@ def test_a_deployment_left_at_the_default_level_admits_it_has_no_bodies():
     assert obs.sees_tool_bodies is False
 
 
-def test_a_call_with_no_tools_at_all_is_not_held_against_the_target():
+def test_a_call_with_no_tools_at_all_cannot_be_graded_on_its_tools():
+    """Nothing logged and nothing called look identical from here."""
     obs = _observer([[(1, BANNER)], []])
     obs.turn("919060601102", "br-n2", 0)
-    assert obs.sees_tool_bodies is True
+    assert obs.sees_tool_bodies is False
 
 
 def test_a_line_whose_arguments_are_in_the_message_is_still_matched():
@@ -221,3 +222,74 @@ def test_a_body_the_agent_cut_short_is_kept_as_text_and_flagged():
     [entry] = list(tool_entries([(1000, _response("fetch_jobs", cut)), (1001, _execute("fetch_jobs"))], SID).values())
     assert entry.body_truncated is True
     assert entry.resp_body == cut
+
+
+def test_two_tools_in_one_trace_stay_two_calls():
+    """httpx is instrumented process-wide, so a turn's calls all share a trace id."""
+    lines = [(1000, _request("fetch_profile", "https://s/p", {"phone": "9199"})),
+             (1010, _response("fetch_profile", '{"items":[]}')),
+             (1020, _execute("fetch_profile")),
+             (1030, _request("apply_job", "https://s/a", {"item_id": "x"})),
+             (1040, _response("apply_job", '{"ok":true}')),
+             (1050, _execute("apply_job"))]
+    entries = tool_entries(lines, SID)
+    assert sorted(e.tool for e in entries.values()) == ["apply_job", "fetch_profile"]
+
+
+def test_the_write_in_a_shared_trace_is_not_lost():
+    lines = [(1000, _execute("fetch_profile")), (1010, _execute("apply_job"))]
+    assert any(e.tool == "apply_job" for e in tool_entries(lines, SID).values())
+
+
+def test_the_same_tool_called_twice_in_one_trace_is_two_calls():
+    lines = [(1000, _request("fetch_jobs", "https://s/1", {"q": "a"})),
+             (1010, _response("fetch_jobs", '{"items":[1]}')),
+             (1020, _request("fetch_jobs", "https://s/2", {"q": "b"})),
+             (1030, _response("fetch_jobs", '{"items":[2]}'))]
+    assert len(tool_entries(lines, SID)) == 2
+
+
+def test_a_missing_banner_makes_the_call_ungradeable_on_its_tools():
+    obs = _observer([[], [(1, _execute("fetch_jobs"))]])
+    obs.turn("919060601102", "br-n2", 0)
+    assert obs.sees_tool_bodies is False
+
+
+def test_evidence_counters_do_not_carry_between_calls():
+    obs = _observer([[(1, BANNER)],
+                     [(1, _request("fetch_jobs", "https://s/1", {"q": "a"})),
+                      (2, _response("fetch_jobs", '{"items":[]}'))],
+                     [(1, BANNER)], []])
+    obs.turn("919060601102", "br-n2", 0)
+    assert obs.sees_tool_bodies is True
+    obs.start_attempt()
+    obs.turn("919060601102", "br-n3", 0)
+    assert obs.sees_tool_bodies is False
+
+
+def test_a_tool_call_with_no_body_logged_is_not_graded_on():
+    obs = _observer([[(1, BANNER)], [(1, _execute("fetch_jobs"))]])
+    obs.turn("919060601102", "br-n2", 0)
+    assert obs.sees_tool_bodies is False
+
+
+CAPTURED_RESPONSE = json.dumps({
+    "body": ('rest_api_response tool=fetch_profile status=200 body={"user_id": null, "compliance": '
+             '[{"key": "user_terms", "value": false}], "items": []}'),
+    "traceid": "6b8f1c2d4e5a7b9c0d1e2f3a4b5c6d7e",
+    "severity": "DEBUG",
+    "attributes": {"code.file.path": "/app/src/adapters/rest_api.py",
+                   "code.function.name": "execute", "code.line.number": 738,
+                   "operation": "RestApiAdapter.execute", "status": "received",
+                   "tool_name": "fetch_profile", "session_id": SID, "status_code": 200,
+                   "body": '{"user_id": null, "compliance": [{"key": "user_terms", "value": false}], "items": []}',
+                   "latency_ms": 118},
+    "resources": {"service.name": "action_gateway", "dpg.block": "action_gateway"}})
+
+
+def test_a_record_in_the_deployment_s_own_shape_is_read():
+    [entry] = list(tool_entries([(1794831003783, CAPTURED_RESPONSE)], SID).values())
+    assert entry.tool == "fetch_profile"
+    assert entry.status == 200
+    assert entry.resp_body["items"] == []
+    assert entry.body_truncated is False

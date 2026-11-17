@@ -472,3 +472,59 @@ def test_tc27_cannot_read_a_search_response_that_was_cut_short():
                    "fetch_jobs", True)
     turns = [T(0, "लखनऊ", "कोई नौकरी नहीं है।", tap=[cut])]
     assert v("TC27", rec((turns, "bot")), persona="T01") == "unscored"
+
+
+def connect_tap():
+    return TapEntry(1, "POST", "/api/v1/action/perform", "", {}, 200, {"ok": True}, "signals", "connect_service")
+
+
+def test_a_refusal_is_not_read_as_permission():
+    """जी नहीं ("no, sir") carries the same honorific as agreement does."""
+    refused = [T(0, "नौकरी चाहिए", ASK), T(1, "जी नहीं", "ठीक है", tap=[write_tap()])]
+    assert v("TC25", rec((refused, "bot")), persona="T15") == "fail"
+    agreed = [T(0, "नौकरी चाहिए", ASK), T(1, "जी हाँ", "ठीक है", tap=[write_tap()])]
+    assert v("TC25", rec((agreed, "bot")), persona="T15") == "pass"
+
+
+def test_the_consent_question_is_not_an_offer_to_send():
+    """The fixed consent line also asks about sending, and must not stand in for the send-ask."""
+    only_consent = [T(0, "पहली वाली", ASK), T(1, "हाँ", "भेज दिया", tap=[apply_tap()])]
+    assert v("TC29", rec((only_consent, "bot"))) == "fail"
+
+
+def test_an_age_threshold_in_digits_is_read():
+    told = [T(0, "उन्नीस", "माफ़ कीजिए, आपकी उम्र 18 साल से कम है।")]
+    assert v("TC30", rec((told, "bot")), persona="T19") == "fail"
+    devanagari = [T(0, "उन्नीस", "माफ़ कीजिए, आपकी उम्र १८ साल से कम है।")]
+    assert v("TC30", rec((devanagari, "bot")), persona="T19") == "fail"
+
+
+def test_an_age_threshold_this_check_cannot_read_is_not_a_pass():
+    told = [T(0, "उन्नीस", "माफ़ कीजिए, आपकी उम्र तय सीमा साल से कम है।")]
+    assert v("TC30", rec((told, "bot")), persona="T19") == "unscored"
+
+
+def test_a_service_connected_without_the_offer_being_seen_is_not_a_pass():
+    connected = [T(0, "सिलाई", "जोड़ रही हूँ", tap=[connect_tap()])]
+    assert v("TC26", rec((connected, "bot")), persona="T16") == "unscored"
+
+
+def test_a_service_read_out_must_still_name_its_cost():
+    free = [T(0, "सिलाई", "सिलाई केंद्र है, यह मुफ़्त है।", tap=[service_tap()])]
+    assert v("TC26", rec((free, "bot")), persona="T16") == "pass"
+    silent = [T(0, "सिलाई", "सिलाई केंद्र है।", tap=[service_tap()])]
+    assert v("TC26", rec((silent, "bot")), persona="T16") == "fail"
+
+
+def test_a_failed_search_is_not_read_as_an_empty_one():
+    broken = TapEntry(1, "POST", "/v1/search", "", {}, 502, {"error": "bad gateway"}, "search", "fetch_jobs")
+    turns = [T(0, "धारवाड़", "कोई नौकरी नहीं है।", tap=[broken])]
+    assert v("TC27", rec((turns, "bot")), persona="T01") == "unscored"
+
+
+def test_a_live_city_adds_to_its_seeded_spellings():
+    from eval.voice_bench.checks import widen_places
+    r = rec(([T(0, "काम", "लखनऊ में है", tap=[jobs_tap("X", city="Lucknow")])], "bot"))
+    widened = widen_places(PLACES, r)
+    assert "लखनऊ" in widened["Lucknow"]
+    assert "Lucknow" in widened["Lucknow"]

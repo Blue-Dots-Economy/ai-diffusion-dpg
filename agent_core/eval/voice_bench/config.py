@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -137,6 +138,33 @@ class BenchConfig:
     terminal_words: list[str] = field(default_factory=lambda: ["धन्यवाद", "Thank you"])
 
 
+def _known_hosts() -> set[str]:
+    """Hosts of every cluster preset."""
+    return {urlsplit(u).netloc for c in CLUSTERS.values() for u in (c["signals_url"], c["search_url"])}
+
+
+def _check_known_hosts(*urls: str) -> None:
+    """Refuse a remote run against a host no preset names.
+
+    A run writes sixty job postings and profiles into whatever it is pointed at
+    and never deletes them, so an unrecognised host is refused rather than
+    trusted. Setting ``allow_unlisted_cluster: true`` in the config file is the
+    deliberate way past it; there is no environment variable for it, so a stray
+    export cannot open the door.
+
+    Raises:
+        ValueError: A URL's host belongs to no cluster preset.
+    """
+    known = _known_hosts()
+    for url in urls:
+        host = urlsplit(url or "").netloc
+        if host and host not in known:
+            raise ValueError(
+                f"backend host {host} is not one of the known clusters ({', '.join(sorted(known))}). "
+                "The bench writes seed data and never deletes it, so an unlisted host must be opted "
+                "into with allow_unlisted_cluster: true in the config file.")
+
+
 def _backend(b: dict) -> BackendCfg:
     """Build BackendCfg, applying env overrides and per-mode requirements.
 
@@ -153,9 +181,8 @@ def _backend(b: dict) -> BackendCfg:
 
     Raises:
         ValueError: An unknown mode, a local mode missing signals_dir or
-            postgres_container, or a remote mode with no signals_url/search_url.
-            Remote never falls back to a default URL — an unset URL is an error,
-            so a typo cannot silently send a run at UAT.
+            postgres_container, a remote mode with no signals_url/search_url, or
+            a remote host that belongs to no known cluster.
     """
     # pop() unconditionally: an env override must still consume the file key,
     # or it reaches BackendCfg a second time as **b.
@@ -193,6 +220,8 @@ def _backend(b: dict) -> BackendCfg:
         b.pop("credentials_env_prefix", None)
         if not signals_url or not search_url:
             raise ValueError("backend.mode=remote needs signals_url and search_url")
+        if not bool(b.pop("allow_unlisted_cluster", False)):
+            _check_known_hosts(signals_url, search_url, instance_url)
         seed_mode = str(os.environ.get("VOICE_BENCH_SEED_MODE") or b.pop("seed_mode", None) or "auto").strip().lower()
         if seed_mode not in ("auto", "none"):
             raise ValueError(f"backend.seed_mode must be 'auto' or 'none', got {seed_mode!r}")

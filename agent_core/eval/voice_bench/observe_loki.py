@@ -64,8 +64,8 @@ class LokiClient:
         self._uid = datasource_uid
         self._token = (token or os.environ.get(TOKEN_ENV) or "").strip()
         if not self._token:
-            raise LokiError(f"a remote target needs a Grafana service-account token in {TOKEN_ENV}. "
-                            'Load it with `eval "$(~/.config/kkb/bin/kkb-secrets.sh export)"`.')
+            raise LokiError(f"a remote target needs a Grafana service-account token in {TOKEN_ENV}; "
+                            "export it before the run.")
         self._http = http or httpx.Client(timeout=30)
         self._limit = limit
 
@@ -160,17 +160,29 @@ def _tool_name(*records: dict) -> str:
 
 
 def tool_entries(lines: list[tuple[int, str]], session_id: str) -> dict[str, TapEntry]:
-    """Tool calls for one session, keyed by the trace id that ties their log records together."""
+    """Tool calls for one session, keyed by trace id, tool name and position within the trace.
+
+    httpx is instrumented process-wide, so every call a turn makes is a child of
+    the same trace. Keying on the trace alone would merge a read and the write
+    that follows it into one entry and lose the write.
+    """
     groups: dict[str, dict] = {}
+    open_key: dict[tuple[str, str], str] = {}
+    seen_count: dict[tuple[str, str], int] = {}
     for t_ms, line in lines:
         rec = _record(line)
         attrs = rec.get("attributes") or {}
         kind = _kind(rec.get("body"))
         if kind is None or attrs.get("session_id") != session_id:
             continue
-        key = str(rec.get("traceid") or f"t{t_ms}")
-        group = groups.setdefault(key, {"t_ms": t_ms})
-        group[kind] = attrs
+        pair = (str(rec.get("traceid") or f"t{t_ms}"), str(attrs.get("tool_name") or "other"))
+        key = open_key.get(pair)
+        if key is None or kind in groups[key]:
+            seen_count[pair] = seen_count.get(pair, 0) + 1
+            key = f"{pair[0]}:{pair[1]}:{seen_count[pair]}"
+            open_key[pair] = key
+            groups[key] = {"t_ms": t_ms}
+        groups[key][kind] = attrs
     return {k: _entry(g) for k, g in groups.items()}
 
 
@@ -197,6 +209,8 @@ class LokiObserver(Observer):
         self._seen: set[str] = set()
         self._tool_calls = 0
         self._with_body = 0
+        self._banner_missing = False
+        self._last_since_s: float | None = None
 
     @staticmethod
     def _session_id(phone: str, call_id: str) -> str:
@@ -213,6 +227,7 @@ class LokiObserver(Observer):
         export cannot be mistaken for a turn that called no tools.
         """
         session_id = self._session_id(phone, call_id)
+        self._last_since_s = since_s
         banner: dict = {}
         deadline = self._clock() + self._settle_s
         while True:
@@ -221,6 +236,7 @@ class LokiObserver(Observer):
                 break
             self._sleep(1.0)
         if not banner:
+            self._banner_missing = True
             logger.warning("voice_bench.loki_banner_missing",
                            extra={"operation": "LokiObserver.turn", "status": "failure",
                                   "session_id": session_id})
@@ -237,12 +253,21 @@ class LokiObserver(Observer):
         return fresh
 
     def leftover(self, phone: str, call_id: str) -> list[TapEntry]:
-        """Tool calls that reached Loki after the last turn's stream closed."""
+        """Tool calls that reached Loki after the last turn's stream closed.
+
+        Bounded to the last turn's own window, so an earlier call's late lines
+        are never swept onto this one.
+        """
         self._sleep(min(self._settle_s, 6.0))
-        return self._new_entries(self._session_id(phone, call_id), time.time() - 600)
+        since = self._last_since_s if self._last_since_s is not None else time.time() - 600
+        return self._new_entries(self._session_id(phone, call_id), since)
 
     def start_attempt(self) -> None:
         self._seen.clear()
+        self._tool_calls = 0
+        self._with_body = 0
+        self._banner_missing = False
+        self._last_since_s = None
 
     @property
     def sees_session(self) -> bool:
@@ -250,10 +275,12 @@ class LokiObserver(Observer):
 
     @property
     def sees_tool_bodies(self) -> bool:
-        """True until a tool call is seen whose response body was never logged.
+        """Whether this call's tool evidence is complete enough to grade on.
 
-        The agent records request parameters and response bodies only at its most
-        detailed level, so on a deployment left at the default these are absent and
-        the checks that read them must say so rather than grade on what is left.
+        The agent records response bodies only at its most detailed level, so on a
+        deployment left at the default they are absent. False also when a turn's
+        banner never arrived, and when no tool call was seen at all, because
+        neither can be told apart from logs that never reached Loki.
         """
-        return self._with_body > 0 or self._tool_calls == 0
+        return (not self._banner_missing and self._tool_calls > 0
+                and self._with_body == self._tool_calls)
