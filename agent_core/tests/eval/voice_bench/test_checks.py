@@ -528,3 +528,11 @@ def test_a_live_city_adds_to_its_seeded_spellings():
     widened = widen_places(PLACES, r)
     assert "लखनऊ" in widened["Lucknow"]
     assert "Lucknow" in widened["Lucknow"]
+
+
+def test_places_cannot_be_judged_against_a_search_response_that_was_cut_short():
+    """The names the comparison needs live in the body the agent cut at a fixed length."""
+    cut = TapEntry(1, "POST", "/v1/search", "", {}, 200, '{"message":{"items":[{"jobProv', "search",
+                   "fetch_jobs", True)
+    turns = [T(0, "काम", "कानपुर में नौकरी है", tap=[cut])]
+    assert v("TC07", rec((turns, "bot"))) == "unscored"
