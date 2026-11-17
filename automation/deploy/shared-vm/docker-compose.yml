@@ -283,8 +283,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.2'
-          memory: 512M
+          cpus: '1.0'
+          memory: 2G
     restart: unless-stopped
 
   loki:
