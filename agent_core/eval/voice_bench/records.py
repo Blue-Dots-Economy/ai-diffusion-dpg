@@ -30,10 +30,14 @@ class TapEntry:
     status: int
     resp_body: Any
     upstream: str             # "signals" | "search"
+    tool_name: str | None = None
+    body_truncated: bool = False   # the response was recorded as text the agent had already cut short
 
     @property
     def tool(self) -> str:
         """Which Blue Dots tool this upstream request belongs to."""
+        if self.tool_name:
+            return self.tool_name
         if self.path.endswith("/v1/search"):
             return "fetch_jobs"
         if self.path.endswith("/api/v1/action/perform"):
@@ -94,6 +98,8 @@ class CallRecord:
     harness_error: str | None = None   # the harness (caller LLM), not the target, failed; never a cache hit
     prior_legs: list[Leg] = field(default_factory=list)   # the discarded first attempt (retry or void re-run)
     prior_error: str | None = None     # that attempt's error, if it was retried because of one
+    observes_session: bool = True      # False when the target's session memory was never readable
+    observes_tool_bodies: bool = True  # False when tool responses were recorded without their bodies
 
     def to_json(self) -> str:
         """Serialise (Devanagari kept as-is)."""

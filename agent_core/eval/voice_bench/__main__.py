@@ -27,20 +27,25 @@ except ImportError:  # pragma: no cover - openai is a harness dependency
 
 from eval.voice_bench import SUITE_VERSION
 from eval.voice_bench.backend import Backend
+from eval.voice_bench.backend_remote import RemoteBackend
 from eval.voice_bench.bridge import BridgeClient
 from eval.voice_bench.caller import Caller
 from eval.voice_bench.config import BenchConfig, load_config
+from datetime import datetime, timezone
+
 from eval.voice_bench.drive import DriveDeps, drive_call
 from eval.voice_bench.llm import OpenAIJsonLLM
 from eval.voice_bench.nlu import run_nlu
-from eval.voice_bench.observe import LogScraper, reset_session
+from eval.voice_bench.observe import LocalObserver, LogScraper, reset_session
+from eval.voice_bench.records import CallRecord
+from eval.voice_bench.observe_loki import LokiClient, LokiObserver
 from eval.voice_bench.redact import redact
 from eval.voice_bench.report import comparable, render_markdown, summarise
 from eval.voice_bench.score import score_call
 from eval.voice_bench.seed import SEED_VERSION, load_seed, places
 from eval.voice_bench.stack import StackError, TargetStack
 from eval.voice_bench.store import ResultStore
-from eval.voice_bench.suite import load_personas, phone_for, runs_for
+from eval.voice_bench.suite import load_personas, phone_for, run_salt, runs_for
 from eval.voice_bench.tap import Tap
 
 _NLU_CASES = [Path(__file__).resolve().parents[1] / "nlu" / "cases" / n for n in ("scenarios.jsonl", "synthetic.jsonl")]
@@ -97,6 +102,17 @@ def _merge_meta(store: ResultStore, key: str, kv: dict, drop: tuple[str, ...] = 
     store.write_meta(key, {**meta, **kv})
 
 
+def _make_backend(cfg: BenchConfig):
+    """Return the backend the config asks for.
+
+    Both satisfy the same surface (state / up / down / seed / cleanup), so
+    everything downstream is mode-agnostic.
+    """
+    if cfg.backend.is_remote:
+        return RemoteBackend(cfg.backend, cfg.results_dir)
+    return Backend(cfg.backend, cfg.results_dir)
+
+
 def _safe_commit(stack, name: str) -> str:
     try:
         return stack.commit
@@ -108,12 +124,71 @@ def _call_cleanup(backend, t, phone: str):
     """Per-call cleanup: Signals DB back to the seed, and the target's session memory wiped (C1).
 
     A throwaway git_ref stack owns its Redis, so it is flushed; an external bridge_url Redis only loses this
-    phone's session/user keys. Any failure raises: a call must not run on dirty memory.
+    phone's session/user keys. A deployed target's Redis is not reachable and is not ours to touch, so its
+    session memory is left alone and fresh caller numbers carry the isolation instead. Any failure raises:
+    a call must not run on dirty memory.
     """
     def cleanup() -> None:
         backend.cleanup()
-        reset_session(t.redis_container, phone, flush=bool(t.git_ref))
+        if not t.is_deployed:
+            reset_session(t.redis_container, phone, flush=bool(t.git_ref))
     return cleanup
+
+
+def _make_observer(t, tap):
+    """The evidence source for this target: its own Loki when deployed, the tap and containers when local."""
+    if t.is_deployed:
+        return LokiObserver(LokiClient(t.grafana_url, t.loki_uid), t.action_gateway_job, t.agent_job)
+    return LocalObserver(tap, t.redis_container, LogScraper(t.agent_container))
+
+
+def _skipped_record(persona, run_idx: int, meta: dict, reason: str) -> CallRecord:
+    """A call that was never placed, recorded so the report shows it unscored rather than missing."""
+    return CallRecord(target=meta["target"], target_commit=meta["target_commit"], scenario=persona.id, run=run_idx,
+                      phone=persona.seeded_phone or "", suite_version=meta["suite_version"],
+                      seed_version=meta["seed_version"], caller_model=meta["caller_model"],
+                      judge_model=meta["judge_model"], legs=[], attempts=0, voided=True, error=None,
+                      started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"), void_reason=reason)
+
+
+def _profile_state(backend, persona) -> str:
+    """Whether a returning-caller persona has a profile on a cluster the bench must not create one on.
+
+    Returns:
+        ``present``, ``absent``, ``unknown`` when the probe itself failed, or
+        ``n/a`` when the persona is not a returning caller. An unknown state must
+        not be dialled: the scenario would be graded on the first-time flow.
+    """
+    if not persona.seeded_phone or not hasattr(backend, "live_profiles"):
+        return "n/a"
+    try:
+        return "present" if backend.live_profiles(persona.seeded_phone) else "absent"
+    except Exception as e:  # noqa: BLE001 - a probe failure must not fail the run
+        _say(f"could not check {persona.id}'s profile: {type(e).__name__}")
+        return "unknown"
+
+
+def _clean_phone(backend, t, cfg: BenchConfig, pid: str, run: int, salt: str, used: set[str]) -> str | None:
+    """A caller number the cluster holds nothing for, or None when none could be confirmed.
+
+    The number has room for two salt digits only, so freshness is checked rather
+    than assumed: a number an earlier run already wrote to would arrive as a
+    returning caller and be graded on the wrong flow.
+    """
+    probing = t.is_deployed and hasattr(backend, "live_profiles")
+    for step in range(10):
+        phone = phone_for(cfg.phone_prefix, pid, run, f"{(int(salt) + step) % 100:02d}")
+        if phone in used:
+            continue
+        if not probing:
+            return phone
+        try:
+            if backend.live_profiles(phone) == 0:
+                return phone
+        except Exception as e:  # noqa: BLE001 - a probe failure must not fail the run
+            _say(f"could not check {phone}: {type(e).__name__}")
+            return None
+    return None
 
 
 def _status(rec) -> str:
@@ -123,7 +198,7 @@ def _status(rec) -> str:
 
 
 def _run_target(t, stack, cfg: BenchConfig, store: ResultStore, plan, personas, backend, tap, caller, judge_llm,
-                seed_places, seed_version: int, env_file: Path | None = None) -> None:
+                seed_places, seed_version: int, env_file: Path | None = None, phone_salt: str = "00") -> None:
     try:
         url = stack.up()
         commit = stack.commit
@@ -132,30 +207,76 @@ def _run_target(t, stack, cfg: BenchConfig, store: ResultStore, plan, personas, 
         _merge_meta(store, commit, {"name": t.name, "commit": commit, "unmeasurable": str(e)})
         _say(f"{t.name} unmeasurable: {e}")
         return
-    _merge_meta(store, commit, {"name": t.name, "commit": commit}, drop=("unmeasurable",))
-    deps = DriveDeps(bridge=BridgeClient(url, cfg.status_phrases, cfg.terminal_words), tap=tap,
-                     redis_container=t.redis_container, scraper=LogScraper(t.agent_container), caller=caller,
+    # image_tag records what actually ran when the images were pulled rather
+    # than built: the worktree commit alone would misdescribe the code.
+    meta = {"name": t.name, "commit": commit}
+    if getattr(stack, "image_tag", None):
+        meta["image_tag"] = stack.image_tag
+    _merge_meta(store, commit, meta, drop=("unmeasurable",))
+    deps = DriveDeps(bridge=BridgeClient(url, cfg.status_phrases, cfg.terminal_words),
+                     observer=_make_observer(t, tap), caller=caller,
                      judge_llm=judge_llm, cleanup=backend.cleanup)
     drive_meta = dict(target=t.name, target_commit=commit, suite_version=SUITE_VERSION, seed_version=seed_version,
-                      caller_model=cfg.caller.model, judge_model=cfg.judge.model)
+                      caller_model=cfg.caller.model, judge_model=cfg.judge.model,
+                      backend_mode=cfg.backend.mode, phone_salt=phone_salt,
+                      image_tag=getattr(stack, "image_tag", None))
+    used_phones: set[str] = set()
     for pid, runs in plan:
         persona = personas[pid]
         for run in range(runs):
-            if store.has(commit, pid, run):
+            if not t.is_deployed and store.has(commit, pid, run):
                 _say(f"{t.name} {pid} r{run} cached")
                 continue
-            phone = persona.seeded_phone or phone_for(cfg.phone_prefix, pid, run)
+            state = _profile_state(backend, persona) if t.is_deployed else "n/a"
+            if state in ("absent", "unknown"):
+                reason = "no_profile_on_cluster" if state == "absent" else "profile_probe_failed"
+                rec = _skipped_record(persona, run, drive_meta, reason)
+                score_call(rec, persona, judge_llm, seed_places, t.no_idle_handling)
+                store.save(rec)
+                _say(f"{t.name} {pid} r{run} skipped: {reason}")
+                continue
+            phone = persona.seeded_phone or _clean_phone(backend, t, cfg, pid, run, phone_salt, used_phones)
+            if not phone:
+                rec = _skipped_record(persona, run, drive_meta, "no_clean_caller_number")
+                score_call(rec, persona, judge_llm, seed_places, t.no_idle_handling)
+                store.save(rec)
+                _say(f"{t.name} {pid} r{run} skipped: no_clean_caller_number")
+                continue
+            used_phones.add(phone)
+            retry_phone = None
+            if t.is_deployed and not persona.seeded_phone:
+                retry_phone = _clean_phone(backend, t, cfg, pid, run, phone_salt, used_phones)
+                if retry_phone:
+                    used_phones.add(retry_phone)
             call_deps = dataclasses.replace(deps, cleanup=_call_cleanup(backend, t, phone))
-            rec = drive_call(call_deps, persona, run, phone, cfg.max_turns, drive_meta)
+            rec = drive_call(call_deps, persona, run, phone, cfg.max_turns, drive_meta, retry_phone)
             score_call(rec, persona, judge_llm, seed_places, t.no_idle_handling)
             store.save(rec)
             _say(f"{t.name} {pid} r{run} {_status(rec)} {_turns(rec)} turns")
+    _record_footprint(t, backend, store, commit, used_phones, cfg)
     if t.git_ref:          # also on --dry-run, so the target's NLU worker path is exercised before a full run
         nlu = store.read_meta(commit).get("nlu")
         if not nlu or nlu.get("unmeasurable"):
             nlu = run_nlu(stack.worktree, _NLU_CASES, 1, store.target_dir(commit) / "nlu.json", env_file=env_file)
             _merge_meta(store, commit, {"nlu": nlu})
             _say(f"{t.name} nlu " + ("unmeasurable" if nlu.get("unmeasurable") else "ok"))
+
+
+def _record_footprint(t, backend, store, commit: str, phones: set[str], cfg: BenchConfig) -> None:
+    """Count what this run left on a shared cluster, since nothing deletes it.
+
+    Best effort: a probe failure is reported and the run still finishes.
+    """
+    if not (t.is_deployed and phones and hasattr(backend, "live_profiles")):
+        return
+    try:
+        profiles = sum(backend.live_profiles(p) for p in sorted(phones))
+    except Exception as e:  # noqa: BLE001 - class name only; the run is already done
+        _say(f"{t.name} footprint unknown: {type(e).__name__}")
+        return
+    _merge_meta(store, commit, {"footprint": {"numbers": len(phones), "live_profiles": profiles,
+                                              "signals_url": cfg.backend.signals_url}})
+    _say(f"{t.name} left {profiles} profile(s) on {cfg.backend.signals_url} across {len(phones)} number(s)")
 
 
 def cmd_run(cfg: BenchConfig, args) -> int:
@@ -169,14 +290,30 @@ def cmd_run(cfg: BenchConfig, args) -> int:
         targets, plan = targets[:1], [("T01", 1)]
     else:
         plan = [(i, runs_for(cfg, i)) for i in ids]
-    backend = Backend(cfg.backend, cfg.results_dir)
+    backend = _make_backend(cfg)
     state = backend.state
-    if not state.get("watermark"):
+    # Remote mode has no watermark (nothing is cleaned up to it), so
+    # seed_version is the "is it seeded" signal in both modes.
+    if not state.get("seed_version"):
         _say("backend not seeded: run `python -m eval.voice_bench backend up` then `backend seed`")
         return 2
     if state.get("seed_version") != SEED_VERSION:
         _say(f"backend seed v{state.get('seed_version')} != harness seed v{SEED_VERSION}: re-seed the backend")
         return 2
+    # Fresh caller numbers per run in remote mode, where nothing is cleaned up
+    # between runs; local keeps its historical fixed numbers.
+    deployed = [t.name for t in targets if t.is_deployed]
+    if deployed and not cfg.backend.is_remote:
+        _say(f"target(s) {', '.join(deployed)} run elsewhere, so the Signals they write to is not this "
+             "harness's to seed or clean: set backend.mode=remote")
+        return 2
+    phone_salt = run_salt() if cfg.backend.is_remote else "00"
+    if cfg.backend.is_remote:
+        _say(f"remote backend: cluster {cfg.backend.cluster or 'custom'} at {cfg.backend.signals_url} "
+             f"(no cleanup; phone_salt={phone_salt})")
+    if deployed:
+        _say(f"target(s) {', '.join(deployed)} are deployed: results are not reused between runs, "
+             "because the build behind a URL cannot be identified")
     store = ResultStore(cfg.results_dir)
     caller = Caller(OpenAIJsonLLM(cfg.caller.model, cfg.caller.temperature))
     judge_llm = OpenAIJsonLLM(cfg.judge.model, cfg.judge.temperature)
@@ -199,7 +336,7 @@ def cmd_run(cfg: BenchConfig, args) -> int:
                                 Path(state["api_key_env_file"]))
             try:
                 _run_target(t, stack, cfg, store, plan, personas, backend, tap, caller, judge_llm, seed_places,
-                            state["seed_version"], Path(state["api_key_env_file"]))
+                            state["seed_version"], Path(state["api_key_env_file"]), phone_salt)
             finally:
                 failed = stack.down()
                 if failed:
@@ -285,7 +422,7 @@ def cmd_rescore(cfg: BenchConfig, args) -> int:
 
 
 def cmd_backend(cfg: BenchConfig, args) -> int:
-    b = Backend(cfg.backend, cfg.results_dir)
+    b = _make_backend(cfg)
     if args.action == "up":
         b.up()
     elif args.action == "down":

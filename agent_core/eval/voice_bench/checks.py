@@ -21,6 +21,16 @@ GENDER_RE = re.compile(
 DIGIT_RE = re.compile(r"[0-9०-९]")
 REPEAT_REQUEST_RE = re.compile(r"फिर से|दोबारा|repeat|सुनाई नहीं|आवाज़ नहीं")
 CORRECTION_MARKERS = ("नहीं", "गलत", "actually", "असल में")
+CONSENT_LINE = ("आगे बढ़ने से पहले एक बात — क्या मुझे आपकी जानकारी सेव करने और "
+                "आपकी ओर से आवेदन भेजने की अनुमति है?")
+CONSENT_ASK_RE = re.compile(r"अनुमति[^।?]*\?")
+AFFIRM_RE = re.compile(r"हाँ|हां|ठीक है|अनुमति है|ज़रूर|जरूर|बिल्कुल|\b(yes|ok|okay|sure)\b", re.I)
+SEND_ASK_RE = re.compile(r"(भेज|आवेदन)[^।?]*\?")
+COST_RE = re.compile(r"मुफ़्त|मुफ्त|निःशुल्क|निशुल्क|शुल्क|फ़ीस|फीस|रुपये|रुपए|पैसे|सरकारी सहायता")
+UNDER_AGE_RE = re.compile(r"(\S+)\s*साल\s*से\s*कम")
+DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+WRITE_TOOLS = ("save_profile", "update_profile", "apply_job", "connect_service")
+NUMBER_WORDS = {"सोलह": 16, "सत्रह": 17, "अठारह": 18, "उन्नीस": 19, "बीस": 20, "इक्कीस": 21}
 FIELD_CUES = {
     "name": ["नाम"],
     "age": ["उम्र", "आयु", "साल के"],
@@ -203,9 +213,18 @@ def _tc07_leg(lg: Leg, places: dict[str, list[str]]) -> Verdict:
 
 
 def _tc07(ctx: CheckCtx) -> Verdict:
+    """No place named that the caller did not say and no tool result carried.
+
+    Both halves of that comparison live in the tool response bodies, so without
+    them every place name would read as invented. Unscored, not failed.
+    """
     legs = [lg for lg in ctx.rec.legs if any(_taps(t, "fetch_jobs") for t in lg.turns)]
     if not legs:
         return Verdict("n/a", reason="no fetch_jobs")
+    if not ctx.rec.observes_tool_bodies:
+        return Verdict("unscored", reason="the deployment's tool logs for this call were incomplete")
+    if any(_truncated(t, "fetch_jobs") for t in _turns(ctx.rec)):
+        return Verdict("unscored", reason="the search response was recorded cut short, so it cannot be read")
     return next((r for r in (_tc07_leg(lg, ctx.places) for lg in legs) if r.status == "fail"), Verdict("pass"))
 
 
@@ -339,17 +358,64 @@ def _tc09_leg(lg: Leg, places: dict[str, list[str]]) -> Verdict | None:
 
 
 def _tc09(ctx: CheckCtx) -> Verdict:
-    return next((r for r in (_tc09_leg(lg, ctx.places) for lg in ctx.rec.legs) if r), Verdict("pass"))
+    """Nothing repeated and nothing re-asked that the session already holds.
+
+    Half of this reads the target's session memory, which a deployed target does
+    not expose. A fail found without it still stands; a clean run does not, so it
+    reports unscored rather than a pass nobody checked.
+    """
+    found = next((r for r in (_tc09_leg(lg, ctx.places) for lg in ctx.rec.legs) if r), None)
+    if found:
+        return found
+    if not ctx.rec.observes_session:
+        return Verdict("unscored", reason="session memory not readable on this target")
+    return Verdict("pass")
+
+
+def _values_at(obj, key: str) -> list[str]:
+    """Every string value stored under `key` anywhere under obj."""
+    if isinstance(obj, dict):
+        found = [obj[key]] if isinstance(obj.get(key), str) else []
+        return found + [n for v in obj.values() for n in _values_at(v, key)]
+    if isinstance(obj, list):
+        return [n for v in obj for n in _values_at(v, key)]
+    return []
 
 
 def _employers(obj) -> list[str]:
     """jobProviderName values anywhere under obj."""
-    if isinstance(obj, dict):
-        found = [obj["jobProviderName"]] if isinstance(obj.get("jobProviderName"), str) else []
-        return found + [n for v in obj.values() for n in _employers(v)]
-    if isinstance(obj, list):
-        return [n for v in obj for n in _employers(v)]
-    return []
+    return _values_at(obj, "jobProviderName")
+
+
+def observed_places(rec: CallRecord) -> dict[str, list[str]]:
+    """Cities the target's own tool results named, each its own single alias.
+
+    The seeded place list describes a local backend. Against live data it is the
+    wrong vocabulary: a city the search really returns but the seed never held is
+    simply never examined. Adding what came back closes that gap.
+    """
+    out: dict[str, list[str]] = {}
+    for t in _turns(rec):
+        for e in t.tap:
+            for name in _values_at(e.resp_body, "jobProviderLocation"):
+                clean = name.strip()
+                if clean:
+                    out.setdefault(clean, [clean])
+    return out
+
+
+def widen_places(places: dict[str, list[str]], rec: CallRecord) -> dict[str, list[str]]:
+    """Seeded city aliases, plus the cities this call's own results named.
+
+    A city the seed already knows keeps its spellings and gains the live one: a
+    live result that replaced them would strip the Devanagari names the agent
+    actually speaks, and every mention would then read as invented.
+    """
+    out = {k: list(v) for k, v in places.items()}
+    for name, aliases in observed_places(rec).items():
+        bucket = out.setdefault(name, [])
+        bucket.extend(a for a in aliases if a not in bucket)
+    return out
 
 
 def _offered(leg: Leg) -> list[str]:
@@ -366,6 +432,8 @@ def _offered(leg: Leg) -> list[str]:
 def _tc11(ctx: CheckCtx) -> Verdict:
     if len(ctx.rec.legs) != 2:
         return Verdict("n/a", reason="not a two-leg scenario")
+    if any(_truncated(t, "fetch_jobs") for t in ctx.rec.legs[0].turns):
+        return Verdict("unscored", reason="the search response was recorded cut short, so it cannot be read")
     offered = [n.casefold() for n in _offered(ctx.rec.legs[0])]
     if not offered:
         return Verdict("n/a", reason="leg 0 offered no employers")
@@ -484,13 +552,199 @@ def _tc21_leg(lg: Leg) -> Verdict | None:
 
 
 def _tc21(ctx: CheckCtx) -> Verdict:
+    """What the reply claims about an application matches what the apply returned.
+
+    A status code alone cannot separate a fresh application from one already on
+    file, and the reply has to say which. Without the bodies, unscored.
+    """
     if not any(_taps(t, "apply_job") for t in _turns(ctx.rec)):
         return Verdict("n/a", reason="no apply calls")
+    if not ctx.rec.observes_tool_bodies:
+        return Verdict("unscored", reason="the deployment's tool logs for this call were incomplete")
+    if any(_truncated(t, "apply_job") for t in _turns(ctx.rec)):
+        return Verdict("unscored", reason="the apply response was recorded cut short, so it cannot be read")
     return next((r for r in map(_tc21_leg, ctx.rec.legs) if r), Verdict("pass"))
 
+
+
+def _writes(turn: TurnRecord) -> list:
+    return [e for e in turn.tap if e.tool in WRITE_TOOLS]
+
+
+def _asks_permission(reply: str) -> bool:
+    return bool(CONSENT_ASK_RE.search(reply))
+
+
+def _asks_to_send(reply: str) -> bool:
+    """Whether a reply asks to send this application.
+
+    The fixed consent line also asks about sending, so a match carrying the word
+    for permission is that question and not an offer to send what was just found.
+    """
+    return any("अनुमति" not in m.group(0) for m in SEND_ASK_RE.finditer(reply or ""))
+
+
+def _age_threshold(word: str) -> int | None:
+    """The age a "<n> साल से कम" phrase names, written as a word or in either digit set."""
+    if word in NUMBER_WORDS:
+        return NUMBER_WORDS[word]
+    digits = word.translate(DEVANAGARI_DIGITS)
+    return int(digits) if digits.isdigit() else None
+
+
+def _tc23(ctx: CheckCtx) -> Verdict:
+    """A call that writes nothing never asks for permission."""
+    if any(_writes(t) for t in _turns(ctx.rec)):
+        return Verdict("n/a", reason="this call wrote something")
+    for t in _turns(ctx.rec):
+        if _asks_permission(t.reply):
+            return _fail(t, "asked for permission though nothing was being written")
+    return Verdict("pass")
+
+
+def _tc24(ctx: CheckCtx) -> Verdict:
+    """Every permission ask is the configured line, word for word."""
+    asked = False
+    for t in _turns(ctx.rec):
+        if not _asks_permission(t.reply):
+            continue
+        asked = True
+        if CONSENT_LINE not in t.reply:
+            return _fail(t, "permission asked in words the agent wrote itself")
+    return Verdict("pass") if asked else Verdict("n/a", reason="permission never asked")
+
+
+def _truthy_consent(obj) -> bool:
+    """Whether profile_consent_accepted is true anywhere under obj."""
+    if isinstance(obj, dict):
+        if obj.get("profile_consent_accepted") is True:
+            return True
+        return any(_truthy_consent(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_truthy_consent(v) for v in obj)
+    return False
+
+
+def _consent_on_file(rec: CallRecord) -> bool:
+    """Whether a profile lookup in this call showed consent already recorded."""
+    return any(_truthy_consent(e.resp_body) for t in _turns(rec) for e in _taps(t, "fetch_profile"))
+
+
+def _tc25_leg(lg: Leg, consent_ok: bool) -> tuple[Verdict | None, bool]:
+    for i, t in enumerate(lg.turns):
+        if i and _asks_permission(lg.turns[i - 1].reply) and AFFIRM_RE.search(t.caller):
+            consent_ok = True
+        if not consent_ok and _writes(t):
+            return _fail(t, "wrote data before permission was given"), consent_ok
+    return None, consent_ok
+
+
+def _tc25(ctx: CheckCtx) -> Verdict:
+    """No write without permission given in this call, or already recorded against the caller."""
+    if not any(_writes(t) for t in _turns(ctx.rec)):
+        return Verdict("n/a", reason="nothing was written")
+    if ctx.persona.seeded_phone and (not ctx.rec.observes_tool_bodies
+                                     or any(_truncated(t, "fetch_profile") for t in _turns(ctx.rec))):
+        return Verdict("unscored", reason="cannot tell whether consent was already on file")
+    consent_ok = bool(ctx.persona.seeded_phone) and _consent_on_file(ctx.rec)
+    for lg in ctx.rec.legs:
+        verdict, consent_ok = _tc25_leg(lg, consent_ok)
+        if verdict:
+            return verdict
+    return Verdict("pass")
+
+
+def _tc26(ctx: CheckCtx) -> Verdict:
+    """Every turn that reads out services says what they cost."""
+    named = [t for t in _turns(ctx.rec) if _taps(t, "fetch_services")]
+    connected = [t for t in _turns(ctx.rec) if _taps(t, "connect_service")]
+    if not named and not connected:
+        return Verdict("n/a", reason="no services offered")
+    if not named:
+        return Verdict("unscored", reason="a service was connected without the turn that offered it being recorded")
+    for t in named:
+        if not t.reply:
+            return Verdict("unscored", reason="a service was read out in a turn whose reply was not recorded")
+        if not COST_RE.search(t.reply):
+            return _fail(t, "read out a service without saying what it costs")
+    return Verdict("pass")
+
+
+def _truncated(turn: TurnRecord, tool: str) -> bool:
+    return any(e.body_truncated for e in _taps(turn, tool))
+
+
+def _tc27(ctx: CheckCtx) -> Verdict:
+    """An empty search names the city that was asked for before offering anywhere else."""
+    if not ctx.rec.observes_tool_bodies:
+        return Verdict("unscored", reason="the deployment's tool logs for this call were incomplete")
+    if any(_truncated(t, "fetch_jobs") for t in _turns(ctx.rec)):
+        return Verdict("unscored", reason="the search response was recorded cut short, so it cannot be read")
+    if any(e.status != 200 or e.resp_body is None for t in _turns(ctx.rec) for e in _taps(t, "fetch_jobs")):
+        return Verdict("unscored", reason="a job search failed, so an empty result cannot be told from an error")
+    city = (ctx.persona.facts or {}).get("city") or ""
+    empty = [t for t in _turns(ctx.rec)
+             if any(not _values_at(e.resp_body, "jobProviderName") for e in _taps(t, "fetch_jobs"))]
+    if not empty:
+        return Verdict("n/a", reason="no empty search")
+    if not city:
+        return Verdict("n/a", reason="persona names no city")
+    for t in empty:
+        if not _names_place(t.reply, [city]):
+            return _fail(t, f"found nothing in {city} without saying so")
+    return Verdict("pass")
+
+
+def _tc28(ctx: CheckCtx) -> Verdict:
+    """The call is still open after an application is sent."""
+    for lg in ctx.rec.legs:
+        for i, t in enumerate(lg.turns):
+            if any(_ok(e.status) for e in _taps(t, "apply_job")) and t.session_ended:
+                return _fail(t, "ended the call in the same turn as the application")
+    if not any(_taps(t, "apply_job") for t in _turns(ctx.rec)):
+        return Verdict("n/a", reason="no apply calls")
+    return Verdict("pass")
+
+
+def _tc29(ctx: CheckCtx) -> Verdict:
+    """An application is only sent after the bot asked whether to send it."""
+    for lg in ctx.rec.legs:
+        asked = False
+        for t in lg.turns:
+            if _taps(t, "apply_job") and not asked:
+                return _fail(t, "applied without having asked whether to send it")
+            if _asks_to_send(t.reply):
+                asked = True
+    if not any(_taps(t, "apply_job") for t in _turns(ctx.rec)):
+        return Verdict("n/a", reason="no apply calls")
+    return Verdict("pass")
+
+
+def _tc30(ctx: CheckCtx) -> Verdict:
+    """An age refusal never states a threshold the caller's own age clears."""
+    age = (ctx.persona.facts or {}).get("age")
+    if not isinstance(age, int):
+        return Verdict("n/a", reason="persona states no age")
+    said = unreadable = False
+    for t in _turns(ctx.rec):
+        m = UNDER_AGE_RE.search(t.reply)
+        if not m:
+            continue
+        said = True
+        threshold = _age_threshold(m.group(1).strip())
+        if threshold is None:
+            unreadable = True
+        elif age >= threshold:
+            return _fail(t, f"told a caller of {age} they are under {threshold}")
+    if not said:
+        return Verdict("n/a", reason="no age refusal")
+    if unreadable:
+        return Verdict("unscored", reason="the refusal names an age in words this check cannot read")
+    return Verdict("pass")
 
 DETERMINISTIC: dict[str, Callable[[CheckCtx], Verdict]] = {
     "TC02": _tc02, "TC03": _tc03, "TC04": _tc04, "TC05": _tc05, "TC06": _tc06, "TC07": _tc07,
     "TC08": _tc08, "TC09": _tc09, "TC11": _tc11, "TC13": _tc13, "TC15": _tc15, "TC18": _tc18,
-    "TC19": _tc19, "TC20": _tc20, "TC21": _tc21,
+    "TC19": _tc19, "TC20": _tc20, "TC21": _tc21, "TC23": _tc23, "TC24": _tc24, "TC25": _tc25,
+    "TC26": _tc26, "TC27": _tc27, "TC28": _tc28, "TC29": _tc29, "TC30": _tc30,
 }

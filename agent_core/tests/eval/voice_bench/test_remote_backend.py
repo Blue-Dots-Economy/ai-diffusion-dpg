@@ -1,0 +1,545 @@
+"""RemoteBackend, the remote half of BackendCfg, and the run-salted phone numbers.
+
+No real network and no real cluster: a fake httpx client records calls and
+replays canned responses.
+"""
+from __future__ import annotations
+
+import dataclasses
+import json
+import uuid
+
+import httpx
+
+import pytest
+
+from eval.voice_bench import SUITE_VERSION
+from eval.voice_bench.backend_remote import RemoteBackend, RemoteBackendError
+from eval.voice_bench.config import BackendCfg, _backend, load_config
+from eval.voice_bench.seed import SEED_VERSION, job_rows, load_seed
+from eval.voice_bench.suite import phone_for, run_salt
+
+ENV = {"BLUE_DOTS_API_KEY": "sk_test_key", "BLUE_DOTS_SEARCH_API_KEY": "sk_test_search",
+       "BLUE_DOTS_ORG_ID": "org-123"}
+
+
+class _Resp:
+    def __init__(self, status: int, payload=None):
+        self.status_code = status
+        self._payload = payload if payload is not None else {}
+
+    def json(self):
+        return self._payload
+
+
+class _FakeHttp:
+    """Minimal httpx.Client stand-in. ``totals`` is popped per search call."""
+
+    def __init__(self, *, totals=None, post_status=201, get_status=200):
+        self.totals = list(totals or [0])
+        self.post_status, self.get_status = post_status, get_status
+        self.posts, self.gets = [], []
+
+    def get(self, url, params=None, headers=None):
+        self.gets.append((url, params, headers))
+        if url.endswith("/health"):
+            return _Resp(200, {"status": "ok"})
+        return _Resp(self.get_status, {})
+
+    def post(self, url, json=None, headers=None):
+        self.posts.append((url, json, headers))
+        if url.endswith("/v1/search"):
+            total = self.totals.pop(0) if len(self.totals) > 1 else self.totals[0]
+            return _Resp(200, {"message": {"items": [], "meta": {"total": total}}})
+        return _Resp(self.post_status, {"items": [{"item_id": "11111111-1111-4111-8111-111111111111"}]})
+
+
+def _cfg(**kw) -> BackendCfg:
+    base = dict(mode="remote", signals_url="https://cluster.example",
+                search_url="https://cluster.example/signals-search")
+    base.update(kw)
+    return BackendCfg(**base)
+
+
+def _backend_obj(tmp_path, http, env=None, **kw) -> RemoteBackend:
+    return RemoteBackend(_cfg(), tmp_path, http=http, env=dict(ENV if env is None else env),
+                         sleep=lambda _s: None, **kw)
+
+
+# ---- config ------------------------------------------------------------------------------------------------
+def test_remote_mode_defaults_to_uat():
+    """UAT holds the real curated provider data; the test cluster is LOADTEST rows."""
+    cfg = _backend({"mode": "remote"})
+    assert cfg.cluster == "uat"
+    assert cfg.signals_url == "https://signals.bluedotseconomy.org"
+    assert cfg.search_url == "https://signals.bluedotseconomy.org/signals-search"
+    assert cfg.credentials_env_prefix == "UAT_"
+    assert cfg.is_remote
+
+
+def test_test_cluster_is_still_selectable_and_brings_its_own_credential_names():
+    cfg = _backend({"mode": "remote", "cluster": "test"})
+    assert cfg.signals_url == "https://signals-services.freedynamicdns.net"
+    assert cfg.credentials_env_prefix == ""        # the unprefixed Keychain names
+
+
+def test_unknown_cluster_is_rejected():
+    with pytest.raises(ValueError, match="backend.cluster must be one of"):
+        _backend({"mode": "remote", "cluster": "prod"})
+
+
+def test_cluster_can_be_switched_by_env(monkeypatch):
+    monkeypatch.setenv("VOICE_BENCH_CLUSTER", "test")
+    assert _backend({"mode": "remote"}).cluster == "test"
+
+
+def test_credentials_are_read_under_the_cluster_prefix(tmp_path):
+    """UAT keys and test-cluster keys coexist in the environment."""
+    cfg = BackendCfg(mode="remote", cluster="uat", credentials_env_prefix="UAT_",
+                     signals_url="https://uat.example", search_url="https://uat.example/signals-search")
+    env = {"BLUE_DOTS_API_KEY": "test_cluster_key", "BLUE_DOTS_SEARCH_API_KEY": "t", "BLUE_DOTS_ORG_ID": "t",
+           "UAT_BLUE_DOTS_API_KEY": "uat_key", "UAT_BLUE_DOTS_SEARCH_API_KEY": "uat_s",
+           "UAT_BLUE_DOTS_ORG_ID": "uat_org"}
+    b = RemoteBackend(cfg, tmp_path, http=_FakeHttp(), env=env, sleep=lambda _s: None)
+    b.up()
+    sent = [h for _u, _p, h in b._http.gets if h]
+    assert any(h.get("x-acting-org-id") == "uat_org" for h in sent)
+
+
+def test_missing_uat_keys_say_which_names_and_that_clusters_differ(tmp_path):
+    """The unprefixed keys being present must not look like success."""
+    cfg = BackendCfg(mode="remote", cluster="uat", credentials_env_prefix="UAT_",
+                     signals_url="https://uat.example", search_url="https://uat.example/signals-search")
+    b = RemoteBackend(cfg, tmp_path, http=_FakeHttp(), env=dict(ENV), sleep=lambda _s: None)
+    with pytest.raises(RemoteBackendError) as e:
+        b.up()
+    msg = str(e.value)
+    assert "UAT_BLUE_DOTS_API_KEY" in msg
+    assert "cluster uat" in msg
+    assert "OWN keys" in msg
+    assert "sk_test_key" not in msg
+
+
+def test_a_rejected_key_names_the_cluster_and_the_variables(tmp_path):
+    """401/403 is the wrong-cluster-keys symptom; the message must say so."""
+    cfg = BackendCfg(mode="remote", cluster="uat", credentials_env_prefix="UAT_",
+                     signals_url="https://uat.example", search_url="https://uat.example/signals-search")
+    env = {f"UAT_{k}": v for k, v in ENV.items()}
+    b = RemoteBackend(cfg, tmp_path, http=_FakeHttp(get_status=403), env=env, sleep=lambda _s: None)
+    with pytest.raises(RemoteBackendError) as e:
+        b.up()
+    msg = str(e.value)
+    assert "403" in msg
+    assert "UAT_BLUE_DOTS_API_KEY" in msg
+    assert "own key set" in msg
+    assert "'test'" in msg       # points at the other cluster
+
+
+def test_remote_instance_url_falls_back_to_signals_url():
+    cfg = _backend({"mode": "remote", "signals_url": "https://c.example", "allow_unlisted_cluster": True})
+    assert cfg.apply_instance_url == "https://c.example"
+
+
+def test_remote_instance_url_is_used_when_given():
+    cfg = _backend({"mode": "remote", "signals_url": "https://c.example",
+                    "instance_url": "https://apply.example", "allow_unlisted_cluster": True})
+    assert cfg.apply_instance_url == "https://apply.example"
+
+
+def test_an_unlisted_host_is_refused_unless_opted_into():
+    with pytest.raises(ValueError, match="not one of the known clusters"):
+        _backend({"mode": "remote", "signals_url": "https://prod.example"})
+
+
+def test_a_preset_cluster_host_needs_no_opt_in():
+    cfg = _backend({"mode": "remote", "cluster": "uat"})
+    assert cfg.signals_url == "https://signals.bluedotseconomy.org"
+
+
+def test_the_opt_in_is_not_readable_from_the_environment(monkeypatch):
+    monkeypatch.setenv("VOICE_BENCH_ALLOW_UNLISTED_CLUSTER", "true")
+    with pytest.raises(ValueError, match="not one of the known clusters"):
+        _backend({"mode": "remote", "signals_url": "https://prod.example"})
+
+
+def test_local_mode_still_requires_signals_dir():
+    with pytest.raises(ValueError, match="signals_dir"):
+        _backend({"mode": "local"})
+
+
+def test_local_mode_unchanged_when_configured():
+    cfg = _backend({"mode": "local", "signals_dir": "../Signals-DPG"})
+    assert not cfg.is_remote
+    assert cfg.postgres_container == "signals-postgres"
+    assert cfg.signals_url == "http://localhost:2742"
+
+
+def test_unknown_mode_is_rejected():
+    with pytest.raises(ValueError, match="must be 'local' or 'remote'"):
+        _backend({"mode": "staging"})
+
+
+def test_env_overrides_the_file(monkeypatch):
+    monkeypatch.setenv("VOICE_BENCH_BACKEND_MODE", "remote")
+    monkeypatch.setenv("VOICE_BENCH_SIGNALS_URL", "https://from-env.example")
+    cfg = _backend({"mode": "local", "signals_dir": "../Signals-DPG", "allow_unlisted_cluster": True})
+    assert cfg.is_remote
+    assert cfg.signals_url == "https://from-env.example"
+
+
+# ---- credentials -------------------------------------------------------------------------------------------
+def test_missing_credentials_name_the_variables_and_never_a_value(tmp_path):
+    b = _backend_obj(tmp_path, _FakeHttp(), env={"BLUE_DOTS_API_KEY": "sk_secret_value"})
+    with pytest.raises(RemoteBackendError) as e:
+        b.up()
+    msg = str(e.value)
+    assert "BLUE_DOTS_SEARCH_API_KEY" in msg
+    assert "BLUE_DOTS_ORG_ID" in msg
+    assert "sk_secret_value" not in msg
+
+
+def test_up_writes_a_0600_env_file_for_the_target_stack(tmp_path):
+    b = _backend_obj(tmp_path, _FakeHttp())
+    b.up()
+    env_path = tmp_path / "backend" / "blue_dots.env"
+    assert env_path.exists()
+    assert oct(env_path.stat().st_mode)[-3:] == "600"
+    assert "BLUE_DOTS_ORG_ID=org-123" in env_path.read_text(encoding="utf-8")
+
+
+def test_up_rejects_bad_credentials(tmp_path):
+    b = _backend_obj(tmp_path, _FakeHttp(get_status=401))
+    with pytest.raises(RemoteBackendError, match="rejected the credentials"):
+        b.up()
+
+
+def test_up_does_not_use_the_spa_health_route_as_a_probe(tmp_path):
+    """The Signals host serves a SPA catch-all, so /health/ready there is always 200."""
+    http = _FakeHttp()
+    _backend_obj(tmp_path, http).up()
+    probed = [u for u, _p, _h in http.gets]
+    assert not any(u.endswith("/health/ready") for u in probed)
+    assert any(u.endswith("/api/v1/admin/participant") for u in probed)
+
+
+# ---- seeding -----------------------------------------------------------------------------------------------
+def test_seed_posts_jobs_and_profiles_then_records_state(tmp_path):
+    http = _FakeHttp(totals=[100, 100, 100_000])    # baseline, then indexed
+    b = _backend_obj(tmp_path, http)
+    b.seed()
+    st = b.state
+    assert st["seed_version"] == SEED_VERSION
+    assert st["mode"] == "remote"
+    assert st["provider_baseline"] == 100
+    assert st["cleanup"].startswith("disabled")
+    assert st["instance_url"] == "https://cluster.example"
+    participant_posts = [u for u, _b, _h in http.posts if u.endswith("/api/v1/admin/participant")]
+    assert len(participant_posts) > 0
+
+
+def test_seed_is_idempotent(tmp_path):
+    http = _FakeHttp(totals=[0, 100_000])
+    b = _backend_obj(tmp_path, http)
+    b.seed()
+    before = len(http.posts)
+    b.seed()
+    assert len(http.posts) == before      # second call did nothing
+
+
+def test_seed_waits_for_at_least_the_baseline_plus_seeded(tmp_path):
+    """A shared cluster always has other providers: the wait is >=, never ==."""
+    http = _FakeHttp(totals=[4000, 4000, 4000, 9_999_999])
+    b = _backend_obj(tmp_path, http)
+    b.seed()
+    assert b.state["provider_baseline"] == 4000
+
+
+def test_more_items_than_expected_is_not_an_error(tmp_path):
+    """Someone else seeding during our wait must not fail the run."""
+    http = _FakeHttp(totals=[10, 9_999_999])
+    _backend_obj(tmp_path, http).seed()        # no raise
+
+
+def test_index_wait_times_out_rather_than_hanging(tmp_path):
+    ticks = iter([0, 1, 2, 10_000])
+    b = RemoteBackend(_cfg(), tmp_path, http=_FakeHttp(totals=[0]), env=dict(ENV),
+                      sleep=lambda _s: None, clock=lambda: next(ticks), index_timeout_s=5)
+    with pytest.raises(TimeoutError, match="at least"):
+        b.seed()
+
+
+def test_failed_post_raises_without_leaking_the_key(tmp_path):
+    b = _backend_obj(tmp_path, _FakeHttp(totals=[0], post_status=500))
+    with pytest.raises(RemoteBackendError) as e:
+        b.seed()
+    assert "sk_test_key" not in str(e.value)
+
+
+def test_state_file_never_contains_a_key(tmp_path):
+    b = _backend_obj(tmp_path, _FakeHttp(totals=[0, 9_999_999]))
+    b.seed()
+    raw = (tmp_path / "backend" / "state.json").read_text(encoding="utf-8")
+    assert "sk_test_key" not in raw
+    assert "sk_test_search" not in raw
+    assert json.loads(raw)["seed_version"] == SEED_VERSION
+
+
+# ---- cleanup -----------------------------------------------------------------------------------------------
+def test_cleanup_is_a_no_op_on_a_shared_cluster(tmp_path):
+    http = _FakeHttp()
+    b = _backend_obj(tmp_path, http)
+    b.cleanup()
+    assert http.posts == []       # nothing was called at all
+    assert http.gets == []
+
+
+def test_down_is_a_no_op(tmp_path):
+    http = _FakeHttp()
+    _backend_obj(tmp_path, http).down(volumes=True)
+    assert http.posts == []
+    assert http.gets == []
+
+
+# ---- phone salt --------------------------------------------------------------------------------------------
+def test_phone_numbers_stay_twelve_digits_and_keep_the_reserved_prefix():
+    for salt in ("00", "07", "99"):
+        n = phone_for("9199000", "T14", 2, salt)
+        assert len(n) == 12
+        assert n.isdigit()
+        assert n.startswith("9199000")
+
+
+def test_local_mode_numbers_are_byte_identical_to_before_the_salt():
+    """The salt lives in the trailing pad, so the default must change nothing."""
+    assert phone_for("9199000", "T01", 0) == "919900001000"
+    assert phone_for("9199000", "T01", 1) == "919900001100"
+    assert phone_for("9199000", "T14", 0) == "919900014000"
+
+
+def test_a_different_salt_gives_a_different_caller():
+    a = phone_for("9199000", "T01", 0, "11")
+    b = phone_for("9199000", "T01", 0, "12")
+    assert a != b, "a re-run must not reuse the previous run's caller number"
+
+
+def test_scenario_and_run_still_separate_callers_within_one_run():
+    salt = "42"
+    numbers = {phone_for("9199000", f"T{i:02d}", r, salt) for i in range(1, 15) for r in range(3)}
+    assert len(numbers) == 14 * 3       # no collisions inside a run
+
+
+def test_run_salt_is_two_digits_and_moves_between_runs():
+    assert run_salt(now=0) == "00"
+    assert len(run_salt(now=1_700_000_000)) == 2
+    assert run_salt(now=1_700_000_000) != run_salt(now=1_700_000_000 + 600)
+
+
+# ---- pull_images -------------------------------------------------------------------------------------------
+def test_pull_images_defaults_off_so_existing_targets_are_unchanged():
+    from eval.voice_bench.config import _target
+    assert _target({"name": "m", "git_ref": "abc1234"}).pull_images is False
+
+
+def test_pull_images_is_read_from_the_target():
+    from eval.voice_bench.config import _target
+    t = _target({"name": "ghcr", "git_ref": "abc1234",
+                 "compose": "automation/docker/docker-compose.dev.yml", "pull_images": True})
+    assert t.pull_images is True
+    assert t.compose.endswith("docker-compose.dev.yml")
+
+
+def _cfg_file(tmp_path, targets, backend_mode="remote"):
+    body = {"suite_version": SUITE_VERSION, "targets": targets,
+            "models": {"caller": {"provider": "openai", "model": "m", "temperature": 0.3},
+                       "judge": {"provider": "openai", "model": "m", "temperature": 0}},
+            "backend": {"mode": backend_mode, "cluster": "uat"}}
+    p = tmp_path / "voice_bench.yaml"
+    p.write_text(json.dumps(body), encoding="utf-8")
+    return p
+
+
+def test_a_deployed_target_is_read_through_grafana(tmp_path, monkeypatch):
+    monkeypatch.delenv("VOICE_BENCH_GRAFANA_URL", raising=False)
+    cfg = load_config(_cfg_file(tmp_path, [{"name": "vm", "bridge_url": "http://127.0.0.1:8008",
+                                       "grafana_url": "http://g:3001"}]))
+    t = cfg.targets[0]
+    assert t.is_deployed
+    assert t.loki_uid == "dpg-loki"
+    assert t.agent_job == "agent_core"
+
+
+def test_a_target_the_harness_builds_is_not_deployed(tmp_path, monkeypatch):
+    monkeypatch.delenv("VOICE_BENCH_GRAFANA_URL", raising=False)
+    cfg = load_config(_cfg_file(tmp_path, [{"name": "local", "git_ref": "abc1234"}]))
+    assert cfg.targets[0].is_deployed is False
+
+
+def test_grafana_url_is_refused_on_a_target_we_build(tmp_path, monkeypatch):
+    monkeypatch.delenv("VOICE_BENCH_GRAFANA_URL", raising=False)
+    path = _cfg_file(tmp_path, [{"name": "x", "git_ref": "abc1234", "grafana_url": "http://g:3001"}])
+    with pytest.raises(ValueError, match="grafana_url applies to a bridge_url target"):
+        load_config(path)
+
+
+def test_the_environment_can_point_a_run_at_another_grafana(tmp_path, monkeypatch):
+    monkeypatch.setenv("VOICE_BENCH_GRAFANA_URL", "http://other:3001")
+    cfg = load_config(_cfg_file(tmp_path, [{"name": "vm", "bridge_url": "http://127.0.0.1:8008"}]))
+    assert cfg.targets[0].grafana_url == "http://other:3001"
+
+
+def _seeded_cluster(found: bool):
+    """A fake cluster where every participant read either finds a user or 404s."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"items": [{"lifecycle_status": "live"}]}) if found \
+                else httpx.Response(404, json={"error": "NOT_FOUND"})
+        return httpx.Response(200, json={"user_id": "u", "items": [{"item_id": str(uuid.uuid4())}]})
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_seed_skips_when_this_generation_is_already_on_the_cluster(tmp_path):
+    """A colleague's earlier seed must not be duplicated by a machine with no state file."""
+    b = RemoteBackend(_cfg(), tmp_path, http=_seeded_cluster(True), env=dict(ENV), sleep=lambda _s: None)
+    b.seed()
+    assert b.state["seed_version"] == SEED_VERSION
+    assert b.state["seeded"] is True
+    assert b.state["profile_item_ids"] == []
+
+
+def _cluster(present: set[str], total_after: int = 1000):
+    """A cluster that holds exactly ``present`` phone numbers and records every POST."""
+    posted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/search"):
+            total = total_after + len(posted)
+            return httpx.Response(200, json={"message": {"items": [], "meta": {"total": total}}})
+        if request.method == "GET":
+            phone = (request.url.params.get("phone_number") or "").lstrip("+")
+            if phone in present:
+                return httpx.Response(200, json={"items": [{"lifecycle_status": "live",
+                                                            "item_id": "11111111-1111-4111-8111-111111111111"}]})
+            return httpx.Response(404, json={"error": "NOT_FOUND"})
+        posted.append(str(json.loads(request.content).get("phone_number", "")).lstrip("+"))
+        return httpx.Response(200, json={"items": [{"item_id": str(uuid.uuid4())}]})
+
+    return httpx.Client(transport=httpx.MockTransport(handler)), posted
+
+
+def test_seed_posts_every_row_when_the_cluster_has_none_of_this_generation(tmp_path):
+    http, posted = _cluster(set())
+    b = RemoteBackend(_cfg(), tmp_path, http=http, env=dict(ENV), sleep=lambda _s: None)
+    b.seed()
+    assert b.state["seeded"] is True
+    assert len(posted) == len(job_rows(load_seed())) + len(load_seed()["profiles"])
+
+
+def test_seed_does_not_repost_rows_the_cluster_already_holds(tmp_path):
+    seed = load_seed()
+    already = {row["phone"] for row in job_rows(seed)}
+    http, posted = _cluster(already)
+    b = RemoteBackend(_cfg(), tmp_path, http=http, env=dict(ENV), sleep=lambda _s: None)
+    b.seed()
+    assert posted == [p["phone"] for p in seed["profiles"]]
+
+
+def test_seed_completes_a_half_written_generation_without_duplicating_it(tmp_path):
+    seed = load_seed()
+    rows = job_rows(seed)
+    http, posted = _cluster({row["phone"] for row in rows[:30]})
+    b = RemoteBackend(_cfg(), tmp_path, http=http, env=dict(ENV), sleep=lambda _s: None)
+    b.seed()
+    assert [row["phone"] for row in rows[:30]] not in posted
+    assert len(posted) == len(rows) - 30 + len(seed["profiles"])
+
+
+def test_seed_posts_a_missing_profile_even_when_every_job_is_present(tmp_path):
+    seed = load_seed()
+    http, posted = _cluster({row["phone"] for row in job_rows(seed)})
+    b = RemoteBackend(_cfg(), tmp_path, http=http, env=dict(ENV), sleep=lambda _s: None)
+    b.seed()
+    assert set(posted) == {p["phone"] for p in seed["profiles"]}
+
+
+def test_a_baseline_the_index_cannot_give_stops_the_seed(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/search"):
+            return httpx.Response(503)
+        return httpx.Response(404, json={"error": "NOT_FOUND"})
+
+    b = RemoteBackend(_cfg(), tmp_path, http=httpx.Client(transport=httpx.MockTransport(handler)),
+                      env=dict(ENV), sleep=lambda _s: None)
+    with pytest.raises(RemoteBackendError, match="baseline"):
+        b.seed()
+
+
+def test_a_search_index_that_refuses_the_key_fails_fast(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/search"):
+            return httpx.Response(401)
+        return httpx.Response(404, json={"error": "NOT_FOUND"})
+
+    b = RemoteBackend(_cfg(), tmp_path, http=httpx.Client(transport=httpx.MockTransport(handler)),
+                      env=dict(ENV), sleep=lambda _s: None)
+    with pytest.raises(RemoteBackendError, match="credentials"):
+        b.seed()
+
+
+def test_state_from_another_cluster_is_refused_rather_than_reused(tmp_path):
+    http, _posted = _cluster(set())
+    RemoteBackend(_cfg(), tmp_path, http=http, env=dict(ENV), sleep=lambda _s: None).seed()
+    other = _cfg(signals_url="https://signals.bluedotseconomy.org",
+                 search_url="https://signals.bluedotseconomy.org/signals-search")
+    b = RemoteBackend(other, tmp_path, http=http, env=dict(ENV), sleep=lambda _s: None)
+    with pytest.raises(RemoteBackendError, match="different cluster"):
+        b.seed()
+
+
+def test_seed_mode_none_writes_nothing(tmp_path):
+    posts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posts.append(request)
+        return httpx.Response(404)
+
+    cfg = dataclasses.replace(_cfg(), seed_mode="none")
+    b = RemoteBackend(cfg, tmp_path, http=httpx.Client(transport=httpx.MockTransport(handler)),
+                      env=dict(ENV), sleep=lambda _s: None)
+    b.seed()
+    assert posts == []
+    assert b.state["seed_mode"] == "none"
+    assert b.state["seeded"] is False
+    assert b.state["seed_version"] == SEED_VERSION
+
+
+def test_live_profiles_counts_only_what_is_not_retired(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"items": [{"lifecycle_status": "live"},
+                                                   {"lifecycle_status": "retired"},
+                                                   {"lifecycle_status": "draft"}]})
+
+    b = RemoteBackend(_cfg(), tmp_path, http=httpx.Client(transport=httpx.MockTransport(handler)),
+                      env=dict(ENV), sleep=lambda _s: None)
+    assert b.live_profiles("919900017000") == 2
+
+
+def test_live_profiles_is_zero_when_the_cluster_has_no_such_number(tmp_path):
+    b = RemoteBackend(_cfg(), tmp_path, http=_seeded_cluster(False), env=dict(ENV), sleep=lambda _s: None)
+    assert b.live_profiles("919900017000") == 0
+
+
+def test_a_participant_read_rejection_names_the_cluster_not_the_key(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403)
+
+    b = RemoteBackend(_cfg(), tmp_path, http=httpx.Client(transport=httpx.MockTransport(handler)),
+                      env=dict(ENV), sleep=lambda _s: None)
+    with pytest.raises(RemoteBackendError) as e:
+        b.live_profiles("919900017000")
+    assert "sk_test_key" not in str(e.value)
+    assert "cluster" in str(e.value)
+
+
+def test_seed_mode_must_be_auto_or_none(tmp_path):
+    with pytest.raises(ValueError, match="seed_mode"):
+        _backend({"mode": "remote", "cluster": "uat", "seed_mode": "sometimes"})

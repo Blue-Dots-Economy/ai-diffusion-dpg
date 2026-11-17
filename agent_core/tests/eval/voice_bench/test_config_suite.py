@@ -6,7 +6,7 @@ from eval.voice_bench.config import load_config
 from eval.voice_bench.suite import (ALWAYS_TCS, TCS, applicable_tcs, load_personas, phone_for, runs_for)
 
 CFG = """
-suite_version: 1
+suite_version: 2
 targets:
   - {name: M0, git_ref: edf7ec8}
   - {name: vm, bridge_url: "http://127.0.0.1:8008", redis_container: dpg_redis, agent_container: dpg_agent_core}
@@ -47,21 +47,21 @@ def test_target_needs_exactly_one_of_ref_or_url(tmp_path):
 
 def test_suite_version_mismatch_rejected(tmp_path):
     p = tmp_path / "vb.yaml"
-    p.write_text(CFG.replace("suite_version: 1", "suite_version: 99"), encoding="utf-8")
+    p.write_text(CFG.replace("suite_version: 2", "suite_version: 99"), encoding="utf-8")
     with pytest.raises(ValueError, match="suite_version"):
         load_config(p)
 
 
-def test_personas_cover_t01_to_t14_and_feed_known_tcs():
+def test_personas_are_contiguous_and_feed_known_tcs():
     personas = load_personas()
-    assert sorted(personas) == [f"T{i:02d}" for i in range(1, 15)]
+    assert sorted(personas) == [f"T{i:02d}" for i in range(1, len(personas) + 1)]
     for p in personas.values():
         assert p.legs and all(leg.opening_line for leg in p.legs)
         assert set(p.feeds) <= set(TCS), p.id
     assert len(personas["T13"].legs) == 2
     assert personas["T14"].seeded_phone and personas["T12"].consents is False
     assert personas["T06"].seeded_phone          # draft-profile owner (ruling 9)
-    assert SUITE_VERSION == 1
+    assert SUITE_VERSION == 2
 
 
 def test_applicable_tcs_adds_always_set():

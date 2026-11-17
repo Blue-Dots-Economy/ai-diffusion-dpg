@@ -330,3 +330,209 @@ def test_applied_re_matches_hindi_success_forms():
     assert not APPLIED_RE.search("क्या मैं आपका आवेदन भेज दूँ?")
     # Negative: future/purpose form (not a claim of success)
     assert not APPLIED_RE.search("आवेदन भेजने के लिए नाम बताइए")
+
+
+def _bodiless(r):
+    r.observes_tool_bodies = False
+    return r
+
+
+def test_tc07_without_response_bodies_is_unscored_not_failed():
+    """Every place would read as invented, because nothing carries what the tool returned."""
+    turns = [T(0, "लखनऊ", "लखनऊ में काम है", tap=[jobs_tap("X", city="Lucknow")]),
+             T(1, "हाँ", "मेरठ में भी देख लूँ?")]
+    assert v("TC07", rec((turns, "bot"))) == "fail"
+    assert v("TC07", _bodiless(rec((turns, "bot")))) == "unscored"
+
+
+def test_tc21_without_response_bodies_is_unscored():
+    """A status code cannot separate a fresh application from one already on file."""
+    turns = [T(0, "हाँ भेज दीजिए", "आपका आवेदन भेज दिया गया है।", tap=[apply_tap()])]
+    assert v("TC21", rec((turns, "bot"))) == "pass"
+    assert v("TC21", _bodiless(rec((turns, "bot")))) == "unscored"
+
+
+def test_a_city_only_the_live_data_knows_is_still_judged():
+    """Muzaffarnagar is in no seed list; naming it unprompted must still be caught."""
+    from eval.voice_bench.checks import observed_places
+
+    returned = rec(([T(0, "लखनऊ", "ठीक", tap=[jobs_tap("X", city="Muzaffarnagar")])], "bot"))
+    assert observed_places(returned) == {"Muzaffarnagar": ["Muzaffarnagar"]}
+    invented = rec(([T(0, "लखनऊ", "ठीक", tap=[jobs_tap("X", city="Lucknow")]),
+                     T(1, "हाँ", "Muzaffarnagar में काम है")], "bot"))
+    assert observed_places(invented) == {"Lucknow": ["Lucknow"]}
+    ctx = CheckCtx(invented, P["T01"], {**PLACES, **observed_places(returned)}, False)
+    assert DETERMINISTIC["TC07"](ctx).status == "fail"
+
+
+from eval.voice_bench.checks import CONSENT_LINE  # noqa: E402
+
+ASK = CONSENT_LINE
+OWN_WORDS = "क्या आपको इसके लिए अनुमति चाहिए ताकि मैं आगे बढ़ सकूँ?"
+
+
+def write_tap(tool="save_profile", status=200, body=None):
+    return TapEntry(1, "POST", "/api/v1/admin/participant", "", {}, status,
+                    body if body is not None else {"ok": True}, "signals", tool)
+
+
+def service_tap(body=None):
+    return TapEntry(1, "GET", "/api/v1/search", "", {}, 200,
+                    body if body is not None else {"items": [{"name": "सिलाई केंद्र"}]}, "signals",
+                    "fetch_services")
+
+
+def profile_tap(consent):
+    return TapEntry(1, "GET", "/api/v1/admin/participant", "", {}, 200,
+                    {"items": [{"profile_consent_accepted": consent}]}, "signals", "fetch_profile")
+
+
+def test_tc23_browsing_must_not_ask_for_permission():
+    browsing = [T(0, "नौकरी", "कौन सा काम?"), T(1, "वेल्डर", ASK)]
+    assert v("TC23", rec((browsing, "bot"))) == "fail"
+    assert v("TC23", rec(([T(0, "नौकरी", "कौन सा काम?")], "bot"))) == "pass"
+    writes = [T(0, "हाँ", ASK), T(1, "हाँ अनुमति है", "ठीक है", tap=[write_tap()])]
+    assert v("TC23", rec((writes, "bot"))) == "n/a"
+
+
+def test_tc24_the_permission_question_is_the_configured_line():
+    assert v("TC24", rec(([T(0, "हाँ भेज दीजिए", ASK)], "bot"))) == "pass"
+    assert v("TC24", rec(([T(0, "हाँ भेज दीजिए", OWN_WORDS)], "bot"))) == "fail"
+    assert v("TC24", rec(([T(0, "नौकरी", "कौन सा काम?")], "bot"))) == "n/a"
+
+
+def test_tc24_accepts_the_line_with_a_recording_sentence_appended():
+    assert v("TC24", rec(([T(0, "हाँ", ASK + " यह बातचीत रिकॉर्ड की जा सकती है।")], "bot"))) == "pass"
+
+
+def test_tc25_a_write_needs_permission_first():
+    unasked = [T(0, "मेरा नाम अजय है", "ठीक है", tap=[write_tap()])]
+    assert v("TC25", rec((unasked, "bot"))) == "fail"
+    granted = [T(0, "हाँ भेज दीजिए", ASK), T(1, "हाँ अनुमति है", "ठीक है", tap=[write_tap()])]
+    assert v("TC25", rec((granted, "bot"))) == "pass"
+    assert v("TC25", rec(([T(0, "नौकरी", "कौन सा काम?")], "bot"))) == "n/a"
+
+
+def test_tc25_a_returning_caller_with_consent_on_file_is_not_asked_again():
+    turns = [T(0, "नमस्ते", "नमस्ते", tap=[profile_tap(True)]),
+             T(1, "हाँ भेज दीजिए", "भेज दिया", tap=[write_tap("apply_job")])]
+    assert v("TC25", rec((turns, "bot")), persona="T14") == "pass"
+    refused = [T(0, "नमस्ते", "नमस्ते", tap=[profile_tap(False)]),
+               T(1, "हाँ भेज दीजिए", "भेज दिया", tap=[write_tap("apply_job")])]
+    assert v("TC25", rec((refused, "bot")), persona="T14") == "fail"
+
+
+def test_tc25_is_unscored_when_consent_on_file_cannot_be_read():
+    turns = [T(0, "नमस्ते", "नमस्ते", tap=[profile_tap(True)]),
+             T(1, "हाँ", "भेज दिया", tap=[write_tap("apply_job")])]
+    assert v("TC25", _bodiless(rec((turns, "bot"))), persona="T14") == "unscored"
+
+
+def test_tc26_every_service_read_out_states_its_cost():
+    priced = [T(0, "ट्रेनिंग", "सिलाई केंद्र है, यह मुफ़्त है।", tap=[service_tap()])]
+    assert v("TC26", rec((priced, "bot"))) == "pass"
+    silent = [T(0, "ट्रेनिंग", "सिलाई केंद्र में ट्रेनिंग है।", tap=[service_tap()])]
+    assert v("TC26", rec((silent, "bot"))) == "fail"
+    assert v("TC26", rec(([T(0, "नौकरी", "कौन सा काम?")], "bot"))) == "n/a"
+
+
+def test_tc27_an_empty_search_names_the_city_that_was_asked_for():
+    empty = TapEntry(1, "POST", "/v1/search", "", {}, 200, {"message": {"items": []}}, "search")
+    named = [T(0, "लखनऊ", "लखनऊ में वेल्डर की नौकरी नहीं है।", tap=[empty])]
+    assert v("TC27", rec((named, "bot")), persona="T01") == "pass"
+    silent = [T(0, "लखनऊ", "कोई नौकरी नहीं है।", tap=[empty])]
+    assert v("TC27", rec((silent, "bot")), persona="T01") == "fail"
+
+
+def test_tc28_the_call_is_still_open_after_an_application():
+    sent = [T(0, "हाँ भेज दीजिए", "आवेदन भेज दिया गया है। और कुछ?", tap=[apply_tap()])]
+    assert v("TC28", rec((sent, "bot"))) == "pass"
+    hung_up = [T(0, "हाँ भेज दीजिए", "आवेदन भेज दिया गया है। धन्यवाद।", tap=[apply_tap()], ended=True)]
+    assert v("TC28", rec((hung_up, "bot"))) == "fail"
+
+
+def test_tc29_an_application_is_only_sent_after_being_offered():
+    offered = [T(0, "पहली वाली", "क्या मैं आवेदन भेज दूँ?"),
+               T(1, "हाँ", "भेज दिया", tap=[apply_tap()])]
+    assert v("TC29", rec((offered, "bot"))) == "pass"
+    unasked = [T(0, "पहली वाली", "ठीक है", tap=[apply_tap()])]
+    assert v("TC29", rec((unasked, "bot"))) == "fail"
+
+
+def test_tc30_an_age_refusal_never_contradicts_the_age_given():
+    told = [T(0, "अठारह", "माफ़ कीजिए, आपकी उम्र अठारह साल से कम है।")]
+    assert v("TC30", rec((told, "bot")), persona="T19") == "fail"
+    assert v("TC30", rec((told, "bot")), persona="T18") == "pass"
+    assert v("TC30", rec(([T(0, "अठारह", "ठीक है")], "bot")), persona="T19") == "n/a"
+
+
+def test_tc27_cannot_read_a_search_response_that_was_cut_short():
+    """A truncated list must not read as "the search returned nothing"."""
+    cut = TapEntry(1, "POST", "/v1/search", "", {}, 200, '{"message":{"items":[{"jobProv', "search",
+                   "fetch_jobs", True)
+    turns = [T(0, "लखनऊ", "कोई नौकरी नहीं है।", tap=[cut])]
+    assert v("TC27", rec((turns, "bot")), persona="T01") == "unscored"
+
+
+def connect_tap():
+    return TapEntry(1, "POST", "/api/v1/action/perform", "", {}, 200, {"ok": True}, "signals", "connect_service")
+
+
+def test_a_refusal_is_not_read_as_permission():
+    """जी नहीं ("no, sir") carries the same honorific as agreement does."""
+    refused = [T(0, "नौकरी चाहिए", ASK), T(1, "जी नहीं", "ठीक है", tap=[write_tap()])]
+    assert v("TC25", rec((refused, "bot")), persona="T15") == "fail"
+    agreed = [T(0, "नौकरी चाहिए", ASK), T(1, "जी हाँ", "ठीक है", tap=[write_tap()])]
+    assert v("TC25", rec((agreed, "bot")), persona="T15") == "pass"
+
+
+def test_the_consent_question_is_not_an_offer_to_send():
+    """The fixed consent line also asks about sending, and must not stand in for the send-ask."""
+    only_consent = [T(0, "पहली वाली", ASK), T(1, "हाँ", "भेज दिया", tap=[apply_tap()])]
+    assert v("TC29", rec((only_consent, "bot"))) == "fail"
+
+
+def test_an_age_threshold_in_digits_is_read():
+    told = [T(0, "उन्नीस", "माफ़ कीजिए, आपकी उम्र 18 साल से कम है।")]
+    assert v("TC30", rec((told, "bot")), persona="T19") == "fail"
+    devanagari = [T(0, "उन्नीस", "माफ़ कीजिए, आपकी उम्र १८ साल से कम है।")]
+    assert v("TC30", rec((devanagari, "bot")), persona="T19") == "fail"
+
+
+def test_an_age_threshold_this_check_cannot_read_is_not_a_pass():
+    told = [T(0, "उन्नीस", "माफ़ कीजिए, आपकी उम्र तय सीमा साल से कम है।")]
+    assert v("TC30", rec((told, "bot")), persona="T19") == "unscored"
+
+
+def test_a_service_connected_without_the_offer_being_seen_is_not_a_pass():
+    connected = [T(0, "सिलाई", "जोड़ रही हूँ", tap=[connect_tap()])]
+    assert v("TC26", rec((connected, "bot")), persona="T16") == "unscored"
+
+
+def test_a_service_read_out_must_still_name_its_cost():
+    free = [T(0, "सिलाई", "सिलाई केंद्र है, यह मुफ़्त है।", tap=[service_tap()])]
+    assert v("TC26", rec((free, "bot")), persona="T16") == "pass"
+    silent = [T(0, "सिलाई", "सिलाई केंद्र है।", tap=[service_tap()])]
+    assert v("TC26", rec((silent, "bot")), persona="T16") == "fail"
+
+
+def test_a_failed_search_is_not_read_as_an_empty_one():
+    broken = TapEntry(1, "POST", "/v1/search", "", {}, 502, {"error": "bad gateway"}, "search", "fetch_jobs")
+    turns = [T(0, "धारवाड़", "कोई नौकरी नहीं है।", tap=[broken])]
+    assert v("TC27", rec((turns, "bot")), persona="T01") == "unscored"
+
+
+def test_a_live_city_adds_to_its_seeded_spellings():
+    from eval.voice_bench.checks import widen_places
+    r = rec(([T(0, "काम", "लखनऊ में है", tap=[jobs_tap("X", city="Lucknow")])], "bot"))
+    widened = widen_places(PLACES, r)
+    assert "लखनऊ" in widened["Lucknow"]
+    assert "Lucknow" in widened["Lucknow"]
+
+
+def test_places_cannot_be_judged_against_a_search_response_that_was_cut_short():
+    """The names the comparison needs live in the body the agent cut at a fixed length."""
+    cut = TapEntry(1, "POST", "/v1/search", "", {}, 200, '{"message":{"items":[{"jobProv', "search",
+                   "fetch_jobs", True)
+    turns = [T(0, "काम", "कानपुर में नौकरी है", tap=[cut])]
+    assert v("TC07", rec((turns, "bot"))) == "unscored"

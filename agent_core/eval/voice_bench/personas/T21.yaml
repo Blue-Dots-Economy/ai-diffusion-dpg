@@ -1,0 +1,20 @@
+id: T21
+title: Asks for a city with no jobs
+language: hi
+facts:
+  name: इरफ़ान
+  age: 35
+  trade: वेल्डर
+  city: धारवाड़
+goal: ask for welder work in Dharwad, and accept the alternative if one is offered.
+quirks:
+- name Dharwad as your city
+- accept if the bot offers to look somewhere else
+ends_when: when the bot says goodbye, or when you have an answer and say thank you
+feeds:
+- TC07
+- TC23
+- TC27
+legs:
+- goal: ask for welder work in Dharwad and accept any alternative offered
+  opening_line: नमस्ते

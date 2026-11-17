@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import re
 import subprocess
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+
+from eval.voice_bench.records import TapEntry
 
 _INT = r"(\d+|None)"
 _FIELDS = {
@@ -67,6 +71,77 @@ class LogScraper:
             return (r.stdout or "") + (r.stderr or "")
         except (OSError, subprocess.SubprocessError):
             return ""
+
+
+@dataclass(frozen=True)
+class TurnObservation:
+    """What the harness could see about one turn besides the reply itself."""
+
+    tap: list[TapEntry] = field(default_factory=list)
+    session: dict = field(default_factory=dict)
+    banner: dict = field(default_factory=dict)
+
+
+class Observer(ABC):
+    """Source of per-turn evidence for one target."""
+
+    @abstractmethod
+    def turn(self, phone: str, call_id: str, since_s: int) -> TurnObservation:
+        """Observations for the turn that has just completed."""
+
+    @abstractmethod
+    def leftover(self, phone: str, call_id: str) -> list[TapEntry]:
+        """Tool calls that landed after the last turn's stream closed."""
+
+    @abstractmethod
+    def start_attempt(self) -> None:
+        """Drop anything buffered so a fresh attempt sees only its own traffic."""
+
+    @property
+    @abstractmethod
+    def sees_session(self) -> bool:
+        """Whether ``TurnObservation.session`` is real, or always empty here."""
+
+    @property
+    @abstractmethod
+    def sees_tool_bodies(self) -> bool:
+        """Whether the tool responses observed so far carried their bodies."""
+
+
+class LocalObserver(Observer):
+    """Evidence from a stack running on this machine: the tap, Redis and docker logs.
+
+    Args:
+        tap: The recording proxy in front of the target's upstream.
+        redis_container: The target's session Redis container.
+        scraper: Log source for the agent container.
+        read_session: Session reader (injectable).
+    """
+
+    def __init__(self, tap, redis_container: str, scraper: LogScraper, read_session=read_session) -> None:
+        self._tap = tap
+        self._redis_container = redis_container
+        self._scraper = scraper
+        self._read_session = read_session
+
+    def turn(self, phone: str, call_id: str, since_s: int) -> TurnObservation:
+        return TurnObservation(tap=self._tap.take(),
+                               session=self._read_session(self._redis_container, phone, call_id),
+                               banner=parse_banner(self._scraper.since(since_s)))
+
+    def leftover(self, phone: str, call_id: str) -> list[TapEntry]:
+        return self._tap.take()
+
+    def start_attempt(self) -> None:
+        self._tap.clear()
+
+    @property
+    def sees_session(self) -> bool:
+        return True
+
+    @property
+    def sees_tool_bodies(self) -> bool:
+        return True
 
 
 _PHONE_RE = re.compile(r"\d{6,15}")

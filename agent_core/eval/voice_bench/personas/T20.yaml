@@ -1,0 +1,19 @@
+id: T20
+title: Age 19 at the permission gate
+language: hi
+facts:
+  name: अमित
+  age: 19
+  trade: वेल्डर
+  city: बेंगलुरु
+goal: apply to a welder job, and when asked your age say उन्नीस.
+quirks:
+- give your age as उन्नीस when asked
+- answer the other questions briefly
+ends_when: when the bot says goodbye, or when it tells you it cannot continue
+feeds:
+- TC25
+- TC30
+legs:
+- goal: apply to a welder job and state the age उन्नीस when asked
+  opening_line: नमस्ते

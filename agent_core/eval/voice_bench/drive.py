@@ -5,12 +5,12 @@ from __future__ import annotations
 import hashlib
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from eval.voice_bench import observe
 from eval.voice_bench.caller import Caller, CallerLLMError, persona_broken, stage_direction
+from eval.voice_bench.observe import Observer
 from eval.voice_bench.records import CallRecord, Leg, TurnRecord
 from eval.voice_bench.suite import Persona
 
@@ -18,13 +18,10 @@ from eval.voice_bench.suite import Persona
 @dataclass
 class DriveDeps:
     bridge: Any
-    tap: Any
-    redis_container: str
-    scraper: Any
+    observer: Observer
     caller: Caller
     judge_llm: Any
     cleanup: Callable[[], None]
-    read_session: Callable = field(default=observe.read_session)
 
 
 def _seed(*parts) -> int:
@@ -54,12 +51,10 @@ def _turns(deps: DriveDeps, persona: Persona, run_idx: int, leg_idx: int, phone:
                 return Leg(call_id, turns, "caller")
         since_s = int(time.time())
         bt = deps.bridge.turn(line, phone, call_id)
-        tap = deps.tap.take()
-        session = deps.read_session(deps.redis_container, phone, call_id)
-        banner = observe.parse_banner(deps.scraper.since(since_s))
+        obs = deps.observer.turn(phone, call_id, since_s)
         turns.append(TurnRecord(idx=i, caller=line, reply=bt.reply, status_phrase=bt.status_phrase,
                                 t_first_content_ms=bt.t_first_content_ms, t_first_reply_ms=bt.t_first_reply_ms,
-                                t_total_ms=bt.t_total_ms, session=session, tap=tap, banner=banner,
+                                t_total_ms=bt.t_total_ms, session=obs.session, tap=obs.tap, banner=obs.banner,
                                 session_ended=bt.session_ended, error=bt.error,
                                 terminal_word=bt.terminal_word))
         history.append((line, bt.reply))
@@ -74,14 +69,14 @@ def _leg(deps: DriveDeps, persona: Persona, run_idx: int, leg_idx: int, phone: s
          attempt: int = 0) -> Leg:
     call_id = f"vb-{persona.id}-{run_idx}-{leg_idx}-{uuid.uuid4().hex[:6]}"
     lg = _turns(deps, persona, run_idx, leg_idx, phone, max_turns, attempt, call_id, [])
-    leftover = deps.tap.take()          # tool calls that landed after the last turn's stream closed
+    leftover = deps.observer.leftover(phone, call_id)
     if leftover and lg.turns:
         lg.turns[-1].tap.extend(leftover)
     return lg
 
 
 def _attempt(deps, persona, run_idx, phone, max_turns, attempt: int = 0) -> list[Leg]:
-    deps.tap.clear()                    # nothing from an earlier attempt or call leaks into this one
+    deps.observer.start_attempt()
     legs = []
     for leg_idx in range(len(persona.legs)):
         lg = _leg(deps, persona, run_idx, leg_idx, phone, max_turns, attempt)
@@ -100,17 +95,25 @@ def _broken(deps, persona, run_idx, legs) -> bool:
     return any(stage_direction(x) for x in lines) or persona_broken(deps.judge_llm, persona, lines, _seed(persona.id, run_idx, "audit"))
 
 
-def drive_call(deps: DriveDeps, persona: Persona, run_idx: int, phone: str, max_turns: int, meta: dict) -> CallRecord:
+def drive_call(deps: DriveDeps, persona: Persona, run_idx: int, phone: str, max_turns: int, meta: dict,
+               retry_phone: str | None = None) -> CallRecord:
     """Run one (scenario, run): retry once on error, void-and-rerun once on persona break.
 
     The discarded first attempt is kept in ``prior_legs`` (and its error in ``prior_error``); scoring uses the
     final legs only. A retried attempt is persona-audited too: broken → ``void_reason="broken_after_retry"``.
     A final caller-LLM failure is the harness's, not the target's: it goes to ``harness_error``, not ``error``.
+
+    Args:
+        retry_phone: Number for the second attempt. Where nothing is cleaned up
+            between attempts the first attempt may have left a profile behind,
+            which would make the retry a returning caller on the wrong flow.
     """
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     attempts, void_reason = 1, None
     prior_legs: list[Leg] = []
     prior_error: str | None = None
+    used = phone
+    again = retry_phone or phone
     deps.cleanup()
     try:
         legs = _attempt(deps, persona, run_idx, phone, max_turns, 0)
@@ -119,22 +122,26 @@ def drive_call(deps: DriveDeps, persona: Persona, run_idx: int, phone: str, max_
             prior_legs, prior_error = legs, first_err
             deps.cleanup()
             attempts += 1
-            legs = _attempt(deps, persona, run_idx, phone, max_turns, 1)
+            used = again
+            legs = _attempt(deps, persona, run_idx, again, max_turns, 1)
             if not _err(legs) and _broken(deps, persona, run_idx, legs):
                 void_reason = "broken_after_retry"
         elif _broken(deps, persona, run_idx, legs):
             prior_legs = legs
             deps.cleanup()
             attempts += 1
-            legs = _attempt(deps, persona, run_idx, phone, max_turns, 1)
+            used = again
+            legs = _attempt(deps, persona, run_idx, again, max_turns, 1)
             void_reason = "broken_twice" if _broken(deps, persona, run_idx, legs) else "rerun_ok"
     finally:
         deps.cleanup()
     err = _err(legs)
     harness_error = err if err and err.startswith("caller_llm_") else None
     return CallRecord(target=meta["target"], target_commit=meta["target_commit"], scenario=persona.id, run=run_idx,
-                      phone=phone, suite_version=meta["suite_version"], seed_version=meta["seed_version"],
+                      phone=used, suite_version=meta["suite_version"], seed_version=meta["seed_version"],
                       caller_model=meta["caller_model"], judge_model=meta["judge_model"], legs=legs,
                       attempts=attempts, voided=void_reason is not None, error=None if harness_error else err,
                       started_at=started, void_reason=void_reason, harness_error=harness_error,
-                      prior_legs=prior_legs, prior_error=prior_error)
+                      prior_legs=prior_legs, prior_error=prior_error,
+                      observes_session=deps.observer.sees_session,
+                      observes_tool_bodies=deps.observer.sees_tool_bodies)

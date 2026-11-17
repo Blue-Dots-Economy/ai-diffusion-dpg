@@ -1,0 +1,22 @@
+id: T15
+title: Refuses permission, then changes mind and applies
+language: hi
+facts:
+  name: सुनीता देवी
+  age: 29
+  trade: डेटा एंट्री
+  city: कानपुर
+goal: hear about data entry jobs, refuse permission the first time it is asked, then agree and apply.
+quirks:
+- say no the first time you are asked for permission
+- keep talking about jobs after refusing
+- agree the second time you are asked, then answer the questions
+ends_when: after the bot confirms the application, or when it says goodbye
+feeds:
+- TC13
+- TC21
+- TC24
+- TC25
+legs:
+- goal: refuse permission once, then agree and apply to a data entry job in Kanpur
+  opening_line: नमस्ते
