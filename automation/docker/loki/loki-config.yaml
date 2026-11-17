@@ -1,0 +1,63 @@
+# automation/docker/loki/loki-config.yaml
+# Loki config for the shared-VM deployment: the image's own default
+# (cmd/loki/loki-docker-config.yaml at v2.9.4) plus retention.
+#
+# The default keeps every log line forever, so the loki_data volume grows
+# until the disk is full. The compactor below deletes chunks older than
+# LOKI_RETENTION.
+#
+# Storage and schema are deliberately identical to the image default, so a
+# volume written by the default config is read unchanged after switching.
+# Do not change schema_config on an existing volume: add a new entry with a
+# later `from` date instead.
+#
+# ${VAR:-default} is expanded because compose starts Loki with
+# -config.expand-env=true.
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: boltdb-shipper
+      object_store: filesystem
+      schema: v11
+      index:
+        prefix: index_
+        # Retention only works with a 24h index period.
+        period: 24h
+
+compactor:
+  working_directory: /loki/compactor
+  shared_store: filesystem
+  compaction_interval: 10m
+  retention_enabled: true
+  # Marked chunks are deleted this long after they are marked, which leaves a
+  # window to undo a retention mistake.
+  retention_delete_delay: 2h
+
+limits_config:
+  # Minimum 24h. Go duration, hours only (720h = 30 days).
+  retention_period: ${LOKI_RETENTION:-720h}
+
+ruler:
+  alertmanager_url: http://localhost:9093
+
+# Do not send anonymous usage statistics to Grafana Labs from a deployment
+# that holds call logs.
+analytics:
+  reporting_enabled: false
