@@ -1,0 +1,175 @@
+# dev-kit/configs/blue-dots-kannada-v1/trust_layer.yaml
+# Blue Dots (Kannada) — Trust Layer domain config. Kannada twin of
+# dev-kit/configs/blue-dots/trust_layer.yaml; only caller-facing strings and
+# the consent/decline phrase sets differ.
+# Derived from the original jobs-domain policy pack. Differences from it:
+#   - Caller-facing refusal / blocked / holding messages in Kannada (see below).
+#   - Kannada consent + decline phrases (Kannada script and Romanised) on top
+#     of the English set.
+#   - Output-blocked phrases keep the English subset.
+
+trust:
+  policy_pack: "blue_dots_advisory_jobs"
+
+  # NOTE on language. Two different kinds of string live in this file:
+  #   - prompt_constraints and required_disclosures are INSTRUCTIONS injected
+  #     into the agent's system prompt. The agent renders them in the
+  #     conversation language in its own words, so they stay in English for
+  #     the people maintaining this config.
+  #   - blocked_input_message, output_blocked_message, refusal_template and
+  #     hitl.holding_message are returned to Agent Core and spoken to the
+  #     caller VERBATIM. Those are Kannada.
+
+  input_rules:
+    blocked_phrases:
+      - "bomb"
+      - "weapon"
+      - "kill"
+      - "threat"
+      - "violence"
+    escalation_topics:
+      - "suicide"
+      # "suicidal" is a separate entry, not an inflection: it does not contain
+      # "suicide" as a substring (suicid-al vs suicid-e), so no suffix rule in
+      # the matcher can reach it. It is also the more common phrasing.
+      - "suicidal"
+      - "arrested"
+      - "police case"
+      - "FIR"
+      - "jail"
+    # Caller-facing strings below are returned to Agent Core and spoken to
+    # the caller VERBATIM — no LLM, no translation step. Kannada, like every
+    # other verbatim string in this domain.
+    blocked_input_message: "ಕ್ಷಮಿಸಿ, ಈ ವಿಷಯದಲ್ಲಿ ನಾನು ಸಹಾಯ ಮಾಡೋಕೆ ಆಗಲ್ಲ."
+
+  output_rules:
+    blocked_phrases:
+      - "guaranteed placement"
+      - "100% job guarantee"
+      - "as an AI, I"
+    output_blocked_message: "ಕ್ಷಮಿಸಿ, ಉತ್ತರ ಕೊಡೋಕೆ ಈಗ ಸ್ವಲ್ಪ ತೊಂದರೆ ಆಗ್ತಿದೆ. ಇನ್ನೊಂದ್ಸಲ ಕೇಳ್ತೀರಾ?"
+
+  policy_packs:
+    # severity and failure_mode declare operator intent. Differential
+    # enforcement is tracked in GH-170 — for now any non-pass triggers
+    # the refusal_template / blocked_message.
+    blue_dots_advisory_jobs:
+      guardrails:
+        false_certainty:
+          severity: "blocker"
+          failure_mode: "block"
+          prompt_constraints:
+            - "MUST NOT guarantee or imply certainty about job outcomes"
+            - "MUST frame all opportunities as possibilities, not certainties"
+          required_disclosures:
+            - "Hiring decisions rest with the employer"
+          refusal_template: "ಯಾವ ಜಾಬ್ ಸಿಗುತ್ತೆ ಅಂತ ನಾನು ಗ್ಯಾರಂಟಿ ಕೊಡೋಕೆ ಆಗಲ್ಲ."
+
+        hallucinated_reality:
+          severity: "blocker"
+          failure_mode: "block"
+          prompt_constraints:
+            - "MUST NOT infer or generalise from missing data"
+            - "MUST only reference verified signals available in context"
+          required_disclosures:
+            - "Information is based only on verified data"
+          refusal_template: "ಇದರ ಬಗ್ಗೆ ನನ್ನ ಹತ್ರ ಈಗ ಖಚಿತ ಮಾಹಿತಿ ಇಲ್ಲ."
+
+        emotional_overreach:
+          severity: "warning"
+          failure_mode: "constrain"
+          prompt_constraints:
+            - "MUST NOT provide counselling or motivational language"
+            - "MUST limit empathetic language to one brief acknowledgement"
+          required_disclosures: []
+          refusal_template: null
+
+        dignity_harm:
+          severity: "blocker"
+          failure_mode: "block"
+          prompt_constraints:
+            - "MUST NOT imply blame, deficiency, or judgment about the user"
+          required_disclosures: []
+          refusal_template: null
+
+        agency_violation:
+          severity: "blocker"
+          failure_mode: "block"
+          prompt_constraints:
+            - "MUST NOT act without explicit user confirmation"
+            - "MUST present options and wait for user decision before any action"
+          required_disclosures:
+            - "Any action requires your explicit confirmation"
+          refusal_template: null
+
+  consent:
+    # English-first set with Kannada/Romanised coverage. Naive
+    # substring match; ordering doesn't matter, coverage does.
+    # KN: a bare "ಇಲ್ಲ" (no) is deliberately absent: as a substring it also
+    # matches "ಇಲ್ಲಿ" (here). The longer forms below cover refusals.
+    consent_phrases:
+      # English
+      - "yes"
+      - "yeah"
+      - "yep"
+      - "ok"
+      - "okay"
+      - "go ahead"
+      - "sure"
+      - "alright"
+      - "please do"
+      # Romanised Kannada
+      - "haudu"
+      - "sari"
+      - "aaytu"
+      - "oppige ide"
+      # Kannada script
+      - "ಹೌದು"
+      # KN: no bare "ಹಾ" — as a substring it matches ಹಾಗೆ, ಹಾಕಿ and more.
+      - "ಹೂಂ"
+      - "ಸರಿ"
+      - "ಆಯ್ತು"
+      - "ಓಕೆ"
+      - "ಒಪ್ಪಿಗೆ ಇದೆ"
+      - "ಅನುಮತಿ ಇದೆ"
+    decline_phrases:
+      # English
+      - "no"
+      - "nope"
+      - "don't"
+      - "not now"
+      - "no thanks"
+      # Romanised Kannada
+      - "illa"
+      - "beda"
+      # Kannada script
+      - "ಬೇಡ"
+      - "ಇಲ್ಲ ಬೇಡ"
+      - "ಒಪ್ಪಿಗೆ ಇಲ್ಲ"
+      - "ಅನುಮತಿ ಇಲ್ಲ"
+      - "ಸೇವ್ ಮಾಡಬೇಡಿ"
+
+  hitl:
+    queue_backend: "log"
+    holding_message: >
+      ನಿಮ್ಮನ್ನ ಒಬ್ಬ ಸಲಹೆಗಾರರ ಜೊತೆ ಸೇರಿಸ್ತಿದ್ದೀನಿ — ಇಪ್ಪತ್ನಾಲ್ಕು ಗಂಟೆಯೊಳಗೆ ಯಾರಾದರೂ
+      ನಿಮಗೆ ವಾಪಸ್ ಕಾಲ್ ಮಾಡ್ತಾರೆ.
+    # notification_webhook backend tracked in GH-36.
+    notification_webhook: null
+
+observability:
+  domain: "blue_dot"
+
+# GH-137 pre-response dignity check. Blue Dots is a Conversational
+# agent, so dignity_check is enabled. The 6 dignity questions transfer
+# verbatim — they are domain-agnostic.
+dignity_check:
+  enabled: true
+  questions:
+    - "Does this blame the user for their situation or lack of opportunity?"
+    - "Does it over-promise job availability, placement rate, or income outcomes?"
+    - "Does it push urgency or use pressure language?"
+    - "Does it reduce the user's agency to decide their own path?"
+    - "Does it sound like a scripted call rather than a genuine human conversation?"
+    - "Am I saying more than this state needs?"
+  fail_action: "rewrite"

@@ -1,0 +1,54 @@
+# dev-kit/configs/blue-dots-kannada-v2/reach_layer.yaml
+# Blue Dots (Kannada) — Reach Layer domain config. Kannada twin of
+# dev-kit/configs/blue-dots/reach_layer.yaml; only the spoken strings differ.
+# Deep-merged on top of dev-kit/dpg/reach_layer.yaml at startup.
+#
+# Bridge channel only (OpenAI chat-completions compatible). The other
+# channels (web, CLI, voice, MCP) are optional: see "AI Diffusion Optional
+# Channels" on the docs site for the blocks to add and how to start them.
+
+reach_layer:
+
+  common:
+    observability:
+      domain: "blue_dot"
+
+  channels:
+    bridge:
+      # GH-137-style: spoken/written just before the caller's client closes
+      # the call. The shim never ends the call itself, so this word is the
+      # only signal the caller gets that the conversation is finished.
+      #
+      # Kannada, because it is emitted VERBATIM — the bridge appends it to the
+      # stream on session end without any translation step. On the 24 Sep
+      # PoC calls it was the English "Thank you", spoken to Hindi callers at
+      # the end of every terminated turn.
+      terminal_word: "ಧನ್ಯವಾದ"
+      # VoicERA offers this tool when the agent has automatic_call_ending
+      # and graceful_llm_call_ending enabled. On session end the bridge calls
+      # it after the goodbye, and VoicERA hangs up. Without it the line
+      # stayed open until the platform's max-duration timeout.
+      hangup_tool_name: "end_conversation"
+      # Spoken while a tool runs, so a 5-7 s turn is not silence the caller
+      # fills with "hello?" (which the client treats as barge-in and cancels
+      # the turn). One line per turn at most, never once the reply has started.
+      # Kannada, emitted verbatim. end_session is deliberately unmapped.
+      # Blue Dots: "Call them silently... No waiting message and no status
+      # narration before, during or immediately after any of them." A hold is
+      # permitted, but it is a NEUTRAL hold and "must never reveal what is
+      # happening" — so every phrase here is the same two words.
+      #
+      # What the previous (Hindi) phrases broke — the same applies in Kannada:
+      #   fetch_profile "I am looking"            — on the spec's explicit banned list
+      #   fetch_jobs    "looking at jobs"         — reveals the lookup
+      #   save_profile  "saving"                  — status narration
+      #   apply_job     "sending the application" — hard law 4: claims the apply
+      #                 BEFORE a result exists. apply_job is not in the
+      #                 spec's permitted-hold list at all, so it gets none.
+      tool_status_phrases:
+        fetch_profile: "ಒಂದು ನಿಮಿಷ."
+        fetch_jobs: "ಒಂದು ನಿಮಿಷ."
+        save_profile: "ಒಂದು ನಿಮಿಷ."
+        # Not a workflow tool: Agent Core emits it while a human handoff is
+        # being escalated (identity/handoff spec §5.3).
+        request_human: "ಒಂದು ನಿಮಿಷ."
