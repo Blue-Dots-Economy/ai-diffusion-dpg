@@ -1,0 +1,186 @@
+# dev-kit/configs/blue-dots-kannada-v1/memory_layer.yaml
+# Kannada twin of dev-kit/configs/blue-dots/memory_layer.yaml: same tools, endpoints and
+# settings as the Hindi bot. Keep the two in step.
+# Blue Dots — Memory Layer domain config.
+# Merged with dev-kit/dpg/memory_layer.yaml by loader.py at startup.
+#
+# Session state (Redis) carries everything the apply flow needs to
+# stitch together turn-by-turn. Persistent state (Memgraph) keyed on
+# phone holds the seeker profile + journey history across calls.
+
+state:
+
+  session:
+    ttl_minutes: 2880    # 2 days — caller can resume next day if dropped.
+    schema:
+      # Infrastructure fields (user_id=phone, journey_id, is_returning)
+      # are injected by Memory Layer at session init and need not be
+      # declared here.
+      #
+      # Consent / safety. Memory Layer's session schema enum is
+      # {enum, string, int, list} — no bool. Modelled as a 2-value enum.
+      consent_given:           { type: enum,   values: ["true", "false"], default: "false" }
+      # Lifted from the participant fetch by the connector's session_mapping
+      # and read by the `opening` gate. Session scope on purpose: consent is
+      # reported VERSION-SCOPED by Signals, so a cached true can be wrong by
+      # the next call — these must come from this call's fetch, every call.
+      #
+      # Declaring them is not optional. Memory Layer persists only declared
+      # session fields; an undeclared write is silently dropped, which is how
+      # consent_response sat dead in 201 UserAttribute rows while both rules
+      # that read it never matched.
+      # enum of "true"/"false" like consent_given above — the schema has no
+      # bool type, and Memory Layer JSON-decodes on read, so routing compares
+      # against the YAML boolean `true` and matches.
+      has_age:                 { type: enum,   values: ["true", "false"], default: "false" }
+      user_terms:              { type: enum,   values: ["true", "false"], default: "false" }
+      user_privacy:            { type: enum,   values: ["true", "false"], default: "false" }
+      profile_consent:         { type: enum,   values: ["true", "false"], default: "false" }
+      fetch_error:             { type: string, default: "" }
+      consent_return_to:       { type: string, default: "" }
+      # Refusals, not visits — a second visit after a grant must not end the call.
+      consent_declines:        { type: int,    default: 0 }
+      # Profile data — populated when the user verbalises these and NLU
+      # picks them up. Mirrors the profile_1.0 schema returned by
+      # fetch_profile so subsequent tool calls (update_profile, apply_job)
+      # have somewhere to read from.
+      profile_item_id:         { type: string, default: "" }
+      source_item_owner:       { type: string, default: "" }   # user.id from onboard
+      name:                    { type: string, default: "" }
+      age:                     { type: int,    default: 0 }
+      gender:                  { type: string, default: "" }
+      work_experience:         { type: string, default: "" }   # enum: Fresher / Worked before / Returning after a break
+      experience_years:        { type: string, default: "" }   # enum: 0, < 1 Year, 1 Year, 2 Years, …
+      job_nature:              { type: string, default: "" }   # enum: Internship / Apprenticeship / Full-time / Flexible
+      help_needed:             { type: string, default: "" }   # enum: Training / Accommodation / Travel / Other
+      # Search criteria (confirmed in profile_resolve subagent)
+      trade:                   { type: string, default: "" }
+      location:                { type: string, default: "" }
+      # The live profile's stored values, lifted by fetch_profile's
+      # session_mapping. profile_resolve offers these back to the caller;
+      # `trade`/`location` above stay reserved for what they say in THIS call.
+      stored_trade:            { type: string, default: "" }
+      stored_location:         { type: string, default: "" }
+      # Job search results + selection
+      selected_job_item_id:    { type: string, default: "" }
+      # Profile-choice state (written during profile_choice/profile_setup phases)
+      profile_action:          { type: enum,   values: ["use_existing", "create_new", "update_existing", ""], default: "" }
+      profile_setup_done:      { type: enum,   values: ["true", "false"], default: "false" }
+      # Application outcome
+      last_application_id:     { type: string, default: "" }
+      applications_submitted:  { type: int,    default: 0 }
+      apply_failed:            { type: int,    default: 0 }
+      services_in_play:          { type: enum, values: ["true", "false"], default: "false" }
+      selected_service_item_id:  { type: string, default: "" }
+      last_enquiry_id:           { type: string, default: "" }
+      service_enquiries_submitted: { type: int,  default: 0 }
+
+  persistent:
+    backend: memgraph
+    graph:
+      user_node:
+        label: User
+        key: user_id    # = phone number; set by Reach Layer at session init.
+
+      subnodes:
+        # Runtime memory_layer.py hardcodes the lookup key as
+        # ``subnodes["UserProfile"]``. The label is fixed; only fields
+        # are domain-driven. (The seeker terminology is preserved in
+        # session/persistent semantics below, but the subnode key
+        # itself must be ``UserProfile`` for declared_fields to take
+        # effect — otherwise every write falls through to UserAttribute
+        # ad-hoc storage and nothing lands on the profile node.)
+        UserProfile:
+          rel: HAS_PROFILE
+          declared_fields:
+            # Identity layer (profile_1.0 required fields)
+            - name
+            - phone
+            - age
+            - gender
+            - location
+            - language_preference
+            # Routing reads `consent_response` in two `opening` rules. It is
+            # an NLU entity, and NLU entities are written at PERSISTENT scope
+            # (orchestrator entity_scope defaults to "persistent"), so an
+            # undeclared name falls through to UserAttribute ad-hoc storage —
+            # where context_bundle nests it under profile.attributes instead
+            # of flattening it onto profile. A routing condition on the field
+            # `consent_response` then never matches.
+            #
+            # Measured: 201 consent_response values were sitting in
+            # UserAttribute nodes while both rules that read them were dead,
+            # so the opening gate could only clear via the slower
+            # consent_given path — 3.8 turns instead of 1.9.
+            - consent_response
+            # Capability layer (profile_1.0 optional fields)
+            - trade                  # nameOfJobRolesInterestedIn
+            - work_experience        # workExperience
+            - experience_years       # workExperienceYearsConditional
+            - job_nature             # natureOfJobsInterestedIn
+            - help_needed            # otherHelpNeeded
+            # Identity-on-upstream
+            - profile_item_id
+            - source_item_owner
+          adhoc:
+            label: UserAttribute
+            rel: HAS_ATTRIBUTE
+            fields: [key, value, raw, turn, journey_id]
+
+        JourneyHistory:
+          rel: HAS_JOURNEY_HISTORY
+          grouping: true
+          child:
+            label: Journey
+            rel: JOURNEY
+            fields: [journey_id, started_at, ended_at, end_reason]
+            children:
+              - label: JobOffered
+                rel: OFFERED
+                fields: [item_id, role, company, city, salary_range, employment_type, shortlisted, committed]
+              - label: Application
+                rel: APPLIED
+                fields: [application_id, target_item_id, source_item_id, source_item_owner, applied_at, status]
+              - label: DropOff
+                rel: DROPPED_AT
+                fields: [subagent_id, reason, timestamp]
+
+        ContextGraph:
+          rel: HAS_CONTEXT
+          grouping: true
+          child:
+            label: Signal
+            rel: SIGNAL
+            fields: [type, turn, raw, journey_id]
+            adhoc:
+              label: ContextAttribute
+              rel: HAS_ATTRIBUTE
+              fields: [key, value, raw, turn, journey_id]
+
+    merge_on_session_end:
+      # Promote selected session-state fields to Journey-node properties
+      # when the session closes.
+      - session_field: trade
+        target: Journey.trade_at_end
+      - session_field: location
+        target: Journey.city_at_end
+      - session_field: selected_job_item_id
+        target: Journey.selected_job_item_id
+      - session_field: last_application_id
+        target: Journey.application_id
+
+user_data_persistence:
+  # "saved" — User + SeekerProfile data persists in Memgraph across
+  # sessions. Returning callers (is_returning=True) skip the consent
+  # prompt and hear the returning_user_greeting instead. Canonical
+  # profile data lives on the Blue Dots upstream; Memgraph only
+  # mirrors session-derived state.
+  default_mode: saved
+
+reengagement:
+  # Trigger scheduler not yet wired (GH-168). Config is validated at
+  # startup; no runtime code acts on these entries yet.
+  triggers: []
+
+observability:
+  domain: "blue_dot"

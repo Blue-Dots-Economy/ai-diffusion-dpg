@@ -1,0 +1,929 @@
+# dev-kit/configs/blue-dots-kannada-v1/action_gateway.yaml
+# Kannada twin of dev-kit/configs/blue-dots/action_gateway.yaml: same tools, endpoints and
+# settings as the Hindi bot. Keep the two in step.
+# Blue Dots domain values for Action Gateway.
+# Merged with dev-kit/dpg/action_gateway.yaml by loader.py before deployment.
+#
+# Four tools back the voice-first job-seeker journey. All of them call the
+# REAL Signals upstream — the in-process mocks this file once described are
+# long gone:
+#   fetch_profile  — GET  /api/v1/admin/participant   (seeker lookup by phone)
+#   fetch_jobs     — POST /signals-search/v1/search   (semantic job discovery)
+#   save_profile   — POST /api/v1/admin/participant   (create/update seeker)
+#   apply_job      — POST /api/v1/action/perform      (submit application)
+#
+# WHICH CLUSTER. Set three env vars to point this config at a different
+# Signals cluster; no YAML edit is needed. The defaults are UAT.
+#
+#   SIGNALS_BASE_URL      base_url of fetch_profile, save_profile, apply_job
+#                         (default https://signals.bluedotseconomy.org)
+#   SIGNALS_SEARCH_URL    base_url of fetch_jobs
+#                         (default https://signals.bluedotseconomy.org/signals-search)
+#   SIGNALS_INSTANCE_URL  apply_job's static `instance_url` param, which
+#                         travels inside the apply body, not as a base_url
+#                         (default https://signals.bluedotseconomy.org)
+#
+# Move all three together: leaving instance_url behind points applications at
+# the wrong instance without failing loudly. A ${VAR} with no default and no
+# value fails startup.
+#
+# The keys and the acting-org id are environment-specific too and come from
+# the env, not this file: BLUE_DOTS_API_KEY, BLUE_DOTS_SEARCH_API_KEY (a
+# DIFFERENT key), BLUE_DOTS_ORG_ID. Pointing the URLs at one cluster while
+# the env still holds another's credentials yields 401/403, not a clear error.
+#
+# Auth:
+#   - every tool requires a key; none of these endpoints is public
+#   - fetch_profile, save_profile, apply_job — x-api-key: BLUE_DOTS_API_KEY,
+#     plus x-acting-org-id: BLUE_DOTS_ORG_ID
+#   - fetch_jobs                            — x-api-key: BLUE_DOTS_SEARCH_API_KEY
+
+tools:
+
+  # ────────────────────────────────────────────────────────────────────
+  # READ — Seeker profile lookup by phone.
+  # ────────────────────────────────────────────────────────────────────
+  - id: fetch_profile
+    type: rest_api
+    category: read
+    description: >
+      Fetch any existing seeker profiles for the caller's phone number
+      from the Blue Dots provider network. Returns zero profiles for a
+      new user, one profile for a returning user, or multiple profiles
+      when the same phone has been used to create several accounts.
+      ALWAYS call this once on the first turn after consent has been
+      granted. For multi-profile callers, prefer the most recently
+      updated profile (highest `updated_at`) when extracting fields.
+
+      Profile schema (profile_1.0). Required: name, gender, location,
+      age, phone. Optional: trade (nameOfJobRolesInterestedIn),
+      work_experience (workExperience: Fresher / Worked before /
+      Returning after a break), experience_years
+      (workExperienceYearsConditional: 0 / < 1 Year / 1 Year /
+      2 Years / 3 Years / 3-5 Years / 5-10 Years / 10-15 Years /
+      15+ Years / Other),
+      job_nature (natureOfJobsInterestedIn: Internship / Apprenticeship
+      / Full-time / Flexible), help_needed (otherHelpNeeded: Training /
+      Accommodation / Travel / Other). The trade field may be empty or
+      noisy in older records — still ask the user to confirm.
+    base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
+    # The phone lookup moved off network/item/fetch_local: `item_state.phone`
+    # is a masked PII field upstream, so filtering on it now matches nothing.
+    # GET /admin/participant?phone_number= looks the caller up by their account
+    # phone and returns their profiles unmasked. Needs the API key + acting org.
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_API_KEY
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: BLUE_DOTS_ORG_ID
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: seeker_fetch
+        method: GET
+        # {user_id} is the caller's phone in 91XXXXXXXXXX form, substituted
+        # from the session by the adapter. The LLM passes nothing.
+        path: "/api/v1/admin/participant?phone_number={user_id}"
+        params: []
+    response:
+      max_size_chars: 4000
+      # Project the ROOT. /admin/participant returns the owning participant's
+      # UUID only at the root as `user_id`; its items carry no `created_by`
+      # (unlike fetch_local items), so a list_key projection could never
+      # surface the owner that apply_job needs as acting_as_user_id.
+      # Lifted into session state so ROUTING can branch on them — routing
+      # reads session ∪ profile, and a tool response otherwise reaches only
+      # the LLM. These are the three facts the opening gate needs and used to
+      # ask the caller for even when they were already on file.
+      #
+      # `compliance` is a [{key, value}] array and `items` is newest-first
+      # (ITEMS_NEWEST_FIRST in signals-dpg), so the first `live` row is the
+      # current profile. items[0] is NOT safe — it can be `retired`.
+      #
+      # has_age reads the PARTICIPANT-level age. The profile's item_state.age
+      # is a different field and is deliberately not used here.
+      session_mapping:
+        - source: "compliance[key=has_age].value"
+          target: has_age
+        - source: "compliance[key=user_terms].value"
+          target: user_terms
+        - source: "compliance[key=user_privacy].value"
+          target: user_privacy
+        # Item-level, so it is reported per item and never in `compliance`.
+        - source: "items[lifecycle_status=live].profile_consent_accepted"
+          target: profile_consent
+        - source: "error"
+          target: fetch_error
+          on_error: true
+        - source: "items[lifecycle_status=live].item_id"
+          target: profile_item_id
+        - source: "user_id"
+          target: acting_as_user_id
+        # What the caller told us LAST time. Kept under their own names, not
+        # `trade`/`location`, on purpose: those two hold what the caller says
+        # in THIS call and routing uses them to decide the search is ready.
+        # If the stored values landed there directly, profile_resolve would
+        # be skipped and the caller never offered the choice.
+        - source: "items[lifecycle_status=live].item_state.nameOfJobRolesInterestedIn"
+          target: stored_trade
+        - source: "items[lifecycle_status=live].item_state.location"
+          target: stored_location
+        - source: "items[lifecycle_status=live].item_state.name"
+          target: stored_name
+      projection:
+        fields:
+          # Both names map to the same root value. The existing prompts refer
+          # to `source_item_owner` (it used to come from each item's
+          # `created_by` on fetch_local); `acting_as_user_id` is what apply_job
+          # actually takes. Keeping both means no prompt has to change.
+          source_item_owner: user_id
+          acting_as_user_id: user_id
+          compliance: compliance
+          # Kept as `items` — the prompts already say items[0].item_id, and
+          # that is the profile_item_id apply_job needs. item_state holds the
+          # profile fields; updated_at picks the newest for multi-profile.
+          items: items
+
+  # ────────────────────────────────────────────────────────────────────
+  # READ — Job listings filtered by city and role.
+  # ────────────────────────────────────────────────────────────────────
+  - id: fetch_jobs
+    type: rest_api
+    category: read
+    description: >
+      Search the Blue Dots provider network for live job postings,
+      filtered by the user's location (jobProviderLocation). ALWAYS
+      call this once after location is confirmed. The trade/role is
+      NOT filtered server-side — read the projected results and pick
+      the one(s) that match the user's role of interest. NEVER
+      describe job availability from memory — always fetch fresh.
+
+      Each item carries: role, company (jobProviderName), location
+      (jobProviderLocation), positions, nature_of_job (Internship /
+      Apprenticeship / Full-time / Flexible), and one of three
+      pay-model pairs depending on the job: salary_min / salary_max,
+      stipend_min / stipend_max, or task_rate_min / task_rate_max.
+      Read out whichever is populated. Hiring-manager contact
+      details are intentionally not exposed to the LLM.
+    base_url: "${SIGNALS_SEARCH_URL:-https://signals.bluedotseconomy.org/signals-search}"
+    # Job discovery moved off network/item/fetch_local to signals-search.
+    # Search is semantic: the trade and the city both travel inside query_text,
+    # not as a server-side filter. Note that semantic search RANKS by the city
+    # but does not FILTER on it — a query naming one city still returns jobs in
+    # others, so the location field below is what the agent must read.
+    auth:
+      type: api_key
+      header: x-api-key
+      # signals-search key — DISTINCT from BLUE_DOTS_API_KEY.
+      secret_env: BLUE_DOTS_SEARCH_API_KEY
+    timeout_ms: 8000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: job_fetch
+        method: POST
+        path: /v1/search
+        body_template:
+          context:
+            messageId: "{session_id}"
+            networkId: "blue_dot"
+            domain: "provider"
+            itemType: "job_posting_1.0"
+          message:
+            intent:
+              textSearch: "{query_text}"
+            pagination:
+              limit: 5
+              # Optional. A placeholder whose value is absent drops the field,
+              # and the API treats a missing offset as 0 (verified), so a first
+              # search needs no offset at all and "और नौकरियाँ दिखाइए" can ask
+              # for the next page instead of re-reading the same one.
+              offset: "{offset}"
+        params:
+          - name: offset
+            source: agent
+            type: integer
+            required: false
+            description: >
+              How many results to skip. OMIT on a first search. When the caller
+              asks for more jobs ("ಇನ್ನೂ ಜಾಬ್ ತೋರಿಸಿ", "ಇನ್ನೂ ಇದೆಯಾ?", "ಬೇರೆ
+              ಏನಾದ್ರೂ ಇದೆಯಾ?"), pass the number of rows the previous search RETURNED —
+              not the number you read aloud. Rows you left out for being the
+              wrong trade or the wrong city were still returned, and skipping
+              only the ones you spoke fetches those same rejects again.
+              Re-running the same search with no offset returns the same jobs.
+          - name: query_text
+            source: agent
+            type: string
+            required: true
+            description: >
+              Natural English sentence describing the search, naming BOTH the
+              role and the city — the search is semantic, so the city belongs
+              in the sentence, not in a separate filter. Examples:
+              "plumber jobs in Bengaluru full time",
+              "electrician jobs in Rajkot for a fresher".
+    response:
+      max_size_chars: 4000
+      projection:
+        list_key: message.items
+        fields:
+          item_id: item_id
+          role: item_state.role
+          company: item_state.jobProviderName
+          # jobProviderLocation stopped being a masked PII field upstream, so
+          # the agent can finally be told where a job actually is. KNOWN GAP:
+          # rows created while it was masked still read back as "B***", and
+          # nothing yet stops the agent speaking one. Those rows are being
+          # cleaned up; revisit if they outlive the cleanup.
+          location: item_state.jobProviderLocation
+          positions: item_state.positions
+          nature_of_job: item_state.natureOfJob
+          # Three pay models; only one is populated per posting.
+          salary_min: item_state.salaryMin
+          salary_max: item_state.salaryMax
+          stipend_min: item_state.stipendMin
+          stipend_max: item_state.stipendMax
+          task_rate_min: item_state.taskRateMin
+          task_rate_max: item_state.taskRateMax
+          candidate_experience_type: item_state.candidateExperienceType
+          work_experience_years: item_state.workExperienceYears
+          min_educational_institute: item_state.minEducationalInstitute
+          last_role_held: item_state.lastRoleHeld
+          status: lifecycle_status
+          match_score: score
+  - id: save_profile
+    type: rest_api
+    category: write
+    description: >
+      Create a new seeker profile. Changing an existing one is
+      update_profile's job; omit item_id here. workExperience MUST be
+      one of "Fresher" / "Worked before" / "Returning after a break".
+      The response returns all the user's profiles in the items array,
+      the newly-created one last by created_at.
+    base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_API_KEY
+    # Signals' admin endpoints require a tenant identifier alongside
+    # the API key — generic adapter feature, env-driven.
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: BLUE_DOTS_ORG_ID
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: save_profile
+        method: POST
+        path: /api/v1/admin/participant
+        body_template:
+          # Top-level participant identity. name is the participant's
+          # display name; phone_number must be E.164 (+91 prefix is
+          # required by the upstream's regex). The adapter substitutes
+          # session.user_id (bare 10-digit) into the embedded +91 prefix.
+          name: "{name}"
+          # {user_id} already carries the 91 country code — the GET lookup
+          # above requires that form, so prefix only the "+" here. Do NOT add
+          # another 91.
+          phone_number: "+{user_id}"
+          # Top-level age is REQUIRED alongside consent on this network —
+          # without it the upstream rejects with 400 AGE_REQUIRED
+          # ("age is required with consent on this domain"). item_state.age
+          # below is the profile field and does NOT satisfy it.
+          age: "{age}"
+          compliance:
+            - { key: "user_terms",       value: "{user_terms}" }
+            - { key: "user_privacy",     value: "{user_privacy}" }
+            - { key: "profile_creation", value: "{profile_consent}" }
+          # channel must be one of bulk/link/voice/self — we're voice.
+          channel: "voice"
+          # source_id is the Vobiz outbound number — tags every profile
+          # written via the voice bot for analytics / audit.
+          source_id: "919240024229"
+          network: "blue_dot"
+          domain: "seeker"
+          item_type: "profile_1.0"
+          # When the LLM omits profile_item_id (create_new path), the
+          # body_template renderer DROPS the item_id field entirely.
+          # When present, the upstream treats the call as UPDATE on
+          # that specific item_id.
+          item_id: "{profile_item_id}"
+          item_state:
+            name: "{name}"
+            phone: "{user_id}"
+            gender: "{gender}"
+            location: "{location}"
+            age: "{age}"
+            workExperience: "{work_experience}"
+            workExperienceYearsConditional: "{experience_years}"
+            nameOfJobRolesInterestedIn: "{trade}"
+            # Both are `array of string` upstream. Sent as bare strings they
+            # rejected the WHOLE write with 400 INVALID_ITEM_STATE
+            # "must be array", so one optional field the model chose to fill
+            # lost the entire profile. Verified against UAT: "Full-time" -> 400,
+            # ["Full-time"] -> 201.
+            natureOfJobsInterestedIn: ["{job_nature}"]
+            otherHelpNeeded: ["{help_needed}"]
+        # `required: true` here is not documentation — it becomes the
+        # `required` list of the JSON Schema handed to the LLM, which the
+        # provider's function-calling validation enforces. Anything marked
+        # required is a field the model MUST extract before it can call the
+        # tool, which in practice means a question asked on the call.
+        #
+        # The live upstream schema
+        # (GET /api/v1/network/schema/blue_dot/seeker/profile_1.0) requires
+        # only ["name", "phone"]. gender, location, age and work_experience
+        # are optional. Marking them required here cost the caller four
+        # extra questions — three of them closed English enums over a phone
+        # line — and was the direct cause of the profile-question loop seen
+        # on the 24 Sep PoC calls.
+        #
+        # Only `name` is required now. phone is injected from the session,
+        # not asked. Everything else is sent when known and skipped when not.
+        params:
+          - name: name
+            source: agent
+            type: string
+            required: true
+            description: "Caller's full name."
+          - name: gender
+            source: agent
+            type: string
+            required: false
+            description: >
+              Optional. Only send it if the caller volunteered it — do NOT
+              ask. The upstream enum is CASE-SENSITIVE: send exactly one of
+              "Male", "Female", "Other", "Don't want to share". Capitalise
+              it; "male" is rejected with 400.
+          - name: location
+            source: agent
+            type: string
+            required: false
+            description: >
+              Optional for the upstream, but usually already known —
+              profile_resolve captures the city the caller wants to work in.
+              Send it when you have it; never hold up the save to ask.
+          # source: session, NOT agent. The LLM does not see this parameter
+          # and cannot supply it; Agent Core fills it from turn state.
+          #
+          # It used to be an agent param described as "always send it". The
+          # model cannot always see it — the value lives in profile state,
+          # not in the conversation — and a model told to always send a field
+          # it cannot see invents one. It sent 0, and the participant endpoint
+          # reads 0 as a real age: 400 U18_NOT_ALLOWED, which the agent then
+          # relayed to adult callers as "you are under eighteen". Measured on
+          # 2026-09-25: age=0 -> U18_NOT_ALLOWED, age omitted -> AGE_REQUIRED,
+          # age=26 -> 200.
+          #
+          # Sourced from state, a missing age now omits the field and yields
+          # AGE_REQUIRED — an honest error instead of a false accusation.
+          - name: age
+            source: session
+            type: integer
+            required: false
+            description: >
+              Caller's age in years, supplied by the framework from turn
+              state. The consent subagent collects it before the profile is
+              written. Not visible to the model.
+          - name: user_terms
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: user_privacy
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: profile_consent
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: work_experience
+            source: agent
+            type: string
+            required: false
+            description: >
+              Optional. Only send it if the caller volunteered it — do NOT
+              ask. Must be EXACTLY one of: "Fresher", "Worked before",
+              "Returning after a break".
+          - name: profile_item_id
+            source: agent
+            type: string
+            required: false
+            description: >
+              Existing profile's item_id, when UPDATING that profile.
+              Omit (or pass empty) to CREATE a new profile.
+          - name: experience_years
+            source: agent
+            type: string
+            required: false
+            description: >
+              workExperienceYearsConditional value if known. One of:
+              "0", "< 1 Year", "1 Year", "2 Years", "3 Years",
+              "3-5 Years", "5-10 Years", "10-15 Years", "15+ Years",
+              "Other".
+          - name: trade
+            source: agent
+            type: string
+            required: false
+            description: 'nameOfJobRolesInterestedIn (e.g. "Plumber").'
+          - name: job_nature
+            source: agent
+            type: string
+            required: false
+            description: >
+              natureOfJobsInterestedIn. One of: "Internship",
+              "Apprenticeship", "Full-time", "Flexible".
+          - name: help_needed
+            source: agent
+            type: string
+            required: false
+            description: >
+              otherHelpNeeded. NONE of the earlier values here existed
+              upstream, so every call that used this field was rejected.
+              These seven are the schema's enum, all verified accepted:
+              "Skilling & Vocational Training", "Job Placement Assistance",
+              "Apprenticeship Program", "Career Counseling & Interview Prep",
+              "Financial Aid / Scheme Enrolment",
+              "Other Support (Accommodation / Travel)",
+              "No Other Help Needed".
+    response:
+      max_size_chars: 4000
+      # Lift the new profile's identity into session the moment it exists, so
+      # ROUTING can see that the profile is created — not only the LLM.
+      #
+      # Without this, nothing in session changes when a save succeeds.
+      # profile_setup's "profile_setup_done" rule was documented dead for
+      # exactly this reason, so a caller who had just been saved stayed in
+      # profile_setup — a phase with NO apply tool — and when they said
+      # "हाँ, भेज दीजिए" the model answered "आपका आवेदन भेज दिया गया है".
+      # Its own prompt forbids that sentence in that phase; it said it anyway.
+      # The profile was live upstream and no application existed.
+      #
+      # Same selectors as fetch_profile: the two endpoints return the same
+      # participant shape.
+      session_mapping:
+        - source: "items[lifecycle_status=live].item_id"
+          target: profile_item_id
+        - source: "user_id"
+          target: acting_as_user_id
+      # Expose user_id (= acting_as_user_id for apply_job) and the items
+      # array. For UPDATE the array has one element (the updated profile);
+      # for CREATE it contains all the user's profiles and the new one
+      # is the last by created_at — the LLM picks the right one.
+      projection:
+        fields:
+          user_id: user_id
+          user_existed: user_existed
+          items: items
+
+  # ────────────────────────────────────────────────────────────────────
+  # WRITE — Update an existing seeker profile. item_id makes it an update.
+  # ────────────────────────────────────────────────────────────────────
+  - id: update_profile
+    type: rest_api
+    category: write
+    description: >
+      Update an existing seeker profile. Pass profile_item_id and ONLY the
+      fields that are changing — the upstream merges them into the stored
+      item_state and leaves everything else as it is (verified against UAT
+      on 16 Oct 2026). Never use this to create: without a live profile
+      there is nothing to update, and save_profile is the create path.
+    base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_API_KEY
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: BLUE_DOTS_ORG_ID
+    timeout_ms: 8000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: update_profile
+        method: POST
+        path: /api/v1/admin/participant
+        body_template:
+          # stored_name: the upstream requires a top-level name on an update.
+          name: "{stored_name}"
+          phone_number: "+{user_id}"
+          compliance:
+            - { key: "user_terms",       value: "{user_terms}" }
+            - { key: "user_privacy",     value: "{user_privacy}" }
+            - { key: "profile_creation", value: "{profile_consent}" }
+          channel: "voice"
+          source_id: "919240024229"
+          network: "blue_dot"
+          domain: "seeker"
+          item_type: "profile_1.0"
+          item_id: "{profile_item_id}"
+          item_state:
+            location: "{location}"
+            workExperience: "{work_experience}"
+            workExperienceYearsConditional: "{experience_years}"
+            nameOfJobRolesInterestedIn: "{trade}"
+            natureOfJobsInterestedIn: ["{job_nature}"]
+            otherHelpNeeded: ["{help_needed}"]
+        params:
+          - name: profile_item_id
+            source: session
+            type: string
+            required: true
+            description: "The live profile's item_id. Filled from session, not by the model."
+          - name: stored_name
+            source: session
+            type: string
+            required: false
+          - name: user_terms
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: user_privacy
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: profile_consent
+            source: session
+            type: boolean
+            required: false
+            description: >
+              Supplied by the framework from turn state. Not visible to the
+              model.
+          - name: location
+            source: agent
+            type: string
+            required: false
+            description: "The caller's city, only when it is changing."
+          - name: trade
+            source: agent
+            type: string
+            required: false
+            description: 'nameOfJobRolesInterestedIn, only when it is changing.'
+          - name: work_experience
+            source: agent
+            type: string
+            required: false
+            description: "Fresher / Worked before / Returning after a break."
+          - name: experience_years
+            source: agent
+            type: string
+            required: false
+          - name: job_nature
+            source: agent
+            type: string
+            required: false
+          - name: help_needed
+            source: agent
+            type: string
+            required: false
+    response:
+      session_mapping:
+        - source: "user_existed"
+          target: update_stage
+      projection:
+        fields:
+          user_id: user_id
+          items: items
+
+  # ────────────────────────────────────────────────────────────────────
+  # WRITE — Submit the application linking caller profile to the job.
+  # ────────────────────────────────────────────────────────────────────
+  - id: apply_job
+    type: rest_api
+    category: write
+    description: >
+      Submit a job application linking the chosen seeker profile to the
+      selected job posting. Call ONLY after a profile has been chosen
+      (use_existing) or created/updated via save_profile AND the
+      acting_as_user_id is known. The LLM passes the three dynamic IDs
+      plus the requirements_snapshot fields — the static envelope
+      (item_network, item_domain, item_type, item_instance_url,
+      action_type) lives in body_template and never needs to be
+      supplied by the LLM.
+    base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_API_KEY
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: BLUE_DOTS_ORG_ID
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: apply
+        method: POST
+        path: /api/v1/action/perform
+        # POST /api/v1/action/perform takes a SINGLE OBJECT. It was
+        # array-only until contract change signals-dpg#293 moved the array
+        # form to /api/v1/action/perform/bulk. The response is still the
+        # { results[], summary } envelope, read back via the `results`
+        # list_key projection below.
+        body_template:
+          action_type: "apply"
+          source_item:
+            item_network: "blue_dot"
+            item_domain: "seeker"
+            item_type: "profile_1.0"
+            item_id: "{profile_item_id}"
+          target_item:
+            item_network: "blue_dot"
+            item_domain: "provider"
+            item_type: "job_posting_1.0"
+            item_id: "{job_item_id}"
+            # The Signals instance the target job lives on — the value the
+            # upstream embeds in the action record.
+            item_instance_url: "{instance_url}"
+          # NOTE: no `requirements_snapshot`. The upstream validates it with
+          # additionalProperties:false, so ANY field in it fails the whole
+          # call with 422 INVALID_ACTION_REQUEST "must NOT have additional
+          # properties". The Signals Postman collection sends {} for the same
+          # reason; omitting it is equivalent.
+          # The acting user — the seeker who is applying. From fetch_profile's
+          # `acting_as_user_id`, or save_profile's `user_id` after a create.
+          acting_as_user_id: "{acting_as_user_id}"
+          consent:
+            acknowledged: true
+            version: 1
+        params:
+          - name: instance_url
+            source: static
+            type: string
+            value: "${SIGNALS_INSTANCE_URL:-https://signals.bluedotseconomy.org}"
+          - name: profile_item_id
+            source: agent
+            type: string
+            required: true
+            description: >
+              The chosen profile's item_id — from fetch_profile (use_existing
+              path) or save_profile's response (create_new / update_existing).
+          - name: acting_as_user_id
+            # SESSION, not agent. Both producers write this field via their
+            # own session_mapping — fetch_profile and save_profile each map
+            # `user_id` to `acting_as_user_id` — so the value is always on
+            # hand and the model never has to recall it.
+            #
+            # It used to be agent-supplied, and the model got it wrong on
+            # every returning-caller apply measured against UAT: once by
+            # copying profile_item_id into it, then by inventing a
+            # well-formed UUID outright. The grounding guard caught each one
+            # and refused the apply, so the caller could not apply at all.
+            # Asking a model to echo a 36-character identifier from many
+            # turns back is the exact failure that guard was written for;
+            # the fix is to stop asking.
+            source: session
+            type: string
+            required: true
+            description: >
+              The seeker's user UUID. Injected from session state by the
+              adapter — do NOT supply it.
+          - name: job_item_id
+            source: agent
+            type: string
+            required: true
+            # Shape-checked before the call. Measured on the VM: the model
+            # sometimes sends what the CALLER said — "पहला वाला", "तीसरा" —
+            # instead of the id, and the upstream answers a bare
+            # 400 FST_ERR_VALIDATION "Invalid UUID" that gives it nothing to
+            # correct. Roughly one apply in four failed this way. Failing at
+            # the gateway returns a message naming the parameter instead.
+            format: uuid
+            description: >
+              The chosen job's item_id from the prior fetch_jobs result,
+              copied verbatim — the full hyphenated UUID, never the
+              caller's words for which job they picked.
+    response:
+      max_size_chars: 1000
+      # Record the outcome where ROUTING can see it, not only the LLM. Without
+      # this, apply_confirm could only end the call on a turn count, so a turn
+      # whose apply was refused or failed still counted as "done" and the
+      # caller was dropped with no application. Measured locally: apply_job
+      # was refused for an ungrounded id, the very next routing pass matched
+      # the exhaustion rule, and the call ended.
+      #
+      # `summary.succeeded` is 1 on a created application and 0 on any
+      # failure, so it is the honest test for "did an application happen".
+      session_mapping:
+        - source: "summary.succeeded"
+          target: applications_submitted
+        - source: "results[status=success].action_id"
+          target: last_application_id
+        # on_error: a failed apply arrives as HTTP 422; succeeded stays off it so a later failure cannot reset it.
+        - source: "summary.failed"
+          target: apply_failed
+          on_error: true
+      # Bulk envelope (Signals-DPG PR #55): { results: [ ... ], summary }.
+      # apply_job sends one element, so `results` has one item; list_key
+      # projects it into a single-element list the LLM reads.
+      #   success element: { index, status: "success", action_id,
+      #                      action_type, action_status, update_count,
+      #                      source_item_id, target_item_id }
+      #   failure element: { index, status: "error", error: "<CODE>",
+      #                      message: "<human-readable reason>" }
+      # `status` lets the model confirm per-item success; `error` +
+      # `message` give it the reason on a per-item failure so it can
+      # explain (not silently announce success). On a success element
+      # error/message are absent and project to null; on a failure
+      # element the success fields are absent and project to null.
+      #
+      # NOTE: a single failed element comes back as an all-fail HTTP 422,
+      # which the engine's error branch catches before projection and
+      # surfaces the raw envelope to the LLM. error/message here cover the
+      # mixed-success (HTTP 207) path that bypasses that branch — harmless
+      # for apply_job's single element today, correct if it ever batches.
+      projection:
+        list_key: results
+        fields:
+          status: status
+          error: error
+          message: message
+          action_id: action_id
+          action_status: action_status
+          source_item_id: source_item_id
+          target_item_id: target_item_id
+
+  - id: fetch_services
+    type: rest_api
+    category: read
+    description: >
+      Support organisations on the network — skilling and vocational
+      training, job placement assistance, career counselling and interview
+      preparation, financial aid and scheme enrolment, and help with
+      accommodation or travel.
+
+      One result is one ORGANISATION, not one service: each offers several
+      things, listed in services_for_seekers. Read out the organisation's
+      name, what it offers, and what it costs.
+
+      cost is one of "Free", "Subsidised / Government-funded" or "Paid" —
+      always say which. Sending
+      someone to a paid course without telling them is the one mistake they
+      cannot undo.
+
+      Contact details are deliberately NOT projected: the upstream masks
+      them ("9***", "b***@yopmail.com"), so there is nothing to read out.
+      Never offer to pass on a phone number or an email.
+    base_url: "${SIGNALS_SEARCH_URL:-https://signals.bluedotseconomy.org/signals-search}"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_SEARCH_API_KEY
+    timeout_ms: 8000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: services_fetch
+        method: POST
+        path: /v1/search
+        body_template:
+          context:
+            messageId: "{session_id}"
+            networkId: "blue_dot"
+            domain: "service_provider"
+            itemType: "profile_1.0"
+          message:
+            intent:
+              textSearch: "{query_text}"
+            pagination:
+              limit: 5
+              offset: "{offset}"
+        params:
+          - name: offset
+            source: agent
+            type: integer
+            required: false
+            description: >
+              How many results to skip. OMIT on a first search. When the
+              caller asks for more, pass the number already read out.
+          - name: query_text
+            source: agent
+            type: string
+            required: true
+            description: >
+              What the caller needs, in an English sentence, naming the city
+              when it is known — the search is semantic, so a phrase works
+              better than a keyword. Examples: "skill training for a welder
+              in Ghaziabad", "interview preparation in Kanpur",
+              "help with travel to work".
+    response:
+      max_size_chars: 3000
+      projection:
+        list_key: message.items
+        fields:
+          item_id: item_id
+          organisation_name: item_state.organisationName
+          service_description: item_state.serviceDescription
+          cost: item_state.costToBeneficiary
+          service_areas: item_state.serviceAreas
+          services_for_seekers: item_state.servicesEducationalForSeekers
+          other_support: item_state.servicesNonEducationalForSeekers
+          status: lifecycle_status
+          match_score: score
+
+  - id: connect_service
+    type: rest_api
+    category: write
+    description: >
+      Send the caller's enquiry to the chosen support organisation, linking
+      their seeker profile to that organisation's profile. Call only after a
+      profile exists and the caller has confirmed they want the enquiry sent.
+    base_url: "${SIGNALS_BASE_URL:-https://signals.bluedotseconomy.org}"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_API_KEY
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: BLUE_DOTS_ORG_ID
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: connect
+        method: POST
+        path: /api/v1/action/perform
+        body_template:
+          action_type: "connect"
+          source_item:
+            item_network: "blue_dot"
+            item_domain: "seeker"
+            item_type: "profile_1.0"
+            item_id: "{profile_item_id}"
+          target_item:
+            item_network: "blue_dot"
+            item_domain: "service_provider"
+            item_type: "profile_1.0"
+            item_id: "{service_item_id}"
+            item_instance_url: "{instance_url}"
+          acting_as_user_id: "{acting_as_user_id}"
+          consent:
+            acknowledged: true
+            version: 1
+        params:
+          - name: instance_url
+            source: static
+            type: string
+            value: "${SIGNALS_INSTANCE_URL:-https://signals.bluedotseconomy.org}"
+          - name: profile_item_id
+            source: agent
+            type: string
+            required: true
+            description: >
+              The caller's profile item_id — from fetch_profile or from
+              save_profile's response.
+          - name: acting_as_user_id
+            source: session
+            type: string
+            required: true
+            description: >
+              The seeker's user UUID. Injected from session state by the
+              adapter — do NOT supply it.
+          - name: service_item_id
+            source: agent
+            type: string
+            required: true
+            format: uuid
+            description: >
+              The chosen organisation's item_id from the prior
+              fetch_services result, copied verbatim — the full hyphenated
+              UUID, never the caller's words for which one they picked.
+    response:
+      max_size_chars: 1000
+      session_mapping:
+        - source: "summary.succeeded"
+          target: service_enquiries_submitted
+        - source: "results[status=success].action_id"
+          target: last_enquiry_id
+      projection:
+        list_key: results
+        fields:
+          status: status
+          error: error
+          message: message
+          action_id: action_id
+          action_status: action_status
+          source_item_id: source_item_id
+          target_item_id: target_item_id
+
+observability:
+  domain: "blue_dot"
