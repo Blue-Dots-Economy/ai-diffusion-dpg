@@ -6,7 +6,7 @@
 # local compose files and mounted from automation/docker/: the collector,
 # Prometheus and blackbox configs, and Grafana's provisioning and dashboards.
 #
-# The 6 DPG blocks, the bridge channel, redis, memgraph, otelcol, two one-shot
+# The 6 DPG blocks, the bridge channel, redis, memgraph, otelcol, three one-shot
 # init containers, and the monitoring stack: jaeger, loki, prometheus, grafana
 # and the blackbox, cAdvisor and Redis exporters.
 # Deliberately absent: the voice channel and ngrok — the telephony platform
@@ -234,6 +234,23 @@ services:
   # telephony platform's own frontend uses, and a 0.0.0.0 bind on their side
   # would collide with a 127.0.0.1 bind on ours.
   # ───────────────────────────────────────────────────────────────────────────
+  # One-shot: give Jaeger ownership of its jaeger_data volume.
+  #
+  # The Jaeger image runs as uid 10001 and has no /badger directory, so the
+  # named volume is created root-owned and Badger cannot write to it. Same
+  # problem and fix as init_kb_perms above; the uid is hardcoded because the
+  # Jaeger image has no username to resolve.
+  init_jaeger_perms:
+    image: busybox:1.36
+    container_name: dpg_init_jaeger_perms
+    user: "0:0"
+    command: ["chown", "-R", "10001:10001", "/badger"]
+    volumes:
+      - jaeger_data:/badger
+    networks: [dpg_net]
+    logging: *logging
+    restart: "no"
+
   jaeger:
     image: jaegertracing/all-in-one:1.55
     container_name: dpg_jaeger
@@ -243,19 +260,31 @@ services:
       # enabled in 1.55; set explicitly so a base-image bump cannot silently
       # break the traces pipeline.
       - COLLECTOR_OTLP_ENABLED=true
-      # In-memory storage keeps every trace by default and never evicts, so
-      # it grew to the 512M limit, was OOM-killed and restarted empty, over and
-      # over. Beyond this count the oldest traces are dropped.
-      - MEMORY_MAX_TRACES=5000
+      # Badger on a named volume, not in-memory storage. In memory, traces
+      # were capped (each turn is its own trace, so a few hundred calls) and
+      # lost on every restart, and a post-call step reads them back by
+      # call_id. Badger keeps them on disk and expires them by TTL.
+      - SPAN_STORAGE_TYPE=badger
+      - BADGER_EPHEMERAL=false
+      - BADGER_DIRECTORY_KEY=/badger/key
+      - BADGER_DIRECTORY_VALUE=/badger/data
+      # How long traces are kept. Loki holds the durable per-turn log record;
+      # traces only need to outlive post-call processing and a campaign review.
+      - BADGER_SPAN_STORE_TTL=${JAEGER_TRACE_TTL:-168h}
+    volumes:
+      - jaeger_data:/badger
     ports:
-      - "127.0.0.1:16686:16686"     # UI
+      - "127.0.0.1:16686:16686"     # UI and HTTP query API
     networks: [dpg_net]
     logging: *logging
+    depends_on:
+      init_jaeger_perms:
+        condition: service_completed_successfully
     deploy:
       resources:
         limits:
-          cpus: '0.2'
-          memory: 512M
+          cpus: '1.0'
+          memory: 2G
     restart: unless-stopped
 
   loki:
@@ -263,7 +292,14 @@ services:
     container_name: dpg_loki
     # No published port: Grafana queries it inside dpg_net and nothing else
     # needs it from the host.
+    #
+    # Our config, not the image default: same storage and schema, plus
+    # retention, so logs no longer grow until the disk is full.
+    command: ["-config.file=/etc/loki/loki-config.yaml", "-config.expand-env=true"]
+    environment:
+      - LOKI_RETENTION=${LOKI_RETENTION:-720h}
     volumes:
+      - ../../docker/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
       - loki_data:/loki
     networks: [dpg_net]
     logging: *logging
@@ -663,5 +699,6 @@ volumes:
   grafana_data:
   prometheus_data:
   loki_data:
+  jaeger_data:
   memgraph_log:
   memgraph_etc:

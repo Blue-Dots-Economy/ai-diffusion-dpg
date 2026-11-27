@@ -234,10 +234,13 @@ unconditionally, with no profile. VM specifics:
 - **`GRAFANA_ROOT_URL`** (default `http://localhost:3001`) is the base of the
   dashboard links in each alert; set it to `http://<vm-address>:3001` so they
   open over the VPN.
-- **Retention:** Prometheus keeps 15 days on a volume; Loki and Grafana state
-  are on volumes too. Jaeger keeps traces in memory, so a restart loses them,
-  and only the latest 5000 (`MEMORY_MAX_TRACES`); without that cap it grew
-  until it was OOM-killed. `/health` is not traced
+- **Retention:** Prometheus keeps 15 days on a volume. Loki keeps logs on a
+  volume and deletes them after `LOKI_RETENTION` (default `720h`, 30 days;
+  config in `automation/docker/loki/loki-config.yaml`). Grafana state is on a
+  volume too. Jaeger stores traces in Badger on the `jaeger_data`
+  volume, so they survive a restart, and expires them after
+  `JAEGER_TRACE_TTL` (default `168h`, 7 days). It used to keep them in
+  memory, capped at 5000, and lost them on every restart. `/health` is not traced
   (`OTEL_PYTHON_FASTAPI_EXCLUDED_URLS`), so the healthchecks and probes do not
   fill it. The bridge channel emits no traces, so every trace starts at Agent
   Core.
